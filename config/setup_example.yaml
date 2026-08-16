@@ -1,0 +1,52 @@
+driver: Example Driver
+class_name: Rotax Senior EVO
+
+gearing:
+  front_teeth: 10
+  rear_teeth: 80
+  chain_pitch: "219"
+  axle_type: fixed
+  axle_diameter_mm: 50
+  axle_stiffness: medium
+
+carburettor:
+  model: Dellorto VHSB34
+  main_jet: 168
+  idle_jet: 55
+  needle_type: null
+  needle_clip_position: 2
+  air_screw_turns_out: 1.5
+  float_height_mm: null
+  altitude_m: 20
+  ambient_temp_c: 18
+  track_temp_c: 24
+
+tyres:
+  compound: null
+  hot_pressure_front_bar: 0.8
+  hot_pressure_rear_bar: 0.8
+  cold_pressure_front_bar: 0.6
+  cold_pressure_rear_bar: 0.6
+  age_laps: 0
+
+chassis:
+  front_track_width_mm: null
+  rear_track_width_mm: null
+  caster: null
+  camber: null
+  seat_position_fore_aft_mm: null
+  seat_position_height_mm: null
+  ride_height_mm: null
+  torsion_bar: null
+  engine_mounting_position: null
+  weight_distribution_notes: null
+  ballast_kg: null
+
+track_session:
+  track_name: null
+  layout_direction: null
+  weather: null
+  track_temp_c: null
+  session_type: practice
+  date: null
+  notes: null

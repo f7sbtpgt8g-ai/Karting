@@ -1,0 +1,153 @@
+"""Per-lap metric traces: speed, RPM, G-forces, braking/throttle inference,
+and per-corner aggregates.
+
+There is no throttle, brake, or gear channel in the confirmed export, so
+braking and throttle-application are inferred from longitudinal G / RPM
+rate-of-change against GPS speed. Every value derived this way is labeled
+`_estimate` in its column name / output so downstream code and the UI can't
+accidentally present it as a direct measurement.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+from .corners import assign_segments, lap_gps_trace
+from .parser import Session
+
+BRAKING_DECEL_THRESHOLD_G = -0.3  # longitudinal G more negative than this counts as braking
+POWER_ON_ACCEL_THRESHOLD_G = 0.15  # longitudinal G more positive than this counts as power-on
+
+
+def lap_metric_trace(session: Session, lap_number: int) -> pd.DataFrame:
+    """Distance-aligned trace of speed, RPM, and G-forces for one lap.
+
+    Anchored on the GPS fix rows (speed/lat-g/lon-g/heading all update
+    together), with RPM merged on by nearest timestamp -- RPM is the fastest
+    channel so this avoids distorting it by forward-filling onto a slower
+    grid.
+    """
+    trace = lap_gps_trace(session, lap_number)
+    if trace.empty:
+        return trace
+
+    rpm = session.extract_channel("RPM")
+    rpm = rpm.loc[rpm["Lap Number"] == lap_number].sort_values("session_time_s")
+    rpm_unfiltered = session.extract_channel("RPM unfiltered")
+    rpm_unfiltered = rpm_unfiltered.loc[rpm_unfiltered["Lap Number"] == lap_number].sort_values("session_time_s")
+
+    trace = trace.sort_values("session_time_s")
+    if not rpm.empty:
+        trace = pd.merge_asof(
+            trace, rpm[["session_time_s", "RPM"]], on="session_time_s", direction="nearest", tolerance=0.2
+        )
+    else:
+        trace["RPM"] = np.nan
+    if not rpm_unfiltered.empty:
+        trace = pd.merge_asof(
+            trace,
+            rpm_unfiltered[["session_time_s", "RPM unfiltered"]],
+            on="session_time_s",
+            direction="nearest",
+            tolerance=0.2,
+        )
+    else:
+        trace["RPM unfiltered"] = np.nan
+
+    trace = trace.sort_values("lap_distance_m").reset_index(drop=True)
+    return trace
+
+
+def add_braking_throttle_estimates(trace: pd.DataFrame) -> pd.DataFrame:
+    """Flag inferred braking / power-on phases from longitudinal G and RPM.
+
+    `braking_estimate` / `power_on_estimate` are booleans, not measurements
+    of an actual brake or throttle channel -- neither exists in this export.
+    """
+    trace = trace.copy()
+    lon_g = trace.get("GPS Longitudinal Acceleration")
+    if lon_g is None:
+        trace["braking_estimate"] = False
+        trace["power_on_estimate"] = False
+        return trace
+
+    trace["braking_estimate"] = lon_g < BRAKING_DECEL_THRESHOLD_G
+    trace["power_on_estimate"] = lon_g > POWER_ON_ACCEL_THRESHOLD_G
+    return trace
+
+
+def braking_zones(trace: pd.DataFrame) -> pd.DataFrame:
+    """Contiguous braking zones (estimate) as distance ranges with peak
+    deceleration and duration."""
+    trace = trace.dropna(subset=["lap_distance_m"]).sort_values("lap_distance_m").reset_index(drop=True)
+    if "braking_estimate" not in trace.columns:
+        trace = add_braking_throttle_estimates(trace)
+
+    zones = []
+    in_zone = False
+    start_i = None
+    for i, row in trace.iterrows():
+        if row["braking_estimate"] and not in_zone:
+            in_zone = True
+            start_i = i
+        elif not row["braking_estimate"] and in_zone:
+            in_zone = False
+            zone_df = trace.loc[start_i : i - 1]
+            zones.append(_summarize_zone(zone_df))
+    if in_zone:
+        zone_df = trace.loc[start_i:]
+        zones.append(_summarize_zone(zone_df))
+    return pd.DataFrame(zones)
+
+
+def _summarize_zone(zone_df: pd.DataFrame) -> dict:
+    return {
+        "brake_point_m": zone_df["lap_distance_m"].iloc[0],
+        "end_m": zone_df["lap_distance_m"].iloc[-1],
+        "duration_s": zone_df["session_time_s"].iloc[-1] - zone_df["session_time_s"].iloc[0],
+        "peak_decel_g": zone_df["GPS Longitudinal Acceleration"].min(),
+        "entry_speed_kmh": zone_df["GPS Speed"].iloc[0],
+        "exit_speed_kmh": zone_df["GPS Speed"].iloc[-1],
+    }
+
+
+def segment_aggregates(trace: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFrame:
+    """Min/max/avg speed and exit RPM per segment for one lap's trace."""
+    trace = assign_segments(trace, segments)
+    rows = []
+    for label, g in trace.groupby("segment_label"):
+        if label is None or g.empty:
+            continue
+        kind = g["segment_kind"].iloc[0]
+        row = {
+            "segment_label": label,
+            "segment_kind": kind,
+            "min_speed_kmh": g["GPS Speed"].min(),
+            "max_speed_kmh": g["GPS Speed"].max(),
+            "avg_speed_kmh": g["GPS Speed"].mean(),
+            "exit_rpm": g.sort_values("lap_distance_m")["RPM"].dropna().iloc[-1] if g["RPM"].notna().any() else np.nan,
+            "lateral_g_std": g["GPS Lateral Acceleration"].std(),
+        }
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def gg_diagram_points(trace: pd.DataFrame) -> pd.DataFrame:
+    """Lateral vs. longitudinal G points for a lap's friction-circle plot."""
+    cols = ["GPS Lateral Acceleration", "GPS Longitudinal Acceleration", "lap_distance_m", "GPS Speed"]
+    available = [c for c in cols if c in trace.columns]
+    return trace[available].dropna(subset=["GPS Lateral Acceleration", "GPS Longitudinal Acceleration"])
+
+
+def consistency_stats(laps: pd.DataFrame) -> dict:
+    """Lap-time consistency: std dev and a simple fade/improvement trend."""
+    if laps.empty:
+        return {}
+    times = laps.sort_values("lap_number")["lap_time_s"]
+    trend_slope = np.polyfit(range(len(times)), times, 1)[0] if len(times) >= 2 else 0.0
+    return {
+        "std_dev_s": times.std(),
+        "trend_s_per_lap": trend_slope,
+        "trend_direction": "fading" if trend_slope > 0.02 else ("improving" if trend_slope < -0.02 else "stable"),
+    }

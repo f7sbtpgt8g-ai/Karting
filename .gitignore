@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+session_cache/
+*.db
+.streamlit/
+
+sample_data/*
+!sample_data/README.md
+
+tests/fixtures/synthetic_session.tsv
