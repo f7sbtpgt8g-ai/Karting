@@ -21,7 +21,7 @@ import streamlit as st
 from telemetry.comparison import cross_session_delta_trace, session_progression
 from telemetry.corners import assign_segments, build_reference_segments, lap_gps_trace
 from telemetry.delta import delta_time_trace, segment_times_for_lap, theoretical_best_lap
-from telemetry.focus_areas import blended_top_recommendations, recurring_weaknesses, top_focus_areas
+from telemetry.focus_areas import blended_top_recommendations, recurring_weaknesses, time_loss_per_segment, top_focus_areas
 from telemetry.laps import (
     clean_lap_table,
     detect_anomalous_laps,
@@ -356,11 +356,31 @@ st.caption(f"Analyzing lap {analyzed_lap} · {active_label}")
 if speed_is_estimated:
     st.caption("ℹ️ This export doesn't populate GPS Speed directly -- speed is estimated from GPS Distance instead. Treat speed-based figures as estimates, not direct measurements.")
 
+# Full per-segment breakdown -- the Top 3 cards below are just the highest
+# few rows of this. The headline "available" delta is derived from the SAME
+# table (its own sum), not from the device's raw best-lap-time minus
+# theoretical-best, so the number here and the sum of the breakdown chart
+# below always agree exactly -- they're the same computation, not two
+# independent ones that happen to be close.
+full_breakdown = time_loss_per_segment(lap_segment_times, best_segment_times)
+segment_based_available_s = full_breakdown["time_loss_s"].sum()
+device_measured_gap_s = summary["best_lap_s"] - theoretical_best_s
+
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Best lap", f"{summary['best_lap_s']:.2f}s")
-col2.metric("Theoretical best", f"{theoretical_best_s:.2f}s", delta=f"-{summary['best_lap_s'] - theoretical_best_s:.2f}s available", delta_color="inverse")
+col2.metric("Theoretical best", f"{theoretical_best_s:.2f}s", delta=f"-{segment_based_available_s:.2f}s available", delta_color="inverse")
 col3.metric("Consistency (std dev)", f"{laps['lap_time_s'].std():.2f}s")
 col4.metric("Clean laps", f"{len(clean)} / {len(laps)}")
+
+interpolation_residual_s = device_measured_gap_s - segment_based_available_s
+if abs(interpolation_residual_s) > 0.03:
+    st.caption(
+        f"ℹ️ The device's own lap clock puts the gap to theoretical best at {device_measured_gap_s:.2f}s; "
+        f"the segment-by-segment breakdown below accounts for {segment_based_available_s:.2f}s of that. "
+        f"The remaining {interpolation_residual_s:.2f}s is GPS-distance interpolation error at each segment "
+        "boundary (small per-boundary rounding, compounding across many corners), not a missed opportunity "
+        "hiding somewhere -- every segment is already listed below."
+    )
 
 focus_areas = blended_top_recommendations(
     active_session, analyzed_lap, segments, lap_segment_times, best_segment_times, setup_suggestions, n=3
@@ -369,6 +389,7 @@ focus_areas = blended_top_recommendations(
 if not focus_areas:
     st.success("No significant time loss detected vs. your theoretical best in this lap -- nice and consistent!")
 else:
+    n_setup_cards = sum(1 for a in focus_areas if a["kind"] == "setup")
     cards = st.columns(len(focus_areas))
     for i, (col, area) in enumerate(zip(cards, focus_areas), start=1):
         with col:
@@ -382,6 +403,31 @@ else:
                 st.metric("Time available", f"{area['time_loss_s']:.2f}s")
                 st.write(area["coaching_note"])
                 st.caption(f"Cause (inferred): {area['cause'].replace('_', ' ')}")
+    if n_setup_cards:
+        st.caption(
+            f"Note: {n_setup_cards} of the {len(focus_areas)} card(s) above is a session-wide setup issue, not "
+            "a per-corner time value -- it doesn't count toward the seconds total below. See the full breakdown "
+            "for every corner's individual gap."
+        )
+
+with st.expander(f"Full path to theoretical best — all {len(full_breakdown)} segments (sums to -{segment_based_available_s:.2f}s above)", expanded=True):
+    st.caption("Every segment on this lap, ranked by time available. The Top 3 cards above are just the top rows of this same table.")
+    fig_breakdown = go.Figure()
+    fig_breakdown.add_trace(
+        go.Bar(
+            x=full_breakdown["segment_label"], y=full_breakdown["time_loss_s"],
+            marker_color=["#d62728" if k == "corner" else "#1f77b4" for k in full_breakdown["segment_kind"]],
+        )
+    )
+    fig_breakdown.update_layout(xaxis_title="Segment", yaxis_title="Time available (s)", height=350)
+    st.plotly_chart(fig_breakdown, width='stretch')
+    breakdown_display = full_breakdown[
+        ["segment_label", "segment_kind", "time_loss_s", "time_s_lap", "time_s_best", "best_source_lap"]
+    ].rename(columns={"time_s_lap": "your_time_s", "time_s_best": "best_time_s", "best_source_lap": "best_time_from_lap"})
+    breakdown_display[["time_loss_s", "your_time_s", "best_time_s"]] = breakdown_display[
+        ["time_loss_s", "your_time_s", "best_time_s"]
+    ].round(3)
+    st.dataframe(breakdown_display, width='stretch')
 
 st.divider()
 
