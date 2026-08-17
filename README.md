@@ -59,6 +59,16 @@ pipeline have now both been exercised end-to-end against real telemetry.
   session-restart split, or a stray mistimed reading) -- this was the cause
   of a reported "59s lap that doesn't match the dash" bug. Fixed in
   `telemetry/laps.py::lap_table`.
+- **A too-short first segment could never be merged away.** The
+  short-segment merge pass in `segment_track` only ever merges a segment
+  backward into its predecessor, so the very first segment -- which has no
+  predecessor -- survived regardless of length. Curvature right at the
+  lap-start distance boundary is a common false-corner artifact (no true
+  "previous" sample for the heading-gradient calc there), so this reliably
+  showed up as a bogus few-metre "Corner 1" with a near-zero segment time on
+  real data, found while building cross-session corner comparison. Fixed to
+  fold a too-short first segment forward into the second one instead -- see
+  `telemetry/corners.py::segment_track`.
 
 If you hit a *different* real-world quirk on your own export, the parser
 generally fails loudly (missing expected column) rather than silently
@@ -148,8 +158,9 @@ Areas** headline alongside the usual corner-based time-loss items, rather
 than sitting only in the separate setup section. That headline is the
 landing view, in plain language, before the deeper technical views
 (hover-linked speed/RPM/delta traces + track map, track map, braking zones,
-RPM trace, per-corner entry/apex/exit speed & RPM, peak-power RPM zone
-time, consistency, progression, session/setup history).
+RPM trace, per-corner entry/apex/exit speed & RPM, cross-session corner
+comparison, a what-if gearing simulator, peak-power RPM zone time,
+consistency, progression, session/setup history).
 The multi-session file the tool loads by default automatically selects
 whichever loaded session had the single fastest lap.
 
@@ -256,6 +267,24 @@ just "gear up/down" to avoid ambiguity.
 - **Time in peak-power RPM zone**: what fraction of a lap is spent with RPM
   inside the stated peak-power band, per lap and as a session-wide chart --
   a quick read on whether gearing is keeping the engine on the boil.
+- **Corner Comparison**: pick one corner and see the fastest time anyone's
+  posted through it across *every* loaded session, with entry/apex/exit
+  speed & RPM for the session best and the all-time best, plus how far a
+  chosen lap is from each. Corners are matched across sessions by GPS
+  position (nearest corner within ~40m), not by counting "the Nth corner" --
+  robust to a session detecting a different number of corners than another
+  (see `telemetry/comparison.py::corner_comparison_across_sessions`).
+- **Gearing Simulation**: a what-if for a different front/rear sprocket
+  combination -- re-estimates the RPM and speed trace, and a lap-time
+  delta, built entirely from this session's own telemetry (there's no dyno
+  power curve in this export). It holds braking points and racing line
+  fixed and looks up acceleration at the simulated RPM from a curve fit to
+  this session's own power-on samples; treat the lap-time number as
+  directional, not a guarantee -- particularly once the simulated RPM goes
+  beyond anything the session actually measured, which the UI flags
+  explicitly (see `telemetry/simulation.py` for the method, and the "How
+  this estimate works" expander in the view itself for the same caveats
+  in-context).
 - **Outlier laps**: out-laps, in-laps, and statistical outliers (e.g. a spin
   or a stoppage) are flagged and excluded from best/average stats, but stay
   visible in the lap table for review.

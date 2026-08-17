@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from telemetry.corners import assign_segments, build_reference_segments, compute_curvature, lap_gps_trace
+from telemetry.corners import assign_segments, build_reference_segments, compute_curvature, lap_gps_trace, segment_track
 from telemetry.parser import Session
 
 
@@ -46,6 +46,28 @@ def test_normal_session_does_not_flag_speed_as_estimate(session1):
     # the synthetic fixture has a genuinely populated GPS Speed channel
     trace = lap_gps_trace(session1, 1)
     assert not trace["gps_speed_is_estimate"].any()
+
+
+def test_segment_track_folds_spurious_short_first_segment_forward():
+    """Regression: curvature right at the lap-start distance boundary is a
+    common false-corner artifact (no true "previous" sample for the
+    heading-gradient calc there). The merge-short-segments pass could only
+    ever merge backward, so a short *first* segment had no neighbour to
+    merge into and survived as a bogus few-metre corner regardless of
+    min_segment_length_m -- found via a real session where it showed up as
+    a near-zero-length "Corner 1" with a near-zero segment time. It must
+    now be folded forward into the second segment instead."""
+    # 3m spurious "corner" spike at the very start, then a long straight --
+    # the 3m corner is well under the 8m default minimum segment length.
+    distance = np.concatenate([np.linspace(0, 3, 6), np.linspace(3, 100, 50)])
+    curvature = np.concatenate([np.full(6, 5.0), np.full(50, 0.0)])
+    trace = pd.DataFrame({"lap_distance_m": distance, "curvature": curvature})
+
+    segments = segment_track(trace)
+
+    assert len(segments) == 1
+    assert segments.iloc[0]["kind"] == "straight"
+    assert segments.iloc[0]["start_m"] == 0.0
 
 
 def test_lap_gps_trace_derives_speed_when_native_channel_absent():

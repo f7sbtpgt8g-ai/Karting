@@ -21,7 +21,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 import streamlit.components.v1 as components
 
-from telemetry.comparison import cross_session_delta_trace, session_progression
+from telemetry.comparison import corner_comparison_across_sessions, cross_session_delta_trace, session_progression
 from telemetry.corners import assign_segments, build_reference_segments, lap_gps_trace, segment_midpoints
 from telemetry.delta import delta_time_trace, segment_times_for_lap, theoretical_best_lap
 from telemetry.focus_areas import blended_top_recommendations, recurring_weaknesses, time_loss_per_segment, top_focus_areas
@@ -45,6 +45,12 @@ from telemetry.metrics import (
 from telemetry.parser import Session, load_sessions
 from telemetry.setup_config import KartSetup
 from telemetry.setup_engine import all_setup_suggestions
+from telemetry.simulation import (
+    build_accel_rpm_curve,
+    estimate_lap_time_delta,
+    fit_speed_rpm_scale,
+    simulate_gearing_change,
+)
 from telemetry.storage import SessionLibrary
 
 st.set_page_config(page_title="Karting Telemetry", layout="wide", page_icon="🏎️")
@@ -171,6 +177,45 @@ def compute_session_top_focus_areas_cached(_session: Session, _key: tuple, clean
     _, best_seg_times = theoretical_best_lap(_session, list(clean_lap_numbers), segs)
     lap_seg_times = segment_times_for_lap(_session, best_lap, segs)
     return top_focus_areas(_session, best_lap, segs, lap_seg_times, best_seg_times, n=3)
+
+
+@st.cache_resource(show_spinner=False)
+def build_segments_and_midpoints_cached(_session: Session, _key: tuple, best_lap: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Per-session segment table + each corner's GPS midpoint, cached by
+    session identity -- the Corner Comparison view needs this for *every*
+    loaded session (not just the active one), so without caching it'd be
+    rebuilt from scratch on every rerun for every session in a
+    multi-session file.
+    """
+    segs = build_reference_segments(_session, best_lap)
+    trace = lap_gps_trace(_session, best_lap)
+    mids = segment_midpoints(trace, segs)
+    return segs, mids
+
+
+@st.cache_resource(show_spinner="Comparing this corner across all loaded sessions...")
+def compute_corner_comparison_cached(
+    _sessions_data: list, cache_key: tuple, reference_lat: float, reference_lon: float
+) -> pd.DataFrame:
+    """Per-lap corner time + entry/apex/exit metrics for one corner, across
+    every loaded session. Looping `lap_metric_trace` over every clean lap
+    of every session is the expensive part (same pattern as
+    `compute_session_top_focus_areas_cached` above) -- caching by
+    (session set, corner location) means re-selecting a previously-viewed
+    corner is instant, and only a genuinely new corner triggers the full
+    recompute.
+    """
+    return corner_comparison_across_sessions(_sessions_data, reference_lat, reference_lon)
+
+
+@st.cache_resource(show_spinner=False)
+def fit_speed_rpm_scale_cached(_session: Session, _key: tuple, clean_lap_numbers: tuple) -> float | None:
+    return fit_speed_rpm_scale(_session, list(clean_lap_numbers))
+
+
+@st.cache_resource(show_spinner=False)
+def build_accel_rpm_curve_cached(_session: Session, _key: tuple, clean_lap_numbers: tuple) -> pd.DataFrame:
+    return build_accel_rpm_curve(_session, list(clean_lap_numbers))
 
 
 # ---------------------------------------------------------------------------
@@ -585,7 +630,10 @@ st.divider()
 
 selected_view = st.radio(
     "View",
-    ["Lap Times", "Speed & Delta", "Track Map", "Braking / RPM", "Consistency", "Progression", "Kart Setup", "History"],
+    [
+        "Lap Times", "Speed & Delta", "Track Map", "Braking / RPM", "Corner Comparison",
+        "Gearing Simulation", "Consistency", "Progression", "Kart Setup", "History",
+    ],
     horizontal=True,
     label_visibility="collapsed",
 )
@@ -744,6 +792,220 @@ elif selected_view == "Braking / RPM":
     fig_band.add_trace(go.Bar(x=band_summary["lap_number"], y=band_summary["fraction_in_band"] * 100))
     fig_band.update_layout(xaxis_title="Lap", yaxis_title="% of lap in peak-power band", height=350)
     st.plotly_chart(fig_band, width='stretch')
+
+# --- Corner Comparison ---
+elif selected_view == "Corner Comparison":
+    st.subheader("Corner comparison")
+    corner_options = segments.loc[segments["kind"] == "corner", "label"].tolist()
+    if not corner_options:
+        st.info("No corners detected in this session's reference lap.")
+    else:
+        st.caption(
+            "Compares one corner across every loaded session, matched by GPS position (not just order), "
+            "so it stays correct even when a session detects a different number of corners than this one."
+        )
+        selected_corner_label = st.selectbox("Corner to analyze", corner_options, key="corner_cmp_select")
+        compare_lap = st.selectbox(
+            "Lap to compare (from the active session)", clean_lap_numbers,
+            index=clean_lap_numbers.index(analyzed_lap) if analyzed_lap in clean_lap_numbers else 0,
+            key="corner_cmp_lap",
+        )
+
+        active_midpoints = segment_midpoints(_best_lap_trace, segments)
+        ref_row = active_midpoints[active_midpoints["segment_label"] == selected_corner_label].iloc[0]
+        reference_lat, reference_lon = float(ref_row["mid_lat"]), float(ref_row["mid_lon"])
+
+        sessions_data = []
+        for label, s in all_sessions:
+            s_laps = clean_lap_table(compute_clean_laps(s))
+            if s_laps.empty:
+                continue
+            s_clean_nums = s_laps["lap_number"].tolist()
+            s_best_lap = int(s_laps.loc[s_laps["lap_time_s"].idxmin(), "lap_number"])
+            s_segments, s_midpoints = build_segments_and_midpoints_cached(s, session_cache_key(s), s_best_lap)
+            sessions_data.append((label, s, s_segments, s_midpoints, s_clean_nums))
+
+        cache_key = tuple(session_cache_key(s) for _, s in all_sessions) + (round(reference_lat, 6), round(reference_lon, 6))
+        comparison_df = compute_corner_comparison_cached(sessions_data, cache_key, reference_lat, reference_lon)
+
+        if comparison_df.empty:
+            st.info("No data available for this corner -- it may not exist in enough loaded sessions.")
+        else:
+            metric_cols = ["corner_time_s", "entry_speed_kmh", "entry_rpm", "apex_speed_kmh", "apex_rpm", "exit_speed_kmh", "exit_rpm"]
+
+            all_time_best_row = comparison_df.loc[comparison_df["corner_time_s"].idxmin()]
+            session_rows = comparison_df[comparison_df["session_label"] == active_label]
+            session_best_row = session_rows.loc[session_rows["corner_time_s"].idxmin()] if not session_rows.empty else None
+            selected_candidates = session_rows[session_rows["lap_number"] == compare_lap]
+            selected_row = selected_candidates.iloc[0] if not selected_candidates.empty else None
+
+            if selected_row is None:
+                st.info(f"Lap {compare_lap} has no data for this corner (likely an outlier lap or missing GPS coverage there).")
+            else:
+                gain_vs_session_best = selected_row["corner_time_s"] - (session_best_row["corner_time_s"] if session_best_row is not None else float("nan"))
+                gain_vs_all_time_best = selected_row["corner_time_s"] - all_time_best_row["corner_time_s"]
+
+                c1, c2 = st.columns(2)
+                c1.metric(
+                    "Potential gain vs. session best",
+                    f"{gain_vs_session_best:.3f}s" if pd.notna(gain_vs_session_best) else "n/a",
+                )
+                c2.metric(
+                    "Potential gain vs. all-time best",
+                    f"{gain_vs_all_time_best:.3f}s",
+                    help=f"All-time best from {all_time_best_row['session_label']}, lap {int(all_time_best_row['lap_number'])}.",
+                )
+
+                table_rows = {
+                    f"Lap {compare_lap} (selected)": selected_row[metric_cols],
+                    f"Session best (lap {int(session_best_row['lap_number'])})" if session_best_row is not None else "Session best": (
+                        session_best_row[metric_cols] if session_best_row is not None else pd.Series({c: np.nan for c in metric_cols})
+                    ),
+                    f"All-time best ({all_time_best_row['session_label']}, lap {int(all_time_best_row['lap_number'])})": all_time_best_row[metric_cols],
+                }
+                comparison_table = pd.DataFrame(table_rows).T
+                comparison_table = comparison_table.round(
+                    {"corner_time_s": 3, "entry_speed_kmh": 1, "entry_rpm": 0, "apex_speed_kmh": 1, "apex_rpm": 0, "exit_speed_kmh": 1, "exit_rpm": 0}
+                )
+                st.dataframe(comparison_table, width='stretch')
+
+            st.subheader(f"Where {selected_corner_label} is on track")
+            corner_row = segments[segments["label"] == selected_corner_label].iloc[0]
+            fig_where = go.Figure()
+            fig_where.add_trace(
+                go.Scatter(
+                    x=_best_lap_trace["Longitude"], y=_best_lap_trace["Latitude"], mode="lines",
+                    line=dict(color="lightgray", width=2), hoverinfo="skip", showlegend=False,
+                )
+            )
+            in_corner = _best_lap_trace[
+                (_best_lap_trace["lap_distance_m"] >= corner_row["start_m"]) & (_best_lap_trace["lap_distance_m"] < corner_row["end_m"])
+            ]
+            fig_where.add_trace(
+                go.Scatter(
+                    x=in_corner["Longitude"], y=in_corner["Latitude"], mode="lines",
+                    line=dict(color="#d62728", width=5), hoverinfo="skip", showlegend=False,
+                )
+            )
+            fig_where.update_layout(xaxis_title="Longitude", yaxis_title="Latitude", height=400, yaxis=dict(scaleanchor="x"))
+            st.plotly_chart(fig_where, width='stretch')
+
+            with st.expander(f"All laps analyzed for {selected_corner_label} ({len(comparison_df)} rows across {comparison_df['session_label'].nunique()} session(s))"):
+                st.dataframe(comparison_df.sort_values("corner_time_s"), width='stretch')
+
+# --- Gearing Simulation ---
+elif selected_view == "Gearing Simulation":
+    st.subheader("Gearing change simulation")
+    st.caption(
+        "Re-estimates RPM, speed, and lap time for a different front/rear sprocket combination, built "
+        "entirely from this session's own telemetry -- there's no dyno power curve in this data. Braking "
+        "points and racing line are held fixed; only the engine's RPM at a given speed changes, and the "
+        "acceleration this session actually showed at that RPM. Treat the lap-time number as a directional "
+        "estimate, not a guarantee -- see \"How this estimate works\" below."
+    )
+
+    sim_lap = st.selectbox("Lap to simulate", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="sim_lap")
+    c1, c2 = st.columns(2)
+    rear_delta = c1.number_input(
+        "Δ rear sprocket teeth", value=1, step=1,
+        help="Positive = add teeth (raises RPM everywhere, lowers top speed). Negative = remove teeth.",
+    )
+    front_delta = c2.number_input("Δ front (clutch) teeth", value=0, step=1)
+
+    current_front = setup.gearing.front_teeth or 10
+    current_rear = setup.gearing.rear_teeth or 80
+    new_front = max(current_front + front_delta, 1)
+    new_rear = max(current_rear + rear_delta, 1)
+
+    if rear_delta == 0 and front_delta == 0:
+        st.info("Set a tooth change above to simulate its effect (defaults to +1 rear tooth).")
+    else:
+        speed_rpm_scale = fit_speed_rpm_scale_cached(active_session, session_cache_key(active_session), tuple(clean_lap_numbers))
+        accel_curve = build_accel_rpm_curve_cached(active_session, session_cache_key(active_session), tuple(clean_lap_numbers))
+
+        if speed_rpm_scale is None or accel_curve.empty:
+            st.warning("Not enough RPM / speed / G-force data in this session to build a gearing simulation.")
+        else:
+            sim_trace = simulate_gearing_change(active_session, sim_lap, setup, rear_delta, front_delta, speed_rpm_scale, accel_curve)
+            if sim_trace.empty:
+                st.warning("Couldn't build a simulated trace for this lap (missing GPS/RPM data).")
+            else:
+                actual_lap_time_s = float(laps.loc[laps["lap_number"] == sim_lap, "lap_time_s"].iloc[0])
+                delta_result = estimate_lap_time_delta(sim_trace, actual_lap_time_s)
+                delta_s = delta_result["delta_s"]
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Current ratio", f"{current_rear}/{current_front} = {current_rear / current_front:.3f}")
+                c2.metric("Simulated ratio", f"{new_rear}/{new_front} = {new_rear / new_front:.3f}")
+                c3.metric("Estimated lap time", f"{delta_result['sim_lap_time_s']:.2f}s", delta=f"{delta_s:+.2f}s", delta_color="inverse")
+
+                max_sim_rpm = sim_trace["rpm_sim"].max()
+                extrapolated = pd.notna(max_sim_rpm) and not accel_curve.empty and max_sim_rpm > accel_curve["rpm_bin_center"].max()
+                beats_theoretical_best = delta_result["sim_lap_time_s"] < theoretical_best_s
+                if extrapolated or beats_theoretical_best:
+                    warning_lines = []
+                    if extrapolated:
+                        warning_lines.append(
+                            f"Simulated RPM reaches {max_sim_rpm:.0f}, above the {accel_curve['rpm_bin_center'].max():.0f} RPM "
+                            "this session actually reached. That part of the estimate assumes acceleration "
+                            "capability stays the same as the highest RPM this session ever measured -- a real "
+                            "engine's acceleration typically falls off as it approaches its rev limiter, which "
+                            "this simulation has no way to know about from data that never reached there, so the "
+                            "estimated gain above is likely optimistic."
+                        )
+                    if beats_theoretical_best:
+                        warning_lines.append(
+                            f"The estimated lap time ({delta_result['sim_lap_time_s']:.2f}s) is faster than this "
+                            f"session's theoretical best ({theoretical_best_s:.2f}s, the sum of the best-ever "
+                            "segment across every clean lap) -- a strong sign this particular estimate is "
+                            "overstated, most likely for the extrapolation reason above."
+                        )
+                    st.warning(" ".join(warning_lines))
+
+                fig_rpm = go.Figure()
+                fig_rpm.add_trace(go.Scatter(x=sim_trace["distance_m"], y=sim_trace["rpm_actual"], mode="lines", name="Current gearing", line=dict(color="#1f77b4")))
+                fig_rpm.add_trace(go.Scatter(x=sim_trace["distance_m"], y=sim_trace["rpm_sim"], mode="lines", name="Simulated gearing", line=dict(color="#d62728")))
+                fig_rpm.add_hrect(y0=setup.peak_power_rpm_low, y1=setup.peak_power_rpm_high, fillcolor="green", opacity=0.1, line_width=0)
+                fig_rpm.update_layout(xaxis_title="Distance (m)", yaxis_title="RPM", height=380, title="RPM: current vs. simulated gearing")
+                st.plotly_chart(fig_rpm, width='stretch')
+
+                fig_speed = go.Figure()
+                fig_speed.add_trace(go.Scatter(x=sim_trace["distance_m"], y=sim_trace["speed_kmh_actual"], mode="lines", name="Current gearing", line=dict(color="#1f77b4")))
+                fig_speed.add_trace(go.Scatter(x=sim_trace["distance_m"], y=sim_trace["speed_kmh_sim"], mode="lines", name="Simulated gearing", line=dict(color="#d62728")))
+                fig_speed.update_layout(xaxis_title="Distance (m)", yaxis_title="Speed (km/h)", height=380, title="Speed: current vs. simulated gearing")
+                st.plotly_chart(fig_speed, width='stretch')
+
+                band = (setup.peak_power_rpm_low, setup.peak_power_rpm_high)
+                actual_in_band = sim_trace["rpm_actual"].between(*band).mean()
+                sim_in_band = sim_trace["rpm_sim"].between(*band).mean()
+                c1, c2 = st.columns(2)
+                c1.metric("Time in peak-power band (current)", f"{actual_in_band:.0%}")
+                c2.metric("Time in peak-power band (simulated)", f"{sim_in_band:.0%}", delta=f"{(sim_in_band - actual_in_band) * 100:+.0f}pp")
+
+                with st.expander("How this estimate works, and what it can't account for"):
+                    st.markdown(
+                        "- **RPM** at each point is rescaled by the ratio change: engine RPM = axle RPM × "
+                        "(rear teeth / front teeth), and axle RPM only depends on road speed and tyre size, "
+                        "not gearing -- so a ratio change scales RPM at any given speed directly.\n"
+                        "- **Acceleration** at each simulated RPM is looked up from a curve built from this "
+                        "session's own power-on samples (RPM vs. longitudinal G), used as a stand-in for a "
+                        "torque/power curve, which the export doesn't provide.\n"
+                        "- **Speed** is then re-integrated forward through each power-on zone using that "
+                        "looked-up acceleration, so a change in accel capability at the new RPM changes the "
+                        "simulated speed for the rest of the straight -- but braking points and coast-down "
+                        "phases replay the *actual* recorded deceleration unchanged, since gearing doesn't "
+                        "affect brake bite.\n"
+                        "- This assumes the same racing line, braking points, and driver inputs as the lap "
+                        "being simulated, and that the accel-vs-RPM relationship itself doesn't shift with "
+                        "the new gearing (traction, wheelspin, and engine response can all change a little in "
+                        "reality). Treat the lap-time number as directional, not a guarantee.\n"
+                        "- **RPM beyond what this session ever measured is extrapolated flat** -- the "
+                        "acceleration curve simply repeats its highest-measured-RPM value rather than modeling "
+                        "any fall-off, since there's no data to show what fall-off looks like. A real engine "
+                        "generally loses acceleration as it nears its rev limiter, so any part of the estimate "
+                        "relying on RPM above the session's measured range (flagged above when it happens) is "
+                        "the most likely to be optimistic."
+                    )
 
 # --- Consistency ---
 elif selected_view == "Consistency":

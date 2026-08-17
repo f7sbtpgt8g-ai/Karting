@@ -180,6 +180,19 @@ def segment_track(
         else:
             merged.append((start, end, kind))
 
+    # The very first segment has no *previous* neighbour to merge into (the
+    # loop above only ever merges backward), so a too-short first segment
+    # survives regardless of min_segment_length_m -- fold it forward into
+    # the second segment instead. This matters in practice: curvature right
+    # at the lap-start distance boundary is a common false-corner artifact
+    # (the heading-gradient calculation has no true "previous" sample to
+    # work from there), and left unmerged it shows up as a bogus few-metre
+    # "Corner 1" with a near-zero segment time.
+    while len(merged) > 1 and (merged[0][1] - merged[0][0]) < min_segment_length_m:
+        _, next_end, next_kind = merged[1]
+        merged[1] = (merged[0][0], next_end, next_kind)
+        merged.pop(0)
+
     rows = []
     corner_i, straight_i = 0, 0
     for start, end, is_corner_seg in merged:
