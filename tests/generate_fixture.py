@@ -196,6 +196,14 @@ def generate_session_rows(lap_specs, start_date, start_time, session_time_offset
             return np.interp(at, lap["t"], lap[field])
 
         def emit(t_in_lap, values: dict):
+            # A channel's own sample time (some have a phase offset, e.g.
+            # rpm_unf_times/+0.003, temp_times/+0.05) must never be allowed
+            # to land at or past this lap's own duration -- otherwise its
+            # absolute Session Time can fall chronologically after the next
+            # lap has already started while the row still carries this
+            # lap's (now stale) Lap Number, fragmenting lap segmentation.
+            if t_in_lap < 0 or t_in_lap >= lap_duration:
+                return
             row = {c: "" for c in COLUMNS}
             row["Start Date"] = start_date
             row["Start Time"] = start_time
@@ -208,8 +216,6 @@ def generate_session_rows(lap_specs, start_date, start_time, session_time_offset
         for tt in rpm_times:
             emit(tt, {"RPM": round(float(interp("rpm", tt)), 3)})
         for tt in rpm_unf_times:
-            if tt > lap_duration:
-                continue
             emit(tt, {"RPM unfiltered": round(float(interp("rpm_unfiltered", tt)), 3)})
         for tt in gps_times:
             emit(

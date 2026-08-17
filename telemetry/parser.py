@@ -178,18 +178,32 @@ class Session:
         return out.reset_index(drop=True)
 
 
+
+# A genuine logger restart drops Session Time back to ~0 from wherever the
+# previous run had reached -- a jump of seconds at minimum. Rows within a
+# single continuous session can still be a few milliseconds out of exact
+# chronological order (different channels are buffered/flushed
+# independently), so the threshold has to sit well above that jitter or
+# ordinary rows get misread as new sessions, fragmenting one real session
+# into many and corrupting lap segmentation downstream.
+SESSION_RESET_MIN_DROP_S = 1.0
+SESSION_RESET_MAX_POST_VALUE_S = 5.0
+
+
 def split_sessions(df: pd.DataFrame, source_file: str = "") -> list[Session]:
     """Split a raw dataframe into distinct logger sessions.
 
     Unipro resets both `Lap Number` and `Session Time` to 0 when the logger
-    is stopped and restarted, so a drop in `session_time_s` (session time
-    going backwards) marks a new session boundary.
+    is stopped and restarted. A session boundary is a `session_time_s` drop
+    of at least `SESSION_RESET_MIN_DROP_S`, landing back near zero
+    (below `SESSION_RESET_MAX_POST_VALUE_S`) -- both conditions together
+    distinguish an actual restart from ordinary row-ordering jitter.
     """
     if df.empty:
         return []
 
     time_diff = df["session_time_s"].diff()
-    reset_mask = time_diff < -1e-6
+    reset_mask = (time_diff < -SESSION_RESET_MIN_DROP_S) & (df["session_time_s"] < SESSION_RESET_MAX_POST_VALUE_S)
     reset_mask.iloc[0] = False
     boundaries = [0] + df.index[reset_mask].tolist() + [len(df)]
 

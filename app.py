@@ -188,7 +188,7 @@ with tabs[0]:
     annotated = lap_time_with_deltas(laps, personal_best_s=pb_across_loaded)
     display_cols = ["lap_number", "lap_time_s", "delta_to_best_s", "delta_to_average_s", "delta_to_personal_best_s", "is_outlier", "outlier_reason", "likely_incident"]
     display_cols = [c for c in display_cols if c in annotated.columns]
-    st.dataframe(annotated[display_cols], use_container_width=True)
+    st.dataframe(annotated[display_cols], width='stretch')
     st.caption("Rows flagged `is_outlier` are excluded from best/average stats above but shown here for review.")
 
 # --- Speed & Delta ---
@@ -200,7 +200,7 @@ with tabs[1]:
         trace = lap_gps_trace(active_session, lap_no)
         fig.add_trace(go.Scatter(x=trace["lap_distance_m"], y=trace["GPS Speed"], mode="lines", name=f"Lap {lap_no}"))
     fig.update_layout(xaxis_title="Distance (m)", yaxis_title="GPS Speed (km/h)", height=400)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     st.subheader("Delta-time trace vs. reference lap")
     reference_lap = st.selectbox("Reference lap", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="ref_lap_delta")
@@ -212,7 +212,7 @@ with tabs[1]:
         fig2.add_trace(go.Scatter(x=dt["distance_m"], y=dt["delta_s"], mode="lines", name=f"Lap {lap_no} vs {reference_lap}"))
     fig2.add_hline(y=0, line_dash="dash", line_color="gray")
     fig2.update_layout(xaxis_title="Distance (m)", yaxis_title="Delta (s) — positive = time lost", height=400)
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig2, width='stretch')
     st.caption("Positive delta = slower than the reference lap at that point on track; negative = faster.")
 
 # --- G-G Diagram ---
@@ -231,7 +231,7 @@ with tabs[2]:
         )
     )
     fig3.update_layout(xaxis_title="Lateral G", yaxis_title="Longitudinal G", height=500, xaxis=dict(scaleanchor="y"))
-    st.plotly_chart(fig3, use_container_width=True)
+    st.plotly_chart(fig3, width='stretch')
     st.caption("Points farther from the origin use more of the available grip. A tighter, rounder envelope usually means grip is being left on the table somewhere.")
 
 # --- Track Map ---
@@ -263,7 +263,7 @@ with tabs[3]:
         )
     )
     fig4.update_layout(xaxis_title="Longitude", yaxis_title="Latitude", height=600, yaxis=dict(scaleanchor="x"))
-    st.plotly_chart(fig4, use_container_width=True)
+    st.plotly_chart(fig4, width='stretch')
 
 # --- Braking / RPM ---
 with tabs[4]:
@@ -272,7 +272,7 @@ with tabs[4]:
     trace = lap_metric_trace(active_session, brake_lap)
     trace = add_braking_throttle_estimates(trace)
     zones = braking_zones(trace)
-    st.dataframe(zones, use_container_width=True)
+    st.dataframe(zones, width='stretch')
 
     st.subheader("RPM trace")
     fig5 = go.Figure()
@@ -280,11 +280,11 @@ with tabs[4]:
     if trace["RPM unfiltered"].notna().any():
         fig5.add_trace(go.Scatter(x=trace["lap_distance_m"], y=trace["RPM unfiltered"], mode="lines", name="RPM unfiltered", opacity=0.5))
     fig5.update_layout(xaxis_title="Distance (m)", yaxis_title="RPM", height=400)
-    st.plotly_chart(fig5, use_container_width=True)
+    st.plotly_chart(fig5, width='stretch')
 
     st.subheader("Per-segment speed / RPM")
     agg = segment_aggregates(trace, segments)
-    st.dataframe(agg, use_container_width=True)
+    st.dataframe(agg, width='stretch')
 
 # --- Consistency ---
 with tabs[5]:
@@ -296,7 +296,7 @@ with tabs[5]:
     fig6 = go.Figure()
     fig6.add_trace(go.Bar(x=laps["lap_number"], y=laps["lap_time_s"], marker_color=["crimson" if o else "steelblue" for o in laps["is_outlier"]]))
     fig6.update_layout(xaxis_title="Lap", yaxis_title="Lap time (s)", height=400)
-    st.plotly_chart(fig6, use_container_width=True)
+    st.plotly_chart(fig6, width='stretch')
     st.caption("Red bars are flagged as outliers (in/out lap or statistical anomaly) and excluded from best/average stats.")
 
 # --- Progression ---
@@ -306,12 +306,12 @@ with tabs[6]:
         st.info("Load more than one session (or a file with multiple sessions) to see progression across sessions.")
     else:
         progression = session_progression(all_sessions)
-        st.dataframe(progression, use_container_width=True)
+        st.dataframe(progression, width='stretch')
         fig7 = go.Figure()
         fig7.add_trace(go.Scatter(x=progression["session"], y=progression["best_lap_s"], mode="lines+markers", name="Best lap"))
         fig7.add_trace(go.Scatter(x=progression["session"], y=progression["average_lap_s"], mode="lines+markers", name="Average lap"))
         fig7.update_layout(xaxis_title="Session", yaxis_title="Lap time (s)", height=400)
-        st.plotly_chart(fig7, use_container_width=True)
+        st.plotly_chart(fig7, width='stretch')
 
         st.subheader("Recurring weaknesses across loaded sessions")
         per_session_focus = {}
@@ -329,7 +329,7 @@ with tabs[6]:
         if recurring.empty:
             st.info("No segment shows up as a top-3 focus area in more than one loaded session yet.")
         else:
-            st.dataframe(recurring, use_container_width=True)
+            st.dataframe(recurring, width='stretch')
             st.caption("Segments appearing here are a recurring habit across sessions, not a one-off mistake.")
 
 # --- Kart Setup ---
