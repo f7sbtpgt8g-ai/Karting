@@ -35,8 +35,8 @@ pipeline have now both been exercised end-to-end against real telemetry.
   group), and `corners.py::lap_gps_trace` aligns each independently via
   `merge_asof` rather than assuming they share rows. Getting this wrong
   silently produced all-NaN speed and G-force data, which in turn produced
-  empty braking-zone detection and washed-out G-G diagrams -- worth knowing
-  if those look empty on a new export.
+  empty braking-zone detection and speed/G-force charts -- worth knowing if
+  those look empty on a new export.
 - **A `GPS Speed`-truly-absent fallback still exists as a backstop**
   (`corners.py::_derive_speed_from_distance`): if `GPS Speed` really isn't
   populated anywhere (rather than just being on a different cadence, as
@@ -109,7 +109,7 @@ telemetry/            Parsing + analysis core (independently testable, no UI cod
   parser.py            TSV ingestion, session splitting, sparse-channel reconstruction
   laps.py               Lap segmentation, outlier/anomaly detection, consistency
   corners.py            GPS-based corner/straight segmentation
-  metrics.py             Speed/RPM/G traces, braking & throttle inference, GG diagram
+  metrics.py             Speed/RPM/G traces, braking & throttle inference
   delta.py                Theoretical best lap, delta-time-vs-distance trace
   focus_areas.py           Top-3 focus area scoring + coaching notes
   setup_config.py           Kart setup schema (YAML-backed)
@@ -147,9 +147,10 @@ chassis-balance issue, that gets folded straight into the **Top 3 Focus
 Areas** headline alongside the usual corner-based time-loss items, rather
 than sitting only in the separate setup section. That headline is the
 landing view, in plain language, before the deeper technical views
-(speed/RPM/delta traces with a linked track-map position marker, G-G
-diagram, track map, braking zones, per-corner entry/apex/exit speed & RPM,
-peak-power RPM zone time, consistency, progression, session/setup history).
+(speed/RPM/delta traces with a linked track-map position marker, track map,
+braking zones, a hover-linked RPM trace + track map, per-corner
+entry/apex/exit speed & RPM, peak-power RPM zone time, consistency,
+progression, session/setup history).
 The multi-session file the tool loads by default automatically selects
 whichever loaded session had the single fastest lap.
 
@@ -160,6 +161,21 @@ which tab is visible, and once this app's combined per-section content got
 heavy enough, the last couple of tabs stopped rendering silently (no
 error, content just never arrived). The radio approach only executes the
 selected section, which fixed it and is strictly cheaper besides.
+
+The Braking/RPM view's RPM trace and track map are hover-linked to each
+other client-side, not via a Streamlit rerun. `st.plotly_chart` has no way
+to sync hover state between two independently-rendered figures, and driving
+that sync through Python (a rerun per `plotly_hover` event) would mean a
+round-trip for every pixel the mouse crosses. Instead `render_linked_rpm_map`
+in `app.py` renders both charts as plain Plotly.js inside one
+`st.components.v1.html` block and wires the two `plotly_hover` listeners
+together directly in JS, so the highlight is instant either direction and
+nothing on the Python side re-runs until a real widget changes. It loads
+plotly.js from `/app/static/plotly.min.js` -- vendored at startup by
+`ensure_plotlyjs_asset` from whatever `plotly` version is installed, via
+Streamlit's `server.enableStaticServing` (see `.streamlit/config.toml`) --
+rather than a CDN, so it needs no outbound network access and the browser
+can cache it across reruns instead of re-downloading it every time.
 
 ## Exporting the correct TSV from Unipro Analyser
 
@@ -221,13 +237,13 @@ just "gear up/down" to avoid ambiguity.
   positive = slower than the reference at that point, negative = faster, and
   it's the single most direct view for pinpointing exactly where time is
   lost.
-- **G-G diagram**: lateral vs. longitudinal G for one lap. Points farther
-  from the origin use more of the available grip.
 - **Braking zones / RPM trace / per-corner entry-apex-exit table**: labeled
   as *inferred* where relevant -- there's no direct brake or throttle
   channel, so braking zones come from deceleration patterns. The RPM trace
-  shades the peak-power band, and the per-corner table breaks out speed and
-  RPM at each corner's entry, apex (minimum-speed point), and exit.
+  shades the peak-power band and is hover-linked to a track map next to it
+  (see below) -- hover either one to see the matching point on the other,
+  no manual slider-dragging needed. The per-corner table breaks out speed
+  and RPM at each corner's entry, apex (minimum-speed point), and exit.
 - **Time in peak-power RPM zone**: what fraction of a lap is spent with RPM
   inside the stated peak-power band, per lap and as a session-wide chart --
   a quick read on whether gearing is keeping the engine on the boil.

@@ -8,6 +8,7 @@ the `telemetry` package so it stays independently testable and reusable
 from __future__ import annotations
 
 import io
+import json
 import os
 import tempfile
 
@@ -15,8 +16,10 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import yaml
+from plotly.offline import get_plotlyjs
 from plotly.subplots import make_subplots
 import streamlit as st
+import streamlit.components.v1 as components
 
 from telemetry.comparison import cross_session_delta_trace, session_progression
 from telemetry.corners import assign_segments, build_reference_segments, lap_gps_trace, segment_midpoints
@@ -34,7 +37,6 @@ from telemetry.metrics import (
     add_braking_throttle_estimates,
     braking_zones,
     consistency_stats,
-    gg_diagram_points,
     lap_metric_trace,
     rpm_band_summary_across_laps,
     segment_aggregates,
@@ -49,6 +51,25 @@ st.set_page_config(page_title="Karting Telemetry", layout="wide", page_icon="ðŸ
 
 DEFAULT_TSV_PATH = os.path.join(os.path.dirname(__file__), "sample_data", "default_session.tsv")
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "sessions.db")
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+PLOTLYJS_PATH = os.path.join(STATIC_DIR, "plotly.min.js")
+
+
+def ensure_plotlyjs_asset() -> None:
+    """Vendor the exact plotly.js bundle shipped with the installed `plotly`
+    package as a static file (served by Streamlit at /app/static/... once
+    `server.enableStaticServing` is on -- see .streamlit/config.toml), so the
+    hand-rolled hover-linked chart on the Braking/RPM view can load it via a
+    normal cached <script src>, instead of re-embedding several MB of JS
+    inline on every rerun."""
+    if os.path.exists(PLOTLYJS_PATH):
+        return
+    os.makedirs(STATIC_DIR, exist_ok=True)
+    with open(PLOTLYJS_PATH, "w") as f:
+        f.write(get_plotlyjs())
+
+
+ensure_plotlyjs_asset()
 
 
 @st.cache_resource(show_spinner=False)
@@ -153,6 +174,132 @@ def compute_session_top_focus_areas_cached(_session: Session, _key: tuple, clean
     _, best_seg_times = theoretical_best_lap(_session, list(clean_lap_numbers), segs)
     lap_seg_times = segment_times_for_lap(_session, best_lap, segs)
     return top_focus_areas(_session, best_lap, segs, lap_seg_times, best_seg_times, n=3)
+
+
+# ---------------------------------------------------------------------------
+# Linked RPM trace + track map (Braking/RPM view)
+# ---------------------------------------------------------------------------
+
+def render_linked_rpm_map(trace: pd.DataFrame, setup: KartSetup) -> None:
+    """RPM trace and track map, hover-linked entirely client-side: hovering
+    either chart moves a marker to the matching point on the other one, with
+    no Streamlit rerun per mouse move.
+
+    Streamlit has no built-in way to sync hover state between two
+    independently-rendered `st.plotly_chart` figures, and driving the sync
+    through a Python rerun on every `plotly_hover` event would mean a
+    round-trip for every pixel the mouse crosses. Instead this renders both
+    charts as plain Plotly.js inside one `components.html` block and wires
+    the hover listeners together in JS, so the highlight is instant and the
+    Python side is untouched until a real widget (e.g. the lap selector)
+    changes. Loads plotly.js from /app/static/plotly.min.js (vendored by
+    `ensure_plotlyjs_asset`) rather than a CDN, both so it works with no
+    outbound network access and so the browser can cache it across reruns.
+    """
+    clean = trace.dropna(subset=["lap_distance_m"]).sort_values("lap_distance_m").reset_index(drop=True)
+
+    def _col(name: str, decimals: int | None = None) -> list:
+        s = clean[name] if name in clean.columns else pd.Series([None] * len(clean))
+        s = s.astype(object).where(s.notna(), None)
+        if decimals is not None:
+            s = s.map(lambda v: round(v, decimals) if v is not None else None)
+        return s.tolist()
+
+    payload = {
+        "dist": _col("lap_distance_m", 1),
+        "rpm": _col("RPM", 0),
+        "rpmRaw": _col("RPM unfiltered", 0),
+        "lat": _col("Latitude", 6),
+        "lon": _col("Longitude", 6),
+        "speed": _col("GPS Speed", 1),
+        "peakLow": setup.peak_power_rpm_low,
+        "peakHigh": setup.peak_power_rpm_high,
+    }
+    has_raw_rpm = any(v is not None for v in payload["rpmRaw"])
+
+    html = f"""
+<div style="display:flex; gap:12px; width:100%; font-family:inherit;">
+  <div id="rpmDiv" style="flex:1 1 58%; min-width:0;"></div>
+  <div id="mapDiv" style="flex:1 1 42%; min-width:0;"></div>
+</div>
+<script src="/app/static/plotly.min.js"></script>
+<script>
+(function() {{
+  var data = {json.dumps(payload)};
+  var hasRaw = {str(has_raw_rpm).lower()};
+
+  var rpmTraces = [{{
+    x: data.dist, y: data.rpm, mode: "lines", name: "RPM",
+    line: {{color: "#1f77b4"}}
+  }}];
+  if (hasRaw) {{
+    rpmTraces.push({{
+      x: data.dist, y: data.rpmRaw, mode: "lines", name: "RPM unfiltered",
+      line: {{color: "#1f77b4"}}, opacity: 0.35
+    }});
+  }}
+  var validDist = data.dist.filter(function(v) {{ return v !== null; }});
+  var maxDist = validDist.length ? Math.max.apply(null, validDist) : 0;
+  var rpmLayout = {{
+    margin: {{t: 20, r: 10, l: 55, b: 40}},
+    height: 420,
+    xaxis: {{title: "Distance (m)"}},
+    yaxis: {{title: "RPM"}},
+    shapes: [{{
+      type: "rect", xref: "x", yref: "y",
+      x0: 0, x1: maxDist, y0: data.peakLow, y1: data.peakHigh,
+      fillcolor: "green", opacity: 0.1, line: {{width: 0}}
+    }}],
+    hovermode: "closest",
+    showlegend: hasRaw
+  }};
+
+  var mapTraces = [
+    {{
+      x: data.lon, y: data.lat, mode: "lines",
+      line: {{color: "lightgray", width: 1}}, hoverinfo: "skip", showlegend: false
+    }},
+    {{
+      x: data.lon, y: data.lat, mode: "markers",
+      marker: {{size: 5, color: data.speed, colorscale: "Viridis", showscale: true, colorbar: {{title: "km/h"}}}},
+      showlegend: false, hoverinfo: "skip"
+    }},
+    {{
+      x: [data.lon[0]], y: [data.lat[0]], mode: "markers",
+      marker: {{size: 16, color: "red", line: {{width: 2, color: "white"}}}},
+      showlegend: false, hoverinfo: "skip"
+    }}
+  ];
+  var mapLayout = {{
+    margin: {{t: 20, r: 10, l: 55, b: 40}},
+    height: 420,
+    xaxis: {{title: "Longitude"}},
+    yaxis: {{title: "Latitude", scaleanchor: "x"}},
+    showlegend: false
+  }};
+
+  var rpmDiv = document.getElementById("rpmDiv");
+  var mapDiv = document.getElementById("mapDiv");
+  Plotly.newPlot(rpmDiv, rpmTraces, rpmLayout, {{displayModeBar: false}});
+  Plotly.newPlot(mapDiv, mapTraces, mapLayout, {{displayModeBar: false}});
+
+  function highlightAt(idx) {{
+    if (idx == null || data.lat[idx] == null || data.lon[idx] == null) return;
+    Plotly.restyle(mapDiv, {{x: [[data.lon[idx]]], y: [[data.lat[idx]]]}}, [2]);
+  }}
+
+  rpmDiv.on("plotly_hover", function(evt) {{
+    if (!evt.points || !evt.points.length) return;
+    highlightAt(evt.points[0].pointIndex);
+  }});
+  mapDiv.on("plotly_hover", function(evt) {{
+    if (!evt.points || !evt.points.length) return;
+    highlightAt(evt.points[0].pointIndex);
+  }});
+}})();
+</script>
+"""
+    components.html(html, height=440, scrolling=False)
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +634,7 @@ st.divider()
 
 selected_view = st.radio(
     "View",
-    ["Lap Times", "Speed & Delta", "G-G Diagram", "Track Map", "Braking / RPM", "Consistency", "Progression", "Kart Setup", "History"],
+    ["Lap Times", "Speed & Delta", "Track Map", "Braking / RPM", "Consistency", "Progression", "Kart Setup", "History"],
     horizontal=True,
     label_visibility="collapsed",
 )
@@ -576,25 +723,6 @@ elif selected_view == "Speed & Delta":
             fig.add_vline(x=position_m, line_dash="dot", line_color="black", line_width=1)
             st.plotly_chart(fig, width='stretch')
 
-# --- G-G Diagram ---
-elif selected_view == "G-G Diagram":
-    st.subheader("G-G diagram (friction circle)")
-    gg_lap = st.selectbox("Lap", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="gg_lap")
-    trace = lap_metric_trace(active_session, gg_lap)
-    points = gg_diagram_points(trace)
-    fig3 = go.Figure()
-    fig3.add_trace(
-        go.Scatter(
-            x=points["GPS Lateral Acceleration"],
-            y=points["GPS Longitudinal Acceleration"],
-            mode="markers",
-            marker=dict(size=4, color=points["GPS Speed"], colorscale="Viridis", showscale=True, colorbar=dict(title="km/h")),
-        )
-    )
-    fig3.update_layout(xaxis_title="Lateral G", yaxis_title="Longitudinal G", height=500, xaxis=dict(scaleanchor="y"))
-    st.plotly_chart(fig3, width='stretch')
-    st.caption("Points farther from the origin use more of the available grip. A tighter, rounder envelope usually means grip is being left on the table somewhere.")
-
 # --- Track Map ---
 elif selected_view == "Track Map":
     st.subheader("Track map")
@@ -636,13 +764,8 @@ elif selected_view == "Braking / RPM":
     st.dataframe(zones, width='stretch')
 
     st.subheader("RPM trace")
-    fig5 = go.Figure()
-    fig5.add_trace(go.Scatter(x=trace["lap_distance_m"], y=trace["RPM"], mode="lines", name="RPM"))
-    if trace["RPM unfiltered"].notna().any():
-        fig5.add_trace(go.Scatter(x=trace["lap_distance_m"], y=trace["RPM unfiltered"], mode="lines", name="RPM unfiltered", opacity=0.5))
-    fig5.add_hrect(y0=setup.peak_power_rpm_low, y1=setup.peak_power_rpm_high, fillcolor="green", opacity=0.1, line_width=0)
-    fig5.update_layout(xaxis_title="Distance (m)", yaxis_title="RPM", height=400)
-    st.plotly_chart(fig5, width='stretch')
+    st.caption("Hover either chart to see the matching point on the other -- no need to read off the distance and find it manually.")
+    render_linked_rpm_map(trace, setup)
 
     st.subheader("Per-corner entry / apex / exit speed & RPM")
     agg = segment_aggregates(trace, segments)

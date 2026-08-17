@@ -27,10 +27,6 @@ def main():
 
         page.screenshot(path="/tmp/karting_ui_headline.png", full_page=True)
 
-        page.get_by_role("tab", name="G-G Diagram").click()
-        page.wait_for_timeout(2000)
-        page.screenshot(path="/tmp/karting_ui_gg.png", full_page=True)
-
         page.get_by_role("tab", name="Track Map").click()
         page.wait_for_timeout(2000)
         page.screenshot(path="/tmp/karting_ui_map.png", full_page=True)

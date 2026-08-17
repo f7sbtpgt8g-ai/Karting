@@ -1,0 +1,6 @@
+[server]
+# Needed so the Braking/RPM view's linked hover chart can load the vendored
+# plotly.js bundle from /app/static/plotly.min.js (see ensure_plotlyjs_asset
+# in app.py) as a normal, browser-cached <script src> instead of re-embedding
+# several MB of JS inline in an iframe on every rerun.
+enableStaticServing = true
