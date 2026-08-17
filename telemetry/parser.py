@@ -55,19 +55,31 @@ COLUMNS = [
 # Columns present on essentially every row.
 ALWAYS_ON_COLUMNS = ["Start Date", "Start Time", "Lap Number", "Session Time", "Lap Time"]
 
-# Columns that all update together on the same row (one GPS fix).
+# Columns confirmed to reliably fire together on the same row as the
+# position fix (Latitude non-null implies all of these are too), in both
+# the original sample export and a real second export checked later.
 GPS_FIX_COLUMNS = [
     "Heading",
-    "Vertical Acceleration",
-    "GPS Speed",
     "Horizontal DOP",
     "Latitude",
-    "GPS Lateral Acceleration",
-    "GPS Longitudinal Acceleration",
     "Vertical DOP",
     "Longitude",
     "Positional DOP",
     "Altitude",
+]
+
+# GPS Speed and the G-force channels are GPS-derived too, but on at least
+# one real export they fire on their own independent cadence -- confirmed
+# to *never* share a row with Latitude there, despite the original sample
+# export (a different device/firmware/config) having them co-fire as part
+# of one atomic GPS fix. Treated as a separately-timed channel group and
+# aligned in independently (see corners.py::lap_gps_trace) rather than
+# assumed to share rows with the position fix.
+GPS_MOTION_COLUMNS = [
+    "Vertical Acceleration",
+    "GPS Speed",
+    "GPS Lateral Acceleration",
+    "GPS Longitudinal Acceleration",
 ]
 
 NUMERIC_COLUMNS = [c for c in COLUMNS if c not in ("Start Date", "Start Time")]
@@ -132,7 +144,10 @@ class Session:
         return sub
 
     def gps_fixes(self) -> pd.DataFrame:
-        """Return the rows that carry a full GPS fix (all GPS_FIX_COLUMNS populated)."""
+        """Return the rows that carry a position fix (Latitude and the rest
+        of GPS_FIX_COLUMNS populated). Does NOT include GPS Speed or the
+        G-force channels -- see GPS_MOTION_COLUMNS -- since those aren't
+        guaranteed to share a row with the position fix on every export."""
         key = "__gps_fixes__"
         if key in self.channel_cache:
             return self.channel_cache[key]

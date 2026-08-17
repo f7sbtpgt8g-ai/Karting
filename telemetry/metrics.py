@@ -113,20 +113,38 @@ def _summarize_zone(zone_df: pd.DataFrame) -> dict:
 
 
 def segment_aggregates(trace: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFrame:
-    """Min/max/avg speed and exit RPM per segment for one lap's trace."""
+    """Min/max/avg speed and entry/apex/exit RPM+speed per segment for one
+    lap's trace.
+
+    Entry = first point in the segment (by distance), exit = last point.
+    Apex = the segment's minimum-speed point -- for a corner that's the
+    conventional apex; for a straight it's just wherever the trace reads
+    slowest within it (typically right at entry), included for consistency
+    rather than because "apex" is a meaningful concept on a straight.
+    """
     trace = assign_segments(trace, segments)
     rows = []
     for label, g in trace.groupby("segment_label"):
         if label is None or g.empty:
             continue
+        g = g.sort_values("lap_distance_m")
         kind = g["segment_kind"].iloc[0]
+        entry = g.iloc[0]
+        exit_ = g.iloc[-1]
+        apex = g.loc[g["GPS Speed"].idxmin()] if g["GPS Speed"].notna().any() else None
+
         row = {
             "segment_label": label,
             "segment_kind": kind,
             "min_speed_kmh": g["GPS Speed"].min(),
             "max_speed_kmh": g["GPS Speed"].max(),
             "avg_speed_kmh": g["GPS Speed"].mean(),
-            "exit_rpm": g.sort_values("lap_distance_m")["RPM"].dropna().iloc[-1] if g["RPM"].notna().any() else np.nan,
+            "entry_speed_kmh": entry["GPS Speed"],
+            "entry_rpm": entry["RPM"],
+            "apex_speed_kmh": apex["GPS Speed"] if apex is not None else np.nan,
+            "apex_rpm": apex["RPM"] if apex is not None else np.nan,
+            "exit_speed_kmh": exit_["GPS Speed"],
+            "exit_rpm": exit_["RPM"],
             "lateral_g_std": g["GPS Lateral Acceleration"].std(),
         }
         rows.append(row)
@@ -138,6 +156,45 @@ def gg_diagram_points(trace: pd.DataFrame) -> pd.DataFrame:
     cols = ["GPS Lateral Acceleration", "GPS Longitudinal Acceleration", "lap_distance_m", "GPS Speed"]
     available = [c for c in cols if c in trace.columns]
     return trace[available].dropna(subset=["GPS Lateral Acceleration", "GPS Longitudinal Acceleration"])
+
+
+def time_in_rpm_band(session: Session, lap_number: int, rpm_band: tuple[float, float]) -> dict:
+    """Fraction of a lap's time spent with RPM inside `rpm_band` (the
+    engine's peak-power range).
+
+    Uses the RPM channel's own native samples directly (not the GPS-fix-rate
+    `lap_metric_trace`), so the fraction reflects RPM's full time resolution
+    rather than being coarsened to the ~10Hz GPS update rate.
+    """
+    rpm_series = session.extract_channel("RPM")
+    rpm_series = rpm_series.loc[rpm_series["Lap Number"] == lap_number].sort_values("session_time_s")
+    if len(rpm_series) < 2:
+        return {"time_in_band_s": 0.0, "lap_duration_s": 0.0, "fraction_in_band": float("nan")}
+
+    times = rpm_series["session_time_s"].to_numpy()
+    rpm = rpm_series["RPM"].to_numpy()
+    dt = np.diff(times)
+    # each interval's RPM state is taken from the sample at its start
+    in_band = (rpm[:-1] >= rpm_band[0]) & (rpm[:-1] <= rpm_band[1])
+
+    time_in_band = float(dt[in_band].sum())
+    lap_duration = float(times[-1] - times[0])
+    return {
+        "time_in_band_s": time_in_band,
+        "lap_duration_s": lap_duration,
+        "fraction_in_band": time_in_band / lap_duration if lap_duration > 0 else float("nan"),
+    }
+
+
+def rpm_band_summary_across_laps(session: Session, lap_numbers: list[int], rpm_band: tuple[float, float]) -> pd.DataFrame:
+    """Per-lap time-in-peak-power-band, for the "how much of the lap is
+    spent in the engine's peak-power zone" view."""
+    rows = []
+    for lap_no in lap_numbers:
+        result = time_in_rpm_band(session, lap_no, rpm_band)
+        result["lap_number"] = lap_no
+        rows.append(result)
+    return pd.DataFrame(rows)[["lap_number", "time_in_band_s", "lap_duration_s", "fraction_in_band"]]
 
 
 def consistency_stats(laps: pd.DataFrame) -> dict:

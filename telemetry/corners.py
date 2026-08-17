@@ -16,7 +16,9 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import gaussian_filter1d
 
-from .parser import Session
+from .parser import GPS_MOTION_COLUMNS, Session
+
+MOTION_CHANNEL_MERGE_TOLERANCE_S = 0.2  # covers two independent ~10Hz streams' worst-case nearest-neighbour offset
 
 DEFAULT_CURVATURE_THRESHOLD_DEG_PER_M = 0.8
 DEFAULT_MIN_SEGMENT_LENGTH_M = 8.0
@@ -27,20 +29,69 @@ def _unwrap_heading_deg(heading: np.ndarray) -> np.ndarray:
     return np.degrees(np.unwrap(np.radians(heading)))
 
 
+GPS_SPEED_FALLBACK_SMOOTHING_SIGMA = 3.0
+GPS_SPEED_FALLBACK_MIN_FILL = 0.5  # below this fraction populated, treat the channel as absent
+
+
+def _derive_speed_from_distance(dist: pd.DataFrame, smoothing_sigma: float = GPS_SPEED_FALLBACK_SMOOTHING_SIGMA) -> pd.DataFrame:
+    """Speed (km/h) derived from `GPS Distance`'s own rate of change.
+
+    Confirmed necessary on at least one real export where Latitude/
+    Longitude/Heading are populated on every GPS fix but `GPS Speed` itself
+    is never populated -- a real-world export variation the original format
+    notes didn't anticipate. This is an *estimate*, not a direct
+    measurement, same caveat as the braking/throttle inferences elsewhere;
+    `lap_gps_trace` only falls back to it when the native channel is absent.
+    """
+    d = dist.sort_values("session_time_s")
+    t = d["session_time_s"].to_numpy()
+    s = d["GPS Distance"].to_numpy()
+    if len(t) < 3:
+        return pd.DataFrame({"session_time_s": t, "GPS Speed": np.full(len(t), np.nan)})
+
+    dt = np.diff(t)
+    dt[dt == 0] = np.nan
+    speed_kmh = np.diff(s) / dt * 3.6
+    speed_kmh = np.clip(speed_kmh, 0, None)
+    speed_kmh = gaussian_filter1d(np.nan_to_num(speed_kmh, nan=0.0), sigma=smoothing_sigma)
+    return pd.DataFrame({"session_time_s": t[:-1], "GPS Speed": speed_kmh})
+
+
 def lap_gps_trace(session: Session, lap_number: int) -> pd.DataFrame:
-    """GPS fixes for one lap, with GPS Distance aligned on and normalized to
-    start at 0 for that lap (the export does not document whether
-    `GPS Distance` is per-lap or cumulative, so this normalization makes the
-    result correct either way)."""
+    """GPS fixes for one lap, with GPS Distance, GPS Speed and the G-force
+    channels aligned on, and distance normalized to start at 0 for that lap
+    (the export does not document whether `GPS Distance` is per-lap or
+    cumulative, so this normalization makes the result correct either way).
+
+    GPS Speed / GPS Lateral / GPS Longitudinal / Vertical Acceleration are
+    merged in independently rather than assumed to share a row with the
+    position fix -- confirmed necessary on a real export where they never
+    once shared a row with Latitude despite all being GPS-derived. Falls
+    back to deriving speed from `GPS Distance` if `GPS Speed` turns out not
+    to be populated at all (a further, rarer case) -- flagged via the
+    `gps_speed_is_estimate` column.
+    """
     fixes = session.gps_fixes()
     fixes = fixes.loc[fixes["Lap Number"] == lap_number].sort_values("session_time_s").reset_index(drop=True)
     if fixes.empty:
         return fixes
 
+    for col in GPS_MOTION_COLUMNS:
+        motion = session.extract_channel(col)
+        motion = motion.loc[motion["Lap Number"] == lap_number].sort_values("session_time_s")
+        if motion.empty:
+            fixes[col] = np.nan
+            continue
+        fixes = pd.merge_asof(
+            fixes, motion[["session_time_s", col]], on="session_time_s",
+            direction="nearest", tolerance=MOTION_CHANNEL_MERGE_TOLERANCE_S,
+        )
+
     dist = session.extract_channel("GPS Distance")
     dist = dist.loc[dist["Lap Number"] == lap_number].sort_values("session_time_s")
     if dist.empty:
         fixes["lap_distance_m"] = np.nan
+        fixes["gps_speed_is_estimate"] = False
         return fixes
 
     merged = pd.merge_asof(
@@ -52,6 +103,16 @@ def lap_gps_trace(session: Session, lap_number: int) -> pd.DataFrame:
     )
     base = merged["GPS Distance"].min(skipna=True)
     merged["lap_distance_m"] = merged["GPS Distance"] - base
+
+    merged["gps_speed_is_estimate"] = False
+    if merged["GPS Speed"].notna().mean() < GPS_SPEED_FALLBACK_MIN_FILL and len(dist) >= 3:
+        derived = _derive_speed_from_distance(dist)
+        merged = merged.drop(columns=["GPS Speed"])
+        merged = pd.merge_asof(
+            merged, derived, on="session_time_s", direction="nearest", tolerance=2.0
+        )
+        merged["gps_speed_is_estimate"] = True
+
     return merged
 
 

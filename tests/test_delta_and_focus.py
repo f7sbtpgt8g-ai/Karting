@@ -1,6 +1,6 @@
 from telemetry.corners import build_reference_segments
 from telemetry.delta import delta_time_trace, segment_times_for_lap, theoretical_best_lap
-from telemetry.focus_areas import time_loss_per_segment, top_focus_areas
+from telemetry.focus_areas import blended_top_recommendations, time_loss_per_segment, top_focus_areas
 from telemetry.laps import clean_lap_table, flag_outlier_laps, lap_table
 
 
@@ -64,3 +64,33 @@ def test_time_loss_per_segment_matches_manual_diff(session1):
         - best_segment_times.loc[best_segment_times["segment_label"] == row["segment_label"], "time_s"].iloc[0]
     )
     assert abs(row["time_loss_s"] - manual) < 1e-9
+
+
+def test_blended_recommendations_promotes_medium_confidence_setup_issue(session1):
+    clean_lap_numbers, best_lap = _clean_laps_and_best(session1)
+    segments = build_reference_segments(session1, best_lap)
+    _, best_segment_times = theoretical_best_lap(session1, clean_lap_numbers, segments)
+    lap_segment_times = segment_times_for_lap(session1, best_lap, segments)
+
+    fake_setup_suggestions = [
+        {"area": "gearing", "confidence": "medium", "hypothesis": "over-revving", "suggested_action": "remove a tooth"},
+        {"area": "jetting", "confidence": "low", "hypothesis": "no signal", "suggested_action": None},
+    ]
+    results = blended_top_recommendations(
+        session1, best_lap, segments, lap_segment_times, best_segment_times, fake_setup_suggestions, n=3
+    )
+    assert results[0]["kind"] == "setup"
+    assert results[0]["segment_label"] == "Gearing"
+    # the low-confidence jetting suggestion must not appear at all
+    assert all(r.get("cause") != "jetting" for r in results)
+    assert len(results) <= 3
+
+
+def test_blended_recommendations_falls_back_to_corners_only(session1):
+    clean_lap_numbers, best_lap = _clean_laps_and_best(session1)
+    segments = build_reference_segments(session1, best_lap)
+    _, best_segment_times = theoretical_best_lap(session1, clean_lap_numbers, segments)
+    lap_segment_times = segment_times_for_lap(session1, best_lap, segments)
+
+    results = blended_top_recommendations(session1, best_lap, segments, lap_segment_times, best_segment_times, [], n=3)
+    assert all(r["kind"] == "corner" for r in results)

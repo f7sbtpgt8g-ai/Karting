@@ -58,18 +58,23 @@ def gearing_suggestion(
         "confidence": "medium",
     }
 
+    # Engine RPM = axle RPM * (rear_teeth / front_teeth) for a direct-drive
+    # kart, so to change RPM at a *given* speed you move the ratio, not just
+    # "add a tooth" in whichever direction sounds right: lowering RPM means
+    # lowering the ratio (fewer rear teeth or more front teeth), and raising
+    # RPM means raising it (more rear teeth or fewer front teeth).
     if peak_rpm > high:
         result["hypothesis"] = (
             f"Peak RPM on the longest straight ({peak_rpm:.0f}) is above the assumed peak-power band "
             f"({low}-{high}), suggesting the kart is over-revving there -- likely under-geared."
         )
-        result["suggested_action"] = "Gear up: add a tooth on the rear sprocket (or remove one on the front) to lower RPM at top speed."
+        result["suggested_action"] = "Gear up: remove a tooth from the rear sprocket (or add one to the front) to lower RPM at top speed."
     elif peak_rpm < low:
         result["hypothesis"] = (
             f"Peak RPM on the longest straight ({peak_rpm:.0f}) is below the assumed peak-power band "
             f"({low}-{high}), suggesting the kart isn't reaching peak power before the braking zone -- likely over-geared."
         )
-        result["suggested_action"] = "Gear down: remove a tooth on the rear sprocket (or add one on the front) to reach peak RPM sooner."
+        result["suggested_action"] = "Gear down: add a tooth to the rear sprocket (or remove one from the front) to reach peak RPM sooner."
     else:
         result["hypothesis"] = f"Peak RPM on the longest straight ({peak_rpm:.0f}) sits within the assumed peak-power band -- gearing looks reasonable for this track."
         result["suggested_action"] = None
@@ -215,8 +220,9 @@ def chassis_balance_suggestion(session, clean_lap_numbers: list[int], segments: 
 
 
 def all_setup_suggestions(session, clean_lap_numbers: list[int], segments: pd.DataFrame, setup: KartSetup) -> list[dict]:
+    peak_power_rpm_band = (setup.peak_power_rpm_low, setup.peak_power_rpm_high)
     return [
-        gearing_suggestion(session, clean_lap_numbers, segments, setup),
+        gearing_suggestion(session, clean_lap_numbers, segments, setup, peak_power_rpm_band=peak_power_rpm_band),
         jetting_suggestion(session, clean_lap_numbers),
         tyre_pressure_suggestion(session, clean_lap_numbers, setup),
         chassis_balance_suggestion(session, clean_lap_numbers, segments),

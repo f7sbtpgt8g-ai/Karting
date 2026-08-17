@@ -138,6 +138,57 @@ def _coaching_sentence(segment_label: str, time_loss_s: float, diagnosis: dict) 
     return f"{segment_label}: about {time_loss_s:.2f}s available. {note.capitalize() if note else 'Review this section against your best lap.'}"
 
 
+# Setup suggestions don't carry a directly comparable "seconds available"
+# figure the way a corner time-loss does, but a medium/high-confidence
+# setup mismatch is a session-wide constant (affecting every lap, every
+# corner) rather than a one-off -- worth a guaranteed slot ahead of
+# marginal corner items rather than being left to a separate tab nobody
+# necessarily opens.
+SETUP_SUGGESTION_PRIORITY = {"high": 1_000_000, "medium": 500_000, "low": 0}
+
+
+def blended_top_recommendations(
+    session,
+    analyzed_lap: int,
+    segments: pd.DataFrame,
+    lap_segment_times: pd.DataFrame,
+    best_segment_times: pd.DataFrame,
+    setup_suggestions: list[dict] | None = None,
+    n: int = 3,
+) -> list[dict]:
+    """Top N recommendations, blending corner-based time-loss areas with
+    medium/high-confidence kart setup hypotheses into one ranked list.
+
+    Every returned dict has a `kind` field ("corner" or "setup") so the UI
+    can render them differently -- a setup item has no `time_loss_s` figure,
+    only a `confidence` label.
+    """
+    corner_areas = top_focus_areas(session, analyzed_lap, segments, lap_segment_times, best_segment_times, n=n)
+    for area in corner_areas:
+        area["kind"] = "corner"
+        area["priority"] = area["time_loss_s"]
+
+    setup_areas = []
+    for s in setup_suggestions or []:
+        if s.get("confidence") not in ("medium", "high") or not s.get("suggested_action"):
+            continue
+        setup_areas.append(
+            {
+                "kind": "setup",
+                "segment_label": s["area"].replace("_", " ").title(),
+                "time_loss_s": None,
+                "cause": s["area"],
+                "confidence": s["confidence"],
+                "technical_note": s.get("hypothesis"),
+                "coaching_note": s["suggested_action"],
+                "priority": SETUP_SUGGESTION_PRIORITY[s["confidence"]],
+            }
+        )
+
+    combined = sorted(setup_areas + corner_areas, key=lambda a: a["priority"], reverse=True)
+    return combined[:n]
+
+
 def recurring_weaknesses(per_session_focus: dict[str, list[dict]], min_sessions: int = 2) -> pd.DataFrame:
     """Given {session_label: [top focus area dicts]} across multiple loaded
     sessions, find segments that show up as a top focus area repeatedly --

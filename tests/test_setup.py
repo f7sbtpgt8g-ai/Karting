@@ -31,7 +31,11 @@ def test_gearing_suggestion_flags_over_rev(session1):
 
     setup = KartSetup()
     result = gearing_suggestion(session1, clean_lap_numbers, segments, setup, peak_power_rpm_band=(11500, 13000))
-    # synthetic fixture's top speed (~108 km/h) implies an RPM well above the band
+    # synthetic fixture's top speed (~108 km/h) implies an RPM well above the band,
+    # so the fix must be a *lower* ratio: remove a tooth from the rear (or add to
+    # the front) -- not the reverse, which would raise RPM further.
+    assert "remove a tooth from the rear" in result["suggested_action"]
+    assert "add a tooth" not in result["suggested_action"].split("(")[0]
     assert result["confidence"] in ("low", "medium")
     assert "hypothesis" in result
 

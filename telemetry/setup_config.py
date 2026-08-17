@@ -86,6 +86,12 @@ class TrackSessionContext:
 class KartSetup:
     driver: str | None = None
     class_name: str = "Rotax Senior EVO"
+    # Engine's peak-power RPM band -- a parameter, not a hard-coded constant,
+    # since it varies by engine build/tune. Rotax Senior EVO default is a
+    # reasonable starting point; confirm against the actual engine builder's
+    # spec sheet and adjust here.
+    peak_power_rpm_low: int = 11500
+    peak_power_rpm_high: int = 13000
     gearing: Gearing = field(default_factory=Gearing)
     carburettor: Carburettor = field(default_factory=Carburettor)
     tyres: Tyres = field(default_factory=Tyres)
@@ -107,6 +113,8 @@ class KartSetup:
         return cls(
             driver=data.get("driver"),
             class_name=data.get("class_name", "Rotax Senior EVO"),
+            peak_power_rpm_low=data.get("peak_power_rpm_low", 11500),
+            peak_power_rpm_high=data.get("peak_power_rpm_high", 13000),
             gearing=Gearing(**data.get("gearing", {})),
             carburettor=Carburettor(**data.get("carburettor", {})),
             tyres=Tyres(**data.get("tyres", {})),
