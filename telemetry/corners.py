@@ -219,3 +219,27 @@ def assign_segments(trace: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFrame
         trace.loc[mask, "segment_label"] = seg["label"]
         trace.loc[mask, "segment_kind"] = seg["kind"]
     return trace
+
+
+def segment_midpoints(trace: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFrame:
+    """Lat/lon of each segment's midpoint (by in-lap distance), so a segment
+    named only "Straight 7" or "Corner 4" can be located on a track map
+    instead of just referenced by number."""
+    trace = assign_segments(trace, segments)
+    rows = []
+    for _, seg in segments.iterrows():
+        mask = (trace["lap_distance_m"] >= seg["start_m"]) & (trace["lap_distance_m"] < seg["end_m"])
+        g = trace.loc[mask].dropna(subset=["Latitude", "Longitude"]).sort_values("lap_distance_m")
+        if g.empty:
+            continue
+        mid_row = g.iloc[len(g) // 2]
+        rows.append(
+            {
+                "segment_label": seg["label"],
+                "segment_kind": seg["kind"],
+                "mid_lat": mid_row["Latitude"],
+                "mid_lon": mid_row["Longitude"],
+                "mid_distance_m": mid_row["lap_distance_m"],
+            }
+        )
+    return pd.DataFrame(rows)

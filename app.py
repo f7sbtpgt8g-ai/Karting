@@ -19,7 +19,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 from telemetry.comparison import cross_session_delta_trace, session_progression
-from telemetry.corners import assign_segments, build_reference_segments, lap_gps_trace
+from telemetry.corners import assign_segments, build_reference_segments, lap_gps_trace, segment_midpoints
 from telemetry.delta import delta_time_trace, segment_times_for_lap, theoretical_best_lap
 from telemetry.focus_areas import blended_top_recommendations, recurring_weaknesses, time_loss_per_segment, top_focus_areas
 from telemetry.laps import (
@@ -428,6 +428,42 @@ with st.expander(f"Full path to theoretical best — all {len(full_breakdown)} s
         ["time_loss_s", "your_time_s", "best_time_s"]
     ].round(3)
     st.dataframe(breakdown_display, width='stretch')
+
+    st.caption("Where these segments are on track (labels abbreviated: C = Corner, S = Straight):")
+    segment_locations = segment_midpoints(_best_lap_trace, segments)
+    if segment_locations.empty:
+        st.caption("No GPS position data available on the reference lap to draw a map.")
+    else:
+        map_data = segment_locations.merge(full_breakdown[["segment_label", "time_loss_s"]], on="segment_label", how="left")
+        map_labels = map_data["segment_label"].str.replace("Corner ", "C", regex=False).str.replace("Straight ", "S", regex=False)
+        fig_map = go.Figure()
+        fig_map.add_trace(
+            go.Scatter(
+                x=_best_lap_trace["Longitude"], y=_best_lap_trace["Latitude"],
+                mode="lines", line=dict(color="lightgray", width=2), hoverinfo="skip", showlegend=False,
+            )
+        )
+        fig_map.add_trace(
+            go.Scatter(
+                x=map_data["mid_lon"], y=map_data["mid_lat"],
+                mode="markers+text",
+                text=map_labels,
+                textposition="top center",
+                marker=dict(
+                    size=12,
+                    color=map_data["time_loss_s"],
+                    colorscale="RdYlGn_r",
+                    showscale=True,
+                    colorbar=dict(title="s available"),
+                    line=dict(width=1, color="black"),
+                ),
+                hovertext=[f"{row.segment_label}: {row.time_loss_s:.2f}s available" for row in map_data.itertuples()],
+                hoverinfo="text",
+                showlegend=False,
+            )
+        )
+        fig_map.update_layout(xaxis_title="Longitude", yaxis_title="Latitude", height=500, yaxis=dict(scaleanchor="x"))
+        st.plotly_chart(fig_map, width='stretch')
 
 st.divider()
 
