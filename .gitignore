@@ -9,5 +9,6 @@ session_cache/
 
 sample_data/*
 !sample_data/README.md
+!sample_data/default_session.tsv
 
 tests/fixtures/synthetic_session.tsv

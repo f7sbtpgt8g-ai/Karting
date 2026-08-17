@@ -11,7 +11,7 @@ gearing:
 
 carburettor:
   model: Dellorto VHSB34
-  main_jet: 168
+  main_jet: 128
   idle_jet: 55
   needle_type: null
   needle_clip_position: 2

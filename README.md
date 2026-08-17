@@ -137,16 +137,29 @@ source .venv/bin/activate
 streamlit run app.py
 ```
 
-Then open the local URL Streamlit prints, and upload one or more `.tsv`
-exports in the sidebar. You'll be asked for your kart setup right after
-upload (skippable) -- if it points to a medium/high-confidence gearing,
-jetting, tyre-pressure, or chassis-balance issue, that gets folded straight
-into the **Top 3 Focus Areas** headline alongside the usual corner-based
-time-loss items, rather than sitting only in the separate setup tab. That
-headline is the landing view, in plain language, before the deeper
-technical charts (speed/RPM/delta traces with a linked track-map position
-marker, G-G diagram, track map, braking zones, per-corner entry/apex/exit
-speed & RPM, peak-power RPM zone time, consistency, progression).
+Then open the local URL Streamlit prints. A default sample file
+(`sample_data/default_session.tsv`) loads automatically so there's
+something to look at immediately -- upload your own `.tsv` in the sidebar
+any time to take over from it (does not overwrite the file on disk). You'll
+be asked for your kart setup right after that (skippable) -- if it points
+to a medium/high-confidence gearing, jetting, tyre-pressure, or
+chassis-balance issue, that gets folded straight into the **Top 3 Focus
+Areas** headline alongside the usual corner-based time-loss items, rather
+than sitting only in the separate setup section. That headline is the
+landing view, in plain language, before the deeper technical views
+(speed/RPM/delta traces with a linked track-map position marker, G-G
+diagram, track map, braking zones, per-corner entry/apex/exit speed & RPM,
+peak-power RPM zone time, consistency, progression, session/setup history).
+The multi-session file the tool loads by default automatically selects
+whichever loaded session had the single fastest lap.
+
+Deeper views are switched via a row of radio buttons rather than
+`st.tabs()` -- see the comment above `selected_view` in `app.py` for why:
+`st.tabs()` executes every section's code on every rerun regardless of
+which tab is visible, and once this app's combined per-section content got
+heavy enough, the last couple of tabs stopped rendering silently (no
+error, content just never arrived). The radio approach only executes the
+selected section, which fixed it and is strictly cheaper besides.
 
 ## Exporting the correct TSV from Unipro Analyser
 
@@ -260,10 +273,26 @@ PYTHONPATH=. python tests/generate_fixture.py
 
 ## Session library (history) & automation
 
-`telemetry/storage.py` persists parsed sessions to a local SQLite database
-(lap summaries + a pickled cache of each session's raw dataframe) so trend
-views don't require re-uploading every file. Ingest files from the command
-line -- e.g. from a script triggered after a race-day upload -- with:
+`telemetry/storage.py` persists parsed sessions *and* kart setup snapshots
+to a local SQLite database (`data/sessions.db`, lap summaries + a pickled
+cache of each session's raw dataframe, plus a timestamped setup history) so
+values and trends don't require re-entering/re-uploading every visit. The
+app wires this in automatically: whichever session you're actively
+analyzing gets saved (not every session in a multi-session file up front --
+that pickles a full raw dataframe per session, which was slow enough on an
+11-session real file to block the very first render for minutes), your
+kart setup is pre-filled from the last one you saved, and both are
+browsable from the **History** view.
+
+**Important caveat:** this storage lives on the app's local disk. On
+Streamlit Community Cloud specifically, that disk is wiped on every
+redeploy and reboot -- so treat it as a within-deploy convenience, not
+durable long-term history, unless/until it's backed by an external
+database (see the module docstring in `telemetry/storage.py` for the
+tradeoff and options if you need real cross-redeploy persistence).
+
+Ingest files from the command line -- e.g. from a script triggered after a
+race-day upload -- with:
 
 ```bash
 python scripts/ingest.py session1.tsv session2.tsv \
@@ -282,3 +311,10 @@ python scripts/ingest.py session1.tsv session2.tsv \
 - Corner detection thresholds (`telemetry/corners.py`) are reasonable
   defaults tuned against the synthetic fixture; they may need adjustment
   for a real track's actual corner geometry and GPS noise characteristics.
+- `sample_data/default_session.tsv` (a real telemetry file, committed
+  intentionally as the app's default -- see `sample_data/README.md`) means
+  **this repo should not be treated as private** even if it isn't in your
+  history yet; that GPS track, lap times, and RPM data are visible to
+  anyone who can see the repo while it stays public.
+- History/setup persistence is local-disk-only and does not survive a
+  Streamlit Community Cloud redeploy/reboot -- see "Session library" above.

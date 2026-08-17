@@ -43,8 +43,22 @@ from telemetry.metrics import (
 from telemetry.parser import Session, load_sessions
 from telemetry.setup_config import KartSetup
 from telemetry.setup_engine import all_setup_suggestions
+from telemetry.storage import SessionLibrary
 
 st.set_page_config(page_title="Karting Telemetry", layout="wide", page_icon="🏎️")
+
+DEFAULT_TSV_PATH = os.path.join(os.path.dirname(__file__), "sample_data", "default_session.tsv")
+DB_PATH = os.path.join(os.path.dirname(__file__), "data", "sessions.db")
+
+
+@st.cache_resource(show_spinner=False)
+def get_session_library() -> SessionLibrary:
+    """One SQLite connection reused across reruns. Local disk only --
+    resets whenever this app's container reboots or redeploys (Streamlit
+    Community Cloud's filesystem isn't persistent across those), which is a
+    known, accepted limitation for now rather than an oversight."""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    return SessionLibrary(DB_PATH)
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +113,22 @@ def compute_clean_laps(session: Session) -> pd.DataFrame:
     return laps
 
 
+def fastest_lap_session_label(sessions_with_labels: list[tuple[str, Session]]) -> str | None:
+    """Which loaded session has the single fastest clean lap -- used to
+    default the "Session to analyze" picker so the driver doesn't have to
+    manually hunt for their best session out of a multi-session file."""
+    best_label, best_time = None, float("inf")
+    for label, s in sessions_with_labels:
+        clean_s = clean_lap_table(compute_clean_laps(s))
+        if clean_s.empty:
+            continue
+        t = clean_s["lap_time_s"].min()
+        if t < best_time:
+            best_time = t
+            best_label = label
+    return best_label
+
+
 @st.cache_resource(show_spinner=False)
 def compute_setup_suggestions_cached(
     _session: Session, _key: tuple, clean_lap_numbers: tuple, segments: pd.DataFrame, setup: KartSetup
@@ -148,7 +178,7 @@ def render_setup_fields(setup: KartSetup) -> KartSetup:
 
     st.markdown("**Carburettor (Dellorto VHSB34 defaults)**")
     c1, c2, c3 = st.columns(3)
-    setup.carburettor.main_jet = c1.number_input("Main jet", value=setup.carburettor.main_jet or 168, step=1)
+    setup.carburettor.main_jet = c1.number_input("Main jet", value=setup.carburettor.main_jet or 128, step=1)
     setup.carburettor.needle_clip_position = c2.number_input("Needle clip position", value=setup.carburettor.needle_clip_position or 2, step=1)
     setup.carburettor.air_screw_turns_out = c3.number_input("Air screw turns out", value=setup.carburettor.air_screw_turns_out or 1.5, step=0.25)
 
@@ -181,9 +211,20 @@ uploaded_files = st.sidebar.file_uploader(
 driver_name = st.sidebar.text_input("Driver name", value="Driver")
 
 all_sessions: list[tuple[str, Session]] = []
-for f in uploaded_files or []:
-    for s in parse_uploaded_file(f.getvalue(), f.name):
-        all_sessions.append((session_label(f.name, s), s))
+if uploaded_files:
+    for f in uploaded_files:
+        for s in parse_uploaded_file(f.getvalue(), f.name):
+            all_sessions.append((session_label(f.name, s), s))
+elif os.path.exists(DEFAULT_TSV_PATH):
+    # Build-phase convenience: a default file ships with the app so it
+    # doesn't need re-uploading on every visit. Uploading anything in the
+    # sidebar above takes over immediately (this branch only runs when
+    # uploaded_files is empty) -- it does not overwrite the file on disk.
+    st.sidebar.caption("📎 Using the default sample file (upload above to use your own).")
+    with open(DEFAULT_TSV_PATH, "rb") as f:
+        default_bytes = f.read()
+    for s in parse_uploaded_file(default_bytes, os.path.basename(DEFAULT_TSV_PATH)):
+        all_sessions.append((session_label(os.path.basename(DEFAULT_TSV_PATH), s), s))
 
 if not all_sessions:
     st.title("Karting Telemetry Analysis")
@@ -199,6 +240,8 @@ if not all_sessions:
     )
     st.stop()
 
+library = get_session_library()
+
 
 # ---------------------------------------------------------------------------
 # Upfront kart setup gate: asked once per file load, before any analysis is
@@ -207,7 +250,11 @@ if not all_sessions:
 # ---------------------------------------------------------------------------
 
 if "kart_setup" not in st.session_state:
-    st.session_state.kart_setup = KartSetup(driver=driver_name)
+    # Pre-fill from the most recently saved setup in the history library, if
+    # any, rather than always starting blank -- this is what makes values
+    # actually "stick" across visits within this deploy's lifetime.
+    saved_setup = library.load_latest_kart_setup()
+    st.session_state.kart_setup = saved_setup if saved_setup is not None else KartSetup(driver=driver_name)
 if "setup_confirmed" not in st.session_state:
     st.session_state.setup_confirmed = False
 
@@ -217,7 +264,7 @@ if not st.session_state.setup_confirmed:
         "Tell us your kart setup before diving into the analysis. If it points to a likely gearing, "
         "jetting, tyre-pressure, or chassis-balance issue, that'll be folded straight into your Top 3 "
         "Focus Areas rather than buried in a separate tab. You can skip this and fill it in later from "
-        "the Kart Setup tab."
+        "the Kart Setup tab. Saved setups are remembered for next time (see the History tab)."
     )
     with st.form("onboarding_setup_form"):
         edited_setup = render_setup_fields(st.session_state.kart_setup)
@@ -228,6 +275,7 @@ if not st.session_state.setup_confirmed:
     if continue_clicked:
         st.session_state.kart_setup = edited_setup
         st.session_state.setup_confirmed = True
+        library.save_kart_setup(edited_setup, driver=driver_name)
         st.rerun()
     if skip_clicked:
         st.session_state.setup_confirmed = True
@@ -238,8 +286,29 @@ setup: KartSetup = st.session_state.kart_setup
 
 
 session_labels = [label for label, _ in all_sessions]
-active_label = st.sidebar.selectbox("Session to analyze", session_labels)
+
+# Default to the session with the single fastest clean lap. Only recomputed
+# when the loaded session set actually changes (not on every rerun/slider
+# drag) -- fastest_lap_session_label loops over every session's laps, and
+# Streamlit reruns this whole script on every interaction regardless of tab.
+if st.session_state.get("_session_labels_seen") != session_labels:
+    st.session_state["_session_labels_seen"] = session_labels
+    st.session_state["_default_session_label"] = fastest_lap_session_label(all_sessions)
+
+default_session_label = st.session_state.get("_default_session_label")
+default_session_index = session_labels.index(default_session_label) if default_session_label in session_labels else 0
+
+active_label = st.sidebar.selectbox("Session to analyze", session_labels, index=default_session_index)
 active_session = dict(all_sessions)[active_label]
+
+# Auto-save only the session actually being analyzed, not every session in
+# a multi-session file upfront -- saving pickles the full raw dataframe to
+# disk per session, and doing that eagerly for all 11 sessions in a real
+# multi-session file blocked the very first render for minutes. Switching
+# the "Session to analyze" picker saves whichever session is newly selected,
+# so browsing through sessions still builds up history over a visit.
+if library.find_session(active_session.source_file, active_session.session_id, active_session.start_time) is None:
+    library.save_session(active_session, driver=driver_name, track_name=st.session_state.get("kart_setup", KartSetup()).track_session.track_name)
 
 if st.sidebar.button("⚙️ Edit kart setup"):
     st.session_state.setup_confirmed = False
@@ -319,23 +388,30 @@ st.divider()
 
 # ---------------------------------------------------------------------------
 # Tabs: deeper technical views
+#
+# Deliberately NOT st.tabs(): every `with tabs[i]:` block's code executes on
+# *every* script rerun regardless of which tab is visually selected (a
+# documented Streamlit behavior), and empirically, once this app's combined
+# per-tab content (large Plotly figures, big tables, cross-session loops)
+# got heavy enough across 9 tabs, the last couple of tabs stopped rendering
+# at all -- no exception, content just silently never arrived client-side.
+# A minimal repro with 9 trivial st.tabs() worked fine, and moving a real
+# library call to tab index 0 worked fine too, isolating the cause to
+# cumulative per-run payload/compute across *all* tabs, not any specific
+# tab's code. A plain radio-driven if/elif only executes the selected
+# section, which sidesteps the problem entirely and is strictly less work
+# every rerun besides.
 # ---------------------------------------------------------------------------
 
-tabs = st.tabs(
-    [
-        "Lap Times",
-        "Speed & Delta",
-        "G-G Diagram",
-        "Track Map",
-        "Braking / RPM",
-        "Consistency",
-        "Progression",
-        "Kart Setup",
-    ]
+selected_view = st.radio(
+    "View",
+    ["Lap Times", "Speed & Delta", "G-G Diagram", "Track Map", "Braking / RPM", "Consistency", "Progression", "Kart Setup", "History"],
+    horizontal=True,
+    label_visibility="collapsed",
 )
 
 # --- Lap Times ---
-with tabs[0]:
+if selected_view == "Lap Times":
     st.subheader("Lap time table")
     pb_across_loaded = min(
         clean_lap_table(compute_clean_laps(s))["lap_time_s"].min()
@@ -349,7 +425,7 @@ with tabs[0]:
     st.caption("Rows flagged `is_outlier` are excluded from best/average stats above but shown here for review.")
 
 # --- Speed & Delta ---
-with tabs[1]:
+elif selected_view == "Speed & Delta":
     st.subheader("Speed, RPM & delta trace")
     compare_laps = st.multiselect("Laps to overlay", clean_lap_numbers, default=clean_lap_numbers[: min(4, len(clean_lap_numbers))])
     reference_lap = st.selectbox("Reference lap (for delta)", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="ref_lap_delta")
@@ -419,7 +495,7 @@ with tabs[1]:
             st.plotly_chart(fig, width='stretch')
 
 # --- G-G Diagram ---
-with tabs[2]:
+elif selected_view == "G-G Diagram":
     st.subheader("G-G diagram (friction circle)")
     gg_lap = st.selectbox("Lap", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="gg_lap")
     trace = lap_metric_trace(active_session, gg_lap)
@@ -438,7 +514,7 @@ with tabs[2]:
     st.caption("Points farther from the origin use more of the available grip. A tighter, rounder envelope usually means grip is being left on the table somewhere.")
 
 # --- Track Map ---
-with tabs[3]:
+elif selected_view == "Track Map":
     st.subheader("Track map")
     map_lap = st.selectbox("Lap", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="map_lap")
     color_by = st.radio("Color by", ["Speed", "Delta vs reference (best lap)"], horizontal=True)
@@ -469,7 +545,7 @@ with tabs[3]:
     st.plotly_chart(fig4, width='stretch')
 
 # --- Braking / RPM ---
-with tabs[4]:
+elif selected_view == "Braking / RPM":
     st.subheader("Braking zones (inferred — no brake channel in this export)")
     brake_lap = st.selectbox("Lap", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="brake_lap")
     trace = lap_metric_trace(active_session, brake_lap)
@@ -514,7 +590,7 @@ with tabs[4]:
     st.plotly_chart(fig_band, width='stretch')
 
 # --- Consistency ---
-with tabs[5]:
+elif selected_view == "Consistency":
     st.subheader("Lap time consistency")
     stats = consistency_stats(laps)
     c1, c2 = st.columns(2)
@@ -527,7 +603,7 @@ with tabs[5]:
     st.caption("Red bars are flagged as outliers (in/out lap or statistical anomaly) and excluded from best/average stats.")
 
 # --- Progression ---
-with tabs[6]:
+elif selected_view == "Progression":
     st.subheader("Session-over-session progression")
     if len(all_sessions) < 2:
         st.info("Load more than one session (or a file with multiple sessions) to see progression across sessions.")
@@ -559,9 +635,9 @@ with tabs[6]:
             st.caption("Segments appearing here are a recurring habit across sessions, not a one-off mistake.")
 
 # --- Kart Setup ---
-with tabs[7]:
+elif selected_view == "Kart Setup":
     st.subheader("Kart setup")
-    st.caption("Edit and re-save your setup any time -- changes here update the Top 3 Focus Areas and correlation suggestions below on the next run.")
+    st.caption("Edit and re-save your setup any time -- changes here update the Top 3 Focus Areas and correlation suggestions below on the next run, and are remembered for next time you open the app.")
 
     with st.form("setup_form"):
         edited_setup = render_setup_fields(st.session_state.kart_setup)
@@ -570,7 +646,8 @@ with tabs[7]:
     if submitted:
         st.session_state.kart_setup = edited_setup
         setup = edited_setup
-        st.success("Setup saved (in-app only -- download below to persist it). Re-run analysis to see it reflected in Top 3 Focus Areas.")
+        library.save_kart_setup(edited_setup, driver=driver_name)
+        st.success("Setup saved -- remembered for next time (see History tab), and reflected in Top 3 Focus Areas above on the next run.")
 
     yaml_bytes = io.BytesIO()
     yaml_bytes.write(yaml.safe_dump(setup.to_dict(), sort_keys=False).encode())
@@ -583,6 +660,35 @@ with tabs[7]:
             if s.get("suggested_action"):
                 st.markdown(f"**Suggested action:** {s['suggested_action']}")
             st.caption("This is a hypothesis inferred from telemetry patterns, not a direct sensor confirmation -- verify before acting on it.")
+
+# --- History ---
+elif selected_view == "History":
+    st.subheader("Session history")
+    st.caption(
+        "Every loaded session is auto-saved locally so you can track progression over time. "
+        "Note: this storage lives on the app's local disk, which is wiped on every redeploy/reboot -- "
+        "treat it as a within-deploy convenience for now, not durable long-term history."
+    )
+    session_history = library.list_sessions()
+    if session_history.empty:
+        st.info("No sessions saved yet.")
+    else:
+        display_history = session_history[
+            ["id", "source_file", "driver", "track_name", "session_type", "start_date", "start_time", "best_lap_s", "average_lap_s", "n_laps", "ingested_at"]
+        ].sort_values("ingested_at", ascending=False)
+        st.dataframe(display_history, width='stretch')
+
+    st.subheader("Kart setup history")
+    setup_history = library.list_kart_setups()
+    if setup_history.empty:
+        st.info("No setup snapshots saved yet.")
+    else:
+        st.dataframe(setup_history, width='stretch')
+        restore_id = st.selectbox("Restore a past setup", setup_history["id"], format_func=lambda i: f"#{i} — {setup_history.set_index('id').loc[i, 'saved_at']}")
+        if st.button("Restore selected setup"):
+            st.session_state.kart_setup = library.load_kart_setup(int(restore_id))
+            st.success("Restored -- open the Kart Setup tab to review and save it again if it looks right.")
+            st.rerun()
 
 st.divider()
 footer_caption = (

@@ -35,7 +35,7 @@ class Gearing:
 @dataclass
 class Carburettor:
     model: str = "Dellorto VHSB34"
-    main_jet: int | None = None
+    main_jet: int | None = 128
     idle_jet: int | None = None
     needle_type: str | None = None
     needle_clip_position: int | None = None
