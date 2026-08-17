@@ -5,9 +5,7 @@ __pycache__/
 data/
 session_cache/
 *.db
-static/
-.streamlit/*
-!.streamlit/config.toml
+.streamlit/
 
 sample_data/*
 !sample_data/README.md

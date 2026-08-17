@@ -147,10 +147,9 @@ chassis-balance issue, that gets folded straight into the **Top 3 Focus
 Areas** headline alongside the usual corner-based time-loss items, rather
 than sitting only in the separate setup section. That headline is the
 landing view, in plain language, before the deeper technical views
-(speed/RPM/delta traces with a linked track-map position marker, track map,
-braking zones, a hover-linked RPM trace + track map, per-corner
-entry/apex/exit speed & RPM, peak-power RPM zone time, consistency,
-progression, session/setup history).
+(hover-linked speed/RPM/delta traces + track map, track map, braking zones,
+RPM trace, per-corner entry/apex/exit speed & RPM, peak-power RPM zone
+time, consistency, progression, session/setup history).
 The multi-session file the tool loads by default automatically selects
 whichever loaded session had the single fastest lap.
 
@@ -162,20 +161,32 @@ heavy enough, the last couple of tabs stopped rendering silently (no
 error, content just never arrived). The radio approach only executes the
 selected section, which fixed it and is strictly cheaper besides.
 
-The Braking/RPM view's RPM trace and track map are hover-linked to each
-other client-side, not via a Streamlit rerun. `st.plotly_chart` has no way
-to sync hover state between two independently-rendered figures, and driving
-that sync through Python (a rerun per `plotly_hover` event) would mean a
-round-trip for every pixel the mouse crosses. Instead `render_linked_rpm_map`
-in `app.py` renders both charts as plain Plotly.js inside one
-`st.components.v1.html` block and wires the two `plotly_hover` listeners
-together directly in JS, so the highlight is instant either direction and
-nothing on the Python side re-runs until a real widget changes. It loads
-plotly.js from `/app/static/plotly.min.js` -- vendored at startup by
-`ensure_plotlyjs_asset` from whatever `plotly` version is installed, via
-Streamlit's `server.enableStaticServing` (see `.streamlit/config.toml`) --
-rather than a CDN, so it needs no outbound network access and the browser
-can cache it across reruns instead of re-downloading it every time.
+The Speed & Delta view's stacked speed/RPM/delta chart and its track map
+are hover-linked client-side, not via a Streamlit rerun: hover anywhere on
+the chart (any of the three rows, any overlaid lap) and the map's position
+marker jumps to the matching point, replacing the old flow of reading a
+distance off the tooltip and dragging a slider to find it. `st.plotly_chart`
+has no way to sync hover state between two independently-rendered figures,
+and driving that sync through Python (a rerun per `plotly_hover` event)
+would mean a round-trip for every pixel the mouse crosses. Instead
+`render_linked_speed_delta` in `app.py` renders both figures as plain
+Plotly.js inside one `st.components.v1.html` block and wires a
+`plotly_hover` listener directly in JS, so the highlight is instant and
+nothing on the Python side re-runs until a real widget changes. Multiple
+laps are overlaid in the chart with different sample counts, so there's no
+single shared point index to key off -- instead the hovered *distance*
+(shared across laps via `hovermode="x unified"`) is linearly interpolated
+client-side into the chosen map lap's own lat/lon arrays, mirroring what
+the old slider did with `np.interp` server-side.
+
+This renders its own copy of plotly.js inline (`plotlyjs_script_tag` in
+`app.py`, sourced from whatever `plotly` version is already installed) each
+time this view loads, rather than referencing a shared file or a CDN. An
+earlier version tried vendoring it as a static asset via Streamlit's
+`server.enableStaticServing`, which worked locally but rendered blank on
+Streamlit Community Cloud -- inlining costs a larger per-render payload but
+doesn't depend on a platform feature that's turned out to be unreliable
+there, and needs no outbound network access either.
 
 ## Exporting the correct TSV from Unipro Analyser
 
@@ -230,20 +241,18 @@ just "gear up/down" to avoid ambiguity.
   ahead of marginal corner items since a setup mismatch affects the whole
   session rather than one corner.
 - **Speed, RPM & delta trace** (Speed & Delta tab): stacked, distance-aligned
-  charts for each selected lap, plus a track map alongside with a slider
-  that moves a position marker along the chosen lap's GPS path -- drag it to
-  see exactly where on the circuit a given point in the charts corresponds
-  to. The delta panel is continuous time gained/lost vs. a reference lap;
-  positive = slower than the reference at that point, negative = faster, and
-  it's the single most direct view for pinpointing exactly where time is
-  lost.
+  charts for each selected lap, plus a track map underneath that's
+  hover-linked to it -- hover anywhere on the charts to move the position
+  marker along the chosen lap's GPS path automatically, no manual
+  slider-dragging needed. The delta panel is continuous time gained/lost vs.
+  a reference lap; positive = slower than the reference at that point,
+  negative = faster, and it's the single most direct view for pinpointing
+  exactly where time is lost.
 - **Braking zones / RPM trace / per-corner entry-apex-exit table**: labeled
   as *inferred* where relevant -- there's no direct brake or throttle
   channel, so braking zones come from deceleration patterns. The RPM trace
-  shades the peak-power band and is hover-linked to a track map next to it
-  (see below) -- hover either one to see the matching point on the other,
-  no manual slider-dragging needed. The per-corner table breaks out speed
-  and RPM at each corner's entry, apex (minimum-speed point), and exit.
+  shades the peak-power band. The per-corner table breaks out speed and RPM
+  at each corner's entry, apex (minimum-speed point), and exit.
 - **Time in peak-power RPM zone**: what fraction of a lap is spent with RPM
   inside the stated peak-power band, per lap and as a session-wide chart --
   a quick read on whether gearing is keeping the engine on the boil.
