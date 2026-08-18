@@ -415,303 +415,201 @@ def prettify_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Sidebar: file upload + context
+# Shared helpers for the page functions below.
+#
+# `format_lap_option` and `_require_data`/`render_footer` are read by page
+# functions but reference names (`lap_time_by_number`, `data_ready`,
+# `speed_is_estimated`, ...) that are only assigned further down, in the
+# "Sidebar navigation + shared data loading" section. That's fine: a
+# module-level function resolves free variables against this module's
+# globals at CALL time, not at definition time, and every page function is
+# only ever called via `nav.run()` at the very end of the script, by which
+# point those globals have already been populated for this rerun.
 # ---------------------------------------------------------------------------
-
-st.sidebar.title("🏎️ Karting Telemetry")
-uploaded_files = st.sidebar.file_uploader(
-    "Upload Unipro TSV export(s)", type=["tsv", "txt"], accept_multiple_files=True
-)
-driver_name = st.sidebar.text_input("Driver name", value="Driver")
-
-all_sessions: list[tuple[str, Session]] = []
-if uploaded_files:
-    for f in uploaded_files:
-        for s in parse_uploaded_file(f.getvalue(), f.name):
-            all_sessions.append((session_label(f.name, s), s))
-elif os.path.exists(DEFAULT_TSV_PATH):
-    # Build-phase convenience: a default file ships with the app so it
-    # doesn't need re-uploading on every visit. Uploading anything in the
-    # sidebar above takes over immediately (this branch only runs when
-    # uploaded_files is empty) -- it does not overwrite the file on disk.
-    st.sidebar.caption("📎 Using the default sample file (upload above to use your own).")
-    with open(DEFAULT_TSV_PATH, "rb") as f:
-        default_bytes = f.read()
-    for s in parse_uploaded_file(default_bytes, os.path.basename(DEFAULT_TSV_PATH)):
-        all_sessions.append((session_label(os.path.basename(DEFAULT_TSV_PATH), s), s))
-
-if not all_sessions:
-    st.title("Karting Telemetry Analysis")
-    st.info(
-        "Upload one or more Unipro laptimer TSV exports in the sidebar to get started. "
-        "A single file may contain multiple sessions (the tool detects logger restarts automatically)."
-    )
-    st.markdown(
-        "**What this tool does:** parses sparse/asynchronous Unipro telemetry, segments the track into "
-        "corners from the GPS trace, and ranks where you're losing the most time -- with a plain-language "
-        "coaching note for each. Fill in your kart setup from the Kart Setup tab (per session, since gearing "
-        "and jetting can differ session to session) to get setup-change hypotheses folded into that ranking too."
-    )
-    st.stop()
-
-library = get_session_library()
-
-
-session_labels = [label for label, _ in all_sessions]
-
-# Default to the session with the single fastest clean lap. Only recomputed
-# when the loaded session set actually changes (not on every rerun/slider
-# drag) -- fastest_lap_session_label loops over every session's laps, and
-# Streamlit reruns this whole script on every interaction regardless of tab.
-if st.session_state.get("_session_labels_seen") != session_labels:
-    st.session_state["_session_labels_seen"] = session_labels
-    st.session_state["_session_best_times"] = session_best_lap_times(all_sessions)
-    st.session_state["_default_session_label"] = fastest_lap_session_label(st.session_state["_session_best_times"])
-
-session_best_times: dict[str, float | None] = st.session_state.get("_session_best_times", {})
-default_session_label = st.session_state.get("_default_session_label")
-default_session_index = session_labels.index(default_session_label) if default_session_label in session_labels else 0
-
-
-def format_session_option(label: str) -> str:
-    # Best time first: the sidebar column is narrow enough that long session
-    # labels (filename + session index + timestamp) get truncated in the
-    # dropdown list before reaching anything appended at the end, and the
-    # lap time is the whole point of showing it here.
-    t = session_best_times.get(label)
-    return f"{t:.2f}s — {label}" if t is not None else label
-
-
-active_label = st.sidebar.selectbox(
-    "Session to analyze", session_labels, index=default_session_index, format_func=format_session_option
-)
-active_session = dict(all_sessions)[active_label]
-
-# Kart setup is stored per session, not globally -- different sessions on
-# the same track day can genuinely run different gearing/jetting/tyre
-# pressure, so a single "the" setup asked once upfront silently assumed
-# every session shared it. Reloaded only when the *active session itself*
-# changes (not on every rerun), same cache-invalidation pattern as the
-# session-picker default above; edits made in the Kart Setup tab live in
-# session_state until explicitly saved, same as before.
-active_session_key = (active_session.source_file, active_session.session_id, active_session.start_time)
-if st.session_state.get("_kart_setup_session_key") != active_session_key:
-    st.session_state["_kart_setup_session_key"] = active_session_key
-    loaded_setup = library.load_latest_kart_setup_for_session(*active_session_key)
-    st.session_state["kart_setup"] = loaded_setup if loaded_setup is not None else KartSetup(driver=driver_name)
-
-setup: KartSetup = st.session_state["kart_setup"]
-
-# Auto-save only the session actually being analyzed, not every session in
-# a multi-session file upfront -- saving pickles the full raw dataframe to
-# disk per session, and doing that eagerly for all 11 sessions in a real
-# multi-session file blocked the very first render for minutes. Switching
-# the "Session to analyze" picker saves whichever session is newly selected,
-# so browsing through sessions still builds up history over a visit.
-if library.find_session(active_session.source_file, active_session.session_id, active_session.start_time) is None:
-    library.save_session(active_session, driver=driver_name, track_name=setup.track_session.track_name)
-
-if st.sidebar.button("⚙️ Edit kart setup"):
-    st.session_state["selected_view"] = "Kart Setup"
-    st.rerun()
-
-laps = compute_clean_laps(active_session)
-clean = clean_lap_table(laps)
-
-if clean.empty:
-    st.error("No clean laps found in this session after outlier filtering -- check the file.")
-    st.stop()
-
-clean_lap_numbers = clean["lap_number"].tolist()
-best_lap = int(clean.loc[clean["lap_time_s"].idxmin(), "lap_number"])
-
-# Shared by every lap-number selectbox/multiselect for the active session
-# (sidebar and every view below) so a lap is never just a bare number --
-# picking "which lap" without seeing its time meant opening it first to
-# find out.
-lap_time_by_number = dict(zip(laps["lap_number"], laps["lap_time_s"]))
-
 
 def format_lap_option(lap_no: int) -> str:
     t = lap_time_by_number.get(lap_no)
     return f"Lap {lap_no} — {t:.2f}s" if t is not None else f"Lap {lap_no}"
 
 
-analyzed_lap = st.sidebar.selectbox(
-    "Lap to analyze against theoretical best",
-    clean_lap_numbers,
-    index=clean_lap_numbers.index(best_lap),
-    format_func=format_lap_option,
-)
-
-segments = build_reference_segments(active_session, best_lap)
-theoretical_best_s, best_segment_times = theoretical_best_lap(active_session, clean_lap_numbers, segments)
-lap_segment_times = segment_times_for_lap(active_session, analyzed_lap, segments)
-summary = summarize_laps(laps)
-setup_suggestions = compute_setup_suggestions_cached(
-    active_session, session_cache_key(active_session), tuple(clean_lap_numbers), segments, setup
-)
-
-# Some real exports populate Latitude/Longitude/Heading on every GPS fix but
-# never the GPS Speed channel itself -- lap_gps_trace falls back to deriving
-# speed from GPS Distance in that case (see corners.py), which is worth
-# disclosing since it affects every speed-based chart/metric in this app.
-_best_lap_trace = lap_gps_trace(active_session, best_lap)
-speed_is_estimated = bool(_best_lap_trace["gps_speed_is_estimate"].any()) if not _best_lap_trace.empty else False
-
-
-# ---------------------------------------------------------------------------
-# Headline: Top 3 focus areas (blends corner time-loss with medium/high
-# confidence setup hypotheses)
-# ---------------------------------------------------------------------------
-
-st.title(f"{driver_name} — Top 3 Focus Areas")
-st.caption(f"Analyzing lap {analyzed_lap} · {active_label}")
-if speed_is_estimated:
-    st.caption("ℹ️ This export doesn't populate GPS Speed directly -- speed is estimated from GPS Distance instead. Treat speed-based figures as estimates, not direct measurements.")
-
-# Full per-segment breakdown -- the Top 3 cards below are just the highest
-# few rows of this. The headline "available" delta is derived from the SAME
-# table (its own sum), not from the device's raw best-lap-time minus
-# theoretical-best, so the number here and the sum of the breakdown chart
-# below always agree exactly -- they're the same computation, not two
-# independent ones that happen to be close.
-full_breakdown = time_loss_per_segment(lap_segment_times, best_segment_times)
-segment_based_available_s = full_breakdown["time_loss_s"].sum()
-device_measured_gap_s = summary["best_lap_s"] - theoretical_best_s
-
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Best lap", f"{summary['best_lap_s']:.2f}s")
-col2.metric("Theoretical best", f"{theoretical_best_s:.2f}s", delta=f"-{segment_based_available_s:.2f}s available", delta_color="inverse")
-col3.metric("Consistency (std dev)", f"{laps['lap_time_s'].std():.2f}s")
-col4.metric("Clean laps", f"{len(clean)} / {len(laps)}")
-
-interpolation_residual_s = device_measured_gap_s - segment_based_available_s
-if abs(interpolation_residual_s) > 0.03:
-    st.caption(
-        f"ℹ️ The device's own lap clock puts the gap to theoretical best at {device_measured_gap_s:.2f}s; "
-        f"the segment-by-segment breakdown below accounts for {segment_based_available_s:.2f}s of that. "
-        f"The remaining {interpolation_residual_s:.2f}s is GPS-distance interpolation error at each segment "
-        "boundary (small per-boundary rounding, compounding across many corners), not a missed opportunity "
-        "hiding somewhere -- every segment is already listed below."
-    )
-
-focus_areas = blended_top_recommendations(
-    active_session, analyzed_lap, segments, lap_segment_times, best_segment_times, setup_suggestions, n=3
-)
-
-if not focus_areas:
-    st.success("No significant time loss detected vs. your theoretical best in this lap -- nice and consistent!")
-else:
-    n_setup_cards = sum(1 for a in focus_areas if a["kind"] == "setup")
-    cards = st.columns(len(focus_areas))
-    for i, (col, area) in enumerate(zip(cards, focus_areas), start=1):
-        with col:
-            if area["kind"] == "setup":
-                st.subheader(f"#{i} Setup: {area['segment_label']}")
-                st.caption(f"Confidence: {area['confidence']}")
-                st.write(area["coaching_note"])
-                st.caption(f"Why: {area['technical_note']}")
-            else:
-                st.subheader(f"#{i} {area['segment_label']}")
-                st.metric("Time available", f"{area['time_loss_s']:.2f}s")
-                st.write(area["coaching_note"])
-                st.caption(f"Cause (inferred): {area['cause'].replace('_', ' ')}")
-    if n_setup_cards:
-        st.caption(
-            f"Note: {n_setup_cards} of the {len(focus_areas)} card(s) above is a session-wide setup issue, not "
-            "a per-corner time value -- it doesn't count toward the seconds total below. See the full breakdown "
-            "for every corner's individual gap."
-        )
-
-with st.expander(f"Full path to theoretical best — all {len(full_breakdown)} segments (sums to -{segment_based_available_s:.2f}s above)", expanded=True):
-    st.caption("Every segment on this lap, ranked by time available. The Top 3 cards above are just the top rows of this same table.")
-    fig_breakdown = go.Figure()
-    fig_breakdown.add_trace(
-        go.Bar(
-            x=full_breakdown["segment_label"], y=full_breakdown["time_loss_s"],
-            marker_color=["#d62728" if k == "corner" else "#1f77b4" for k in full_breakdown["segment_kind"]],
-        )
-    )
-    fig_breakdown.update_layout(xaxis_title="Segment", yaxis_title="Time available (s)", height=350)
-    st.plotly_chart(fig_breakdown, width='stretch')
-    breakdown_display = full_breakdown[
-        ["segment_label", "segment_kind", "time_loss_s", "time_s_lap", "time_s_best", "best_source_lap"]
-    ].rename(columns={"time_s_lap": "your_time_s", "time_s_best": "best_time_s", "best_source_lap": "best_time_from_lap"})
-    breakdown_display[["time_loss_s", "your_time_s", "best_time_s"]] = breakdown_display[
-        ["time_loss_s", "your_time_s", "best_time_s"]
-    ].round(3)
-    st.dataframe(prettify_columns(breakdown_display), width='stretch')
-
-    st.caption("Where these segments are on track (labels abbreviated: C = Corner, S = Straight):")
-    segment_locations = segment_midpoints(_best_lap_trace, segments)
-    if segment_locations.empty:
-        st.caption("No GPS position data available on the reference lap to draw a map.")
+def _require_data() -> bool:
+    """Call at the top of every page except Overview and Settings. Returns
+    False (after showing an explanatory message) when there's no active
+    session to analyze yet, so the page body can `return` early instead of
+    rendering against empty/missing data."""
+    if data_ready:
+        return True
+    if data_error_message:
+        st.error(data_error_message)
     else:
-        map_data = segment_locations.merge(full_breakdown[["segment_label", "time_loss_s"]], on="segment_label", how="left")
-        map_labels = map_data["segment_label"].str.replace("Corner ", "C", regex=False).str.replace("Straight ", "S", regex=False)
-        fig_map = go.Figure()
-        fig_map.add_trace(
-            go.Scatter(
-                x=_best_lap_trace["Longitude"], y=_best_lap_trace["Latitude"],
-                mode="lines", line=dict(color="lightgray", width=2), hoverinfo="skip", showlegend=False,
-            )
-        )
-        fig_map.add_trace(
-            go.Scatter(
-                x=map_data["mid_lon"], y=map_data["mid_lat"],
-                mode="markers+text",
-                text=map_labels,
-                textposition="top center",
-                marker=dict(
-                    size=12,
-                    color=map_data["time_loss_s"],
-                    colorscale="RdYlGn_r",
-                    showscale=True,
-                    colorbar=dict(title="s available"),
-                    line=dict(width=1, color="black"),
-                ),
-                hovertext=[f"{row.segment_label}: {row.time_loss_s:.2f}s available" for row in map_data.itertuples()],
-                hoverinfo="text",
-                showlegend=False,
-            )
-        )
-        fig_map.update_layout(xaxis_title="Longitude", yaxis_title="Latitude", height=500, yaxis=dict(scaleanchor="x"))
-        st.plotly_chart(fig_map, width='stretch')
+        st.info("Upload a telemetry file on the Settings page to get started.")
+    return False
 
-st.divider()
+
+def render_footer() -> None:
+    st.divider()
+    footer_caption = (
+        "Braking, throttle/power-on, and jetting diagnostics are all inferred from RPM and GPS-derived G-forces -- "
+        "there is no throttle, brake, gear, or EGT/lambda channel in this export. Treat those as estimates, not measurements."
+    )
+    if speed_is_estimated:
+        footer_caption += " Speed itself is also estimated here, derived from GPS Distance since this export doesn't populate GPS Speed directly."
+    st.caption(footer_caption)
 
 
 # ---------------------------------------------------------------------------
-# Tabs: deeper technical views
+# Pages
 #
-# Deliberately NOT st.tabs(): every `with tabs[i]:` block's code executes on
-# *every* script rerun regardless of which tab is visually selected (a
-# documented Streamlit behavior), and empirically, once this app's combined
-# per-tab content (large Plotly figures, big tables, cross-session loops)
-# got heavy enough across 9 tabs, the last couple of tabs stopped rendering
-# at all -- no exception, content just silently never arrived client-side.
-# A minimal repro with 9 trivial st.tabs() worked fine, and moving a real
-# library call to tab index 0 worked fine too, isolating the cause to
-# cumulative per-run payload/compute across *all* tabs, not any specific
-# tab's code. A plain radio-driven if/elif only executes the selected
-# section, which sidesteps the problem entirely and is strictly less work
-# every rerun besides.
+# Deliberately built as plain functions passed to st.Page(), not st.tabs():
+# with st.tabs(), every `with tabs[i]:` block's code executes on *every*
+# script rerun regardless of which tab is visually selected (a documented
+# Streamlit behavior), and empirically, once this app's combined per-tab
+# content (large Plotly figures, big tables, cross-session loops) got heavy
+# enough across 9 tabs, the last couple of tabs stopped rendering at all --
+# no exception, content just silently never arrived client-side. st.Page's
+# callable only runs for the page currently selected in st.navigation, which
+# sidesteps the problem entirely and is strictly less work every rerun
+# besides.
 # ---------------------------------------------------------------------------
 
-selected_view = st.radio(
-    "View",
-    [
-        "Lap Times", "Speed & Delta", "Track Map", "Braking / RPM", "Corner Comparison",
-        "Gearing Simulation", "Consistency", "Progression", "Kart Setup", "History",
-    ],
-    horizontal=True,
-    label_visibility="collapsed",
-    key="selected_view",
-)
+def page_overview() -> None:
+    if not all_sessions:
+        st.title("Karting Telemetry Analysis")
+        st.info(
+            "Upload one or more Unipro laptimer TSV exports on the Settings page to get started. "
+            "A single file may contain multiple sessions (the tool detects logger restarts automatically)."
+        )
+        st.markdown(
+            "**What this tool does:** parses sparse/asynchronous Unipro telemetry, segments the track into "
+            "corners from the GPS trace, and ranks where you're losing the most time -- with a plain-language "
+            "coaching note for each. Fill in your kart setup from the Kart Setup page (per session, since gearing "
+            "and jetting can differ session to session) to get setup-change hypotheses folded into that ranking too."
+        )
+        return
 
-# --- Lap Times ---
-if selected_view == "Lap Times":
+    if not _require_data():
+        return
+
+    st.title(f"{driver_name} — Top 3 Focus Areas")
+    st.caption(f"Analyzing lap {analyzed_lap} · {active_label}")
+    if speed_is_estimated:
+        st.caption("ℹ️ This export doesn't populate GPS Speed directly -- speed is estimated from GPS Distance instead. Treat speed-based figures as estimates, not direct measurements.")
+
+    # Full per-segment breakdown -- the Top 3 cards below are just the highest
+    # few rows of this. The headline "available" delta is derived from the SAME
+    # table (its own sum), not from the device's raw best-lap-time minus
+    # theoretical-best, so the number here and the sum of the breakdown chart
+    # below always agree exactly -- they're the same computation, not two
+    # independent ones that happen to be close.
+    full_breakdown = time_loss_per_segment(lap_segment_times, best_segment_times)
+    segment_based_available_s = full_breakdown["time_loss_s"].sum()
+    device_measured_gap_s = summary["best_lap_s"] - theoretical_best_s
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Best lap", f"{summary['best_lap_s']:.2f}s")
+    col2.metric("Theoretical best", f"{theoretical_best_s:.2f}s", delta=f"-{segment_based_available_s:.2f}s available", delta_color="inverse")
+    col3.metric("Consistency (std dev)", f"{laps['lap_time_s'].std():.2f}s")
+    col4.metric("Clean laps", f"{len(clean)} / {len(laps)}")
+
+    interpolation_residual_s = device_measured_gap_s - segment_based_available_s
+    if abs(interpolation_residual_s) > 0.03:
+        st.caption(
+            f"ℹ️ The device's own lap clock puts the gap to theoretical best at {device_measured_gap_s:.2f}s; "
+            f"the segment-by-segment breakdown below accounts for {segment_based_available_s:.2f}s of that. "
+            f"The remaining {interpolation_residual_s:.2f}s is GPS-distance interpolation error at each segment "
+            "boundary (small per-boundary rounding, compounding across many corners), not a missed opportunity "
+            "hiding somewhere -- every segment is already listed below."
+        )
+
+    focus_areas = blended_top_recommendations(
+        active_session, analyzed_lap, segments, lap_segment_times, best_segment_times, setup_suggestions, n=3
+    )
+
+    if not focus_areas:
+        st.success("No significant time loss detected vs. your theoretical best in this lap -- nice and consistent!")
+    else:
+        n_setup_cards = sum(1 for a in focus_areas if a["kind"] == "setup")
+        cards = st.columns(len(focus_areas))
+        for i, (col, area) in enumerate(zip(cards, focus_areas), start=1):
+            with col:
+                if area["kind"] == "setup":
+                    st.subheader(f"#{i} Setup: {area['segment_label']}")
+                    st.caption(f"Confidence: {area['confidence']}")
+                    st.write(area["coaching_note"])
+                    st.caption(f"Why: {area['technical_note']}")
+                else:
+                    st.subheader(f"#{i} {area['segment_label']}")
+                    st.metric("Time available", f"{area['time_loss_s']:.2f}s")
+                    st.write(area["coaching_note"])
+                    st.caption(f"Cause (inferred): {area['cause'].replace('_', ' ')}")
+        if n_setup_cards:
+            st.caption(
+                f"Note: {n_setup_cards} of the {len(focus_areas)} card(s) above is a session-wide setup issue, not "
+                "a per-corner time value -- it doesn't count toward the seconds total below. See the full breakdown "
+                "for every corner's individual gap."
+            )
+
+    with st.expander(f"Full path to theoretical best — all {len(full_breakdown)} segments (sums to -{segment_based_available_s:.2f}s above)", expanded=True):
+        st.caption("Every segment on this lap, ranked by time available. The Top 3 cards above are just the top rows of this same table.")
+        fig_breakdown = go.Figure()
+        fig_breakdown.add_trace(
+            go.Bar(
+                x=full_breakdown["segment_label"], y=full_breakdown["time_loss_s"],
+                marker_color=["#d62728" if k == "corner" else "#1f77b4" for k in full_breakdown["segment_kind"]],
+            )
+        )
+        fig_breakdown.update_layout(xaxis_title="Segment", yaxis_title="Time available (s)", height=350)
+        st.plotly_chart(fig_breakdown, width='stretch')
+        breakdown_display = full_breakdown[
+            ["segment_label", "segment_kind", "time_loss_s", "time_s_lap", "time_s_best", "best_source_lap"]
+        ].rename(columns={"time_s_lap": "your_time_s", "time_s_best": "best_time_s", "best_source_lap": "best_time_from_lap"})
+        breakdown_display[["time_loss_s", "your_time_s", "best_time_s"]] = breakdown_display[
+            ["time_loss_s", "your_time_s", "best_time_s"]
+        ].round(3)
+        st.dataframe(prettify_columns(breakdown_display), width='stretch')
+
+        st.caption("Where these segments are on track (labels abbreviated: C = Corner, S = Straight):")
+        segment_locations = segment_midpoints(_best_lap_trace, segments)
+        if segment_locations.empty:
+            st.caption("No GPS position data available on the reference lap to draw a map.")
+        else:
+            map_data = segment_locations.merge(full_breakdown[["segment_label", "time_loss_s"]], on="segment_label", how="left")
+            map_labels = map_data["segment_label"].str.replace("Corner ", "C", regex=False).str.replace("Straight ", "S", regex=False)
+            fig_map = go.Figure()
+            fig_map.add_trace(
+                go.Scatter(
+                    x=_best_lap_trace["Longitude"], y=_best_lap_trace["Latitude"],
+                    mode="lines", line=dict(color="lightgray", width=2), hoverinfo="skip", showlegend=False,
+                )
+            )
+            fig_map.add_trace(
+                go.Scatter(
+                    x=map_data["mid_lon"], y=map_data["mid_lat"],
+                    mode="markers+text",
+                    text=map_labels,
+                    textposition="top center",
+                    marker=dict(
+                        size=12,
+                        color=map_data["time_loss_s"],
+                        colorscale="RdYlGn_r",
+                        showscale=True,
+                        colorbar=dict(title="s available"),
+                        line=dict(width=1, color="black"),
+                    ),
+                    hovertext=[f"{row.segment_label}: {row.time_loss_s:.2f}s available" for row in map_data.itertuples()],
+                    hoverinfo="text",
+                    showlegend=False,
+                )
+            )
+            fig_map.update_layout(xaxis_title="Longitude", yaxis_title="Latitude", height=500, yaxis=dict(scaleanchor="x"))
+            st.plotly_chart(fig_map, width='stretch')
+
+    render_footer()
+
+
+def page_lap_times() -> None:
+    if not _require_data():
+        return
     st.subheader("Lap time table")
     pb_across_loaded = min(
         clean_lap_table(compute_clean_laps(s))["lap_time_s"].min()
@@ -723,9 +621,12 @@ if selected_view == "Lap Times":
     display_cols = [c for c in display_cols if c in annotated.columns]
     st.dataframe(prettify_columns(annotated[display_cols]), width='stretch')
     st.caption("Rows flagged as an outlier are excluded from best/average stats above but shown here for review.")
+    render_footer()
 
-# --- Speed & Delta ---
-elif selected_view == "Speed & Delta":
+
+def page_speed_delta() -> None:
+    if not _require_data():
+        return
     st.subheader("Speed, RPM & delta trace")
     compare_laps = st.multiselect(
         "Laps to overlay", clean_lap_numbers, default=clean_lap_numbers[: min(4, len(clean_lap_numbers))], format_func=format_lap_option
@@ -792,9 +693,12 @@ elif selected_view == "Speed & Delta":
             primary_trace["lap_distance_m"].tolist(), primary_trace["Latitude"].tolist(), primary_trace["Longitude"].tolist(),
             height=700,
         )
+    render_footer()
 
-# --- Track Map ---
-elif selected_view == "Track Map":
+
+def page_track_map() -> None:
+    if not _require_data():
+        return
     st.subheader("Track map")
     map_lap = st.selectbox("Lap", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="map_lap", format_func=format_lap_option)
     color_by = st.radio("Color by", ["Speed", "Delta vs reference (best lap)"], horizontal=True)
@@ -823,9 +727,12 @@ elif selected_view == "Track Map":
     )
     fig4.update_layout(xaxis_title="Longitude", yaxis_title="Latitude", height=600, yaxis=dict(scaleanchor="x"))
     st.plotly_chart(fig4, width='stretch')
+    render_footer()
 
-# --- Braking / RPM ---
-elif selected_view == "Braking / RPM":
+
+def page_braking_rpm() -> None:
+    if not _require_data():
+        return
     st.subheader("Braking zones (inferred — no brake channel in this export)")
     brake_lap = st.selectbox("Lap", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="brake_lap", format_func=format_lap_option)
     trace = lap_metric_trace(active_session, brake_lap)
@@ -868,9 +775,12 @@ elif selected_view == "Braking / RPM":
     fig_band.add_trace(go.Bar(x=band_summary["lap_number"], y=band_summary["fraction_in_band"] * 100))
     fig_band.update_layout(xaxis_title="Lap", yaxis_title="% of lap in peak-power band", height=350)
     st.plotly_chart(fig_band, width='stretch')
+    render_footer()
 
-# --- Corner Comparison ---
-elif selected_view == "Corner Comparison":
+
+def page_corner_comparison() -> None:
+    if not _require_data():
+        return
     st.subheader("Corner comparison")
     corner_options = segments.loc[segments["kind"] == "corner", "label"].tolist()
     if not corner_options:
@@ -968,9 +878,12 @@ elif selected_view == "Corner Comparison":
 
             with st.expander(f"All laps analyzed for {selected_corner_label} ({len(comparison_df)} rows across {comparison_df['session_label'].nunique()} session(s))"):
                 st.dataframe(prettify_columns(comparison_df.sort_values("corner_time_s")), width='stretch')
+    render_footer()
 
-# --- Gearing Simulation ---
-elif selected_view == "Gearing Simulation":
+
+def page_gearing_simulation() -> None:
+    if not _require_data():
+        return
     st.subheader("Gearing change simulation")
     st.caption(
         "Re-estimates RPM, speed, and lap time for a different front/rear sprocket combination, built "
@@ -1082,9 +995,12 @@ elif selected_view == "Gearing Simulation":
                         "relying on RPM above the session's measured range (flagged above when it happens) is "
                         "the most likely to be optimistic."
                     )
+    render_footer()
 
-# --- Consistency ---
-elif selected_view == "Consistency":
+
+def page_consistency() -> None:
+    if not _require_data():
+        return
     st.subheader("Lap time consistency")
     stats = consistency_stats(laps)
     c1, c2 = st.columns(2)
@@ -1095,9 +1011,12 @@ elif selected_view == "Consistency":
     fig6.update_layout(xaxis_title="Lap", yaxis_title="Lap time (s)", height=400)
     st.plotly_chart(fig6, width='stretch')
     st.caption("Red bars are flagged as outliers (in/out lap or statistical anomaly) and excluded from best/average stats.")
+    render_footer()
 
-# --- Progression ---
-elif selected_view == "Progression":
+
+def page_progression() -> None:
+    if not _require_data():
+        return
     st.subheader("Session-over-session progression")
     if len(all_sessions) < 2:
         st.info("Load more than one session (or a file with multiple sessions) to see progression across sessions.")
@@ -1127,9 +1046,13 @@ elif selected_view == "Progression":
         else:
             st.dataframe(prettify_columns(recurring), width='stretch')
             st.caption("Segments appearing here are a recurring habit across sessions, not a one-off mistake.")
+    render_footer()
 
-# --- Kart Setup ---
-elif selected_view == "Kart Setup":
+
+def page_kart_setup() -> None:
+    global setup
+    if not _require_data():
+        return
     st.subheader("Kart setup")
     st.caption(
         f"Setup for **{active_label}** specifically -- other sessions keep their own (see the session picker "
@@ -1145,7 +1068,7 @@ elif selected_view == "Kart Setup":
         st.session_state.kart_setup = edited_setup
         setup = edited_setup
         library.save_kart_setup(edited_setup, *active_session_key, driver=driver_name)
-        st.success(f"Setup saved for {active_label} -- remembered for next time (see History tab), and reflected in Top 3 Focus Areas above on the next run.")
+        st.success(f"Setup saved for {active_label} -- remembered for next time (see History page), and reflected in Top 3 Focus Areas on the next run.")
 
     yaml_bytes = io.BytesIO()
     yaml_bytes.write(yaml.safe_dump(setup.to_dict(), sort_keys=False).encode())
@@ -1158,9 +1081,12 @@ elif selected_view == "Kart Setup":
             if s.get("suggested_action"):
                 st.markdown(f"**Suggested action:** {s['suggested_action']}")
             st.caption("This is a hypothesis inferred from telemetry patterns, not a direct sensor confirmation -- verify before acting on it.")
+    render_footer()
 
-# --- History ---
-elif selected_view == "History":
+
+def page_history() -> None:
+    if not _require_data():
+        return
     st.subheader("Session history")
     st.caption(
         "Every loaded session is auto-saved locally so you can track progression over time. "
@@ -1177,7 +1103,7 @@ elif selected_view == "History":
         st.dataframe(prettify_columns(display_history), width='stretch')
 
     st.subheader("Kart setup history")
-    st.caption("Setups are saved per session (see the Kart Setup tab) -- every snapshot ever saved, across every session, is listed here.")
+    st.caption("Setups are saved per session (see the Kart Setup page) -- every snapshot ever saved, across every session, is listed here.")
     setup_history = library.list_kart_setups()
     if setup_history.empty:
         st.info("No setup snapshots saved yet.")
@@ -1193,14 +1119,211 @@ elif selected_view == "History":
         )
         if st.button("Copy selected setup into this session"):
             st.session_state.kart_setup = library.load_kart_setup(int(restore_id))
-            st.success(f"Copied into {active_label} -- open the Kart Setup tab to review and save it there.")
+            st.success(f"Copied into {active_label} -- open the Kart Setup page to review and save it there.")
             st.rerun()
+    render_footer()
 
-st.divider()
-footer_caption = (
-    "Braking, throttle/power-on, and jetting diagnostics are all inferred from RPM and GPS-derived G-forces -- "
-    "there is no throttle, brake, gear, or EGT/lambda channel in this export. Treat those as estimates, not measurements."
+
+def page_settings() -> None:
+    st.title("⚙️ Settings")
+    st.caption("Upload telemetry files and set the driver name shown throughout the app.")
+
+    uploaded_files = st.file_uploader(
+        "Upload Unipro TSV export(s)", type=["tsv", "txt"], accept_multiple_files=True
+    )
+    driver_name_input = st.text_input("Driver name", value=st.session_state.get("driver_name", "Driver"))
+    st.session_state["driver_name"] = driver_name_input
+
+    if uploaded_files:
+        sessions: list[tuple[str, Session]] = []
+        for f in uploaded_files:
+            for s in parse_uploaded_file(f.getvalue(), f.name):
+                sessions.append((session_label(f.name, s), s))
+        st.session_state["uploaded_all_sessions"] = sessions
+        st.success(f"Loaded {len(uploaded_files)} file(s), {len(sessions)} session(s).")
+    elif st.session_state.get("uploaded_all_sessions"):
+        st.info(f"Currently using {len(st.session_state['uploaded_all_sessions'])} previously uploaded session(s). Upload a file above to replace them.")
+    elif os.path.exists(DEFAULT_TSV_PATH):
+        st.caption("📎 Using the default sample file (upload above to use your own).")
+
+
+# ---------------------------------------------------------------------------
+# Sidebar navigation + shared data loading
+#
+# st.navigation()/st.Page() render the sidebar menu (mobile-friendly out of
+# the box, unlike a horizontal st.radio row that wraps across two lines on
+# a narrow screen) and return a Page whose .run() -- called at the very end
+# of this script -- executes just the selected page's function body. Data
+# that needs to survive a page switch (uploaded sessions, driver name) lives
+# in st.session_state, written from page_settings() and read here
+# unconditionally on every rerun regardless of which page is selected.
+# ---------------------------------------------------------------------------
+
+st.sidebar.title("🏎️ Karting Telemetry")
+
+page_overview_obj = st.Page(page_overview, title="Top 3 Focus Areas", icon="🎯", default=True)
+page_lap_times_obj = st.Page(page_lap_times, title="Lap Times", icon="⏱️")
+page_speed_delta_obj = st.Page(page_speed_delta, title="Speed & Delta", icon="📈")
+page_track_map_obj = st.Page(page_track_map, title="Track Map", icon="🗺️")
+page_braking_rpm_obj = st.Page(page_braking_rpm, title="Braking / RPM", icon="🛞")
+page_corner_comparison_obj = st.Page(page_corner_comparison, title="Corner Comparison", icon="📐")
+page_gearing_simulation_obj = st.Page(page_gearing_simulation, title="Gearing Simulation", icon="🧮")
+page_consistency_obj = st.Page(page_consistency, title="Consistency", icon="📊")
+page_progression_obj = st.Page(page_progression, title="Progression", icon="📅")
+page_kart_setup_obj = st.Page(page_kart_setup, title="Kart Setup", icon="🔧")
+page_history_obj = st.Page(page_history, title="History", icon="🗂️")
+page_settings_obj = st.Page(page_settings, title="Settings", icon="⚙️")
+
+nav = st.navigation(
+    {
+        "Analysis": [
+            page_overview_obj, page_lap_times_obj, page_speed_delta_obj, page_track_map_obj,
+            page_braking_rpm_obj, page_corner_comparison_obj, page_gearing_simulation_obj,
+            page_consistency_obj, page_progression_obj, page_kart_setup_obj, page_history_obj,
+        ],
+        "Settings": [page_settings_obj],
+    }
 )
-if speed_is_estimated:
-    footer_caption += " Speed itself is also estimated here, derived from GPS Distance since this export doesn't populate GPS Speed directly."
-st.caption(footer_caption)
+
+st.sidebar.divider()
+
+library = get_session_library()
+
+if st.session_state.get("uploaded_all_sessions"):
+    all_sessions: list[tuple[str, Session]] = st.session_state["uploaded_all_sessions"]
+elif os.path.exists(DEFAULT_TSV_PATH):
+    # Build-phase convenience: a default file ships with the app so it
+    # doesn't need re-uploading on every visit. Uploading anything on the
+    # Settings page takes over immediately -- it does not overwrite the
+    # file on disk.
+    with open(DEFAULT_TSV_PATH, "rb") as f:
+        default_bytes = f.read()
+    all_sessions = [
+        (session_label(os.path.basename(DEFAULT_TSV_PATH), s), s)
+        for s in parse_uploaded_file(default_bytes, os.path.basename(DEFAULT_TSV_PATH))
+    ]
+else:
+    all_sessions = []
+
+driver_name = st.session_state.get("driver_name", "Driver")
+
+data_ready = False
+data_error_message: str | None = None
+active_session = None
+active_label = None
+active_session_key = None
+setup: KartSetup | None = None
+laps = pd.DataFrame()
+clean = pd.DataFrame()
+clean_lap_numbers: list[int] = []
+best_lap = None
+analyzed_lap = None
+lap_time_by_number: dict[int, float] = {}
+segments = pd.DataFrame()
+theoretical_best_s = None
+best_segment_times = None
+lap_segment_times = None
+summary = None
+setup_suggestions: list[dict] = []
+_best_lap_trace = pd.DataFrame()
+speed_is_estimated = False
+
+if all_sessions:
+    session_labels = [label for label, _ in all_sessions]
+
+    # Default to the session with the single fastest clean lap. Only
+    # recomputed when the loaded session set actually changes (not on every
+    # rerun/slider drag) -- fastest_lap_session_label loops over every
+    # session's laps, and Streamlit reruns this whole script on every
+    # interaction regardless of which page is open.
+    if st.session_state.get("_session_labels_seen") != session_labels:
+        st.session_state["_session_labels_seen"] = session_labels
+        st.session_state["_session_best_times"] = session_best_lap_times(all_sessions)
+        st.session_state["_default_session_label"] = fastest_lap_session_label(st.session_state["_session_best_times"])
+
+    session_best_times: dict[str, float | None] = st.session_state.get("_session_best_times", {})
+    default_session_label = st.session_state.get("_default_session_label")
+    default_session_index = session_labels.index(default_session_label) if default_session_label in session_labels else 0
+
+    def format_session_option(label: str) -> str:
+        # Best time first: the sidebar column is narrow enough that long
+        # session labels (filename + session index + timestamp) get
+        # truncated in the dropdown list before reaching anything appended
+        # at the end, and the lap time is the whole point of showing it here.
+        t = session_best_times.get(label)
+        return f"{t:.2f}s — {label}" if t is not None else label
+
+    active_label = st.sidebar.selectbox(
+        "Session to analyze", session_labels, index=default_session_index, format_func=format_session_option
+    )
+    active_session = dict(all_sessions)[active_label]
+
+    # Kart setup is stored per session, not globally -- different sessions on
+    # the same track day can genuinely run different gearing/jetting/tyre
+    # pressure, so a single "the" setup asked once upfront silently assumed
+    # every session shared it. Reloaded only when the *active session itself*
+    # changes (not on every rerun), same cache-invalidation pattern as the
+    # session-picker default above; edits made in the Kart Setup page live in
+    # session_state until explicitly saved, same as before.
+    active_session_key = (active_session.source_file, active_session.session_id, active_session.start_time)
+    if st.session_state.get("_kart_setup_session_key") != active_session_key:
+        st.session_state["_kart_setup_session_key"] = active_session_key
+        loaded_setup = library.load_latest_kart_setup_for_session(*active_session_key)
+        st.session_state["kart_setup"] = loaded_setup if loaded_setup is not None else KartSetup(driver=driver_name)
+
+    setup = st.session_state["kart_setup"]
+
+    # Auto-save only the session actually being analyzed, not every session in
+    # a multi-session file upfront -- saving pickles the full raw dataframe to
+    # disk per session, and doing that eagerly for all 11 sessions in a real
+    # multi-session file blocked the very first render for minutes. Switching
+    # the "Session to analyze" picker saves whichever session is newly
+    # selected, so browsing through sessions still builds up history over a
+    # visit.
+    if library.find_session(active_session.source_file, active_session.session_id, active_session.start_time) is None:
+        library.save_session(active_session, driver=driver_name, track_name=setup.track_session.track_name)
+
+    if st.sidebar.button("🔧 Edit kart setup"):
+        st.switch_page(page_kart_setup_obj)
+
+    laps = compute_clean_laps(active_session)
+    clean = clean_lap_table(laps)
+
+    if clean.empty:
+        data_error_message = "No clean laps found in this session after outlier filtering -- check the file."
+    else:
+        clean_lap_numbers = clean["lap_number"].tolist()
+        best_lap = int(clean.loc[clean["lap_time_s"].idxmin(), "lap_number"])
+
+        # Shared by every lap-number selectbox/multiselect for the active
+        # session (sidebar and every page) so a lap is never just a bare
+        # number -- picking "which lap" without seeing its time meant
+        # opening it first to find out.
+        lap_time_by_number = dict(zip(laps["lap_number"], laps["lap_time_s"]))
+
+        analyzed_lap = st.sidebar.selectbox(
+            "Lap to analyze against theoretical best",
+            clean_lap_numbers,
+            index=clean_lap_numbers.index(best_lap),
+            format_func=format_lap_option,
+        )
+
+        segments = build_reference_segments(active_session, best_lap)
+        theoretical_best_s, best_segment_times = theoretical_best_lap(active_session, clean_lap_numbers, segments)
+        lap_segment_times = segment_times_for_lap(active_session, analyzed_lap, segments)
+        summary = summarize_laps(laps)
+        setup_suggestions = compute_setup_suggestions_cached(
+            active_session, session_cache_key(active_session), tuple(clean_lap_numbers), segments, setup
+        )
+
+        # Some real exports populate Latitude/Longitude/Heading on every GPS
+        # fix but never the GPS Speed channel itself -- lap_gps_trace falls
+        # back to deriving speed from GPS Distance in that case (see
+        # corners.py), which is worth disclosing since it affects every
+        # speed-based chart/metric in this app.
+        _best_lap_trace = lap_gps_trace(active_session, best_lap)
+        speed_is_estimated = bool(_best_lap_trace["gps_speed_is_estimate"].any()) if not _best_lap_trace.empty else False
+
+        data_ready = True
+
+nav.run()

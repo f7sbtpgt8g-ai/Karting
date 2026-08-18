@@ -149,10 +149,10 @@ streamlit run app.py
 
 Then open the local URL Streamlit prints. A default sample file
 (`sample_data/default_session.tsv`) loads automatically so there's
-something to look at immediately -- upload your own `.tsv` in the sidebar
-any time to take over from it (does not overwrite the file on disk). The
-**Top 3 Focus Areas** headline is the landing view, in plain language,
-before the deeper technical views
+something to look at immediately -- upload your own `.tsv` on the
+**Settings** page any time to take over from it (does not overwrite the
+file on disk). The **Top 3 Focus Areas** headline is its own landing page,
+in plain language, separate from the deeper technical pages
 (hover-linked speed/RPM/delta traces + track map, track map, braking zones,
 RPM trace, per-corner entry/apex/exit speed & RPM, cross-session corner
 comparison, a what-if gearing simulator, peak-power RPM zone time,
@@ -160,13 +160,19 @@ consistency, progression, session/setup history).
 The multi-session file the tool loads by default automatically selects
 whichever loaded session had the single fastest lap.
 
-Deeper views are switched via a row of radio buttons rather than
-`st.tabs()` -- see the comment above `selected_view` in `app.py` for why:
-`st.tabs()` executes every section's code on every rerun regardless of
-which tab is visible, and once this app's combined per-section content got
-heavy enough, the last couple of tabs stopped rendering silently (no
-error, content just never arrived). The radio approach only executes the
-selected section, which fixed it and is strictly cheaper besides.
+Pages are switched via a left-hand navigation menu (`st.navigation`/
+`st.Page` in `app.py`), which collapses into a mobile-friendly drawer on
+narrow screens rather than wrapping across lines like a row of tabs would.
+Deliberately not `st.tabs()` either -- see the comment above the page
+function definitions in `app.py` for why: `st.tabs()` executes every
+section's code on every rerun regardless of which tab is visible, and once
+this app's combined per-section content got heavy enough, the last couple
+of tabs stopped rendering silently (no error, content just never arrived).
+Each `st.Page` callable only executes when it's the selected page, which
+fixed it and is strictly cheaper besides. The session/lap pickers and an
+"Edit kart setup" shortcut stay pinned below the nav menu in the sidebar,
+visible from every page; file upload and the driver name live on the
+**Settings** page, out of the way of the analysis pages.
 
 The Speed & Delta view's stacked speed/RPM/delta chart and its track map
 are hover-linked client-side, not via a Streamlit rerun: hover anywhere on
@@ -212,7 +218,7 @@ there, and needs no outbound network access either.
 
 Gearing, carburettor, tyre, and chassis settings, plus track/session
 context and the engine's peak-power RPM band (none of this exists in the
-TSV, so it's all user-supplied) are entered from the **Kart Setup** tab.
+TSV, so it's all user-supplied) are entered from the **Kart Setup** page.
 **Setup is stored per session, not globally** -- switch "Session to
 analyze" in the sidebar and each one keeps its own setup, since gearing,
 jetting, and tyre pressure routinely differ session to session on the same
@@ -220,13 +226,13 @@ track day; there's no assumption that one setup applies to everything
 you've loaded. A session with nothing saved for it yet starts from
 defaults rather than silently inheriting whatever another session had (see
 `telemetry/storage.py::save_kart_setup` / `load_latest_kart_setup_for_session`).
-The History tab lists every setup ever saved across every session, and can
+The History page lists every setup ever saved across every session, and can
 copy any past one into the currently active session as a starting point.
 Download the active session's setup as YAML to keep a record; see
 `config/setup_example.yaml` for the file format, or load/save it directly
 via `telemetry.setup_config.KartSetup`.
 
-The setup correlation engine (also in that tab) cross-references your
+The setup correlation engine (also on that page) cross-references your
 stated setup against telemetry patterns -- e.g. peak RPM on the longest
 straight vs. your stated peak-power band, RPM hesitation during power-on as
 a jetting proxy, lateral-G trend across the session as a tyre-pressure
