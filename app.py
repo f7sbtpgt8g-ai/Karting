@@ -319,7 +319,7 @@ def render_setup_fields(setup: KartSetup) -> KartSetup:
 
     st.markdown("**Gearing / drivetrain**")
     c1, c2, c3 = st.columns(3)
-    setup.gearing.front_teeth = c1.number_input("Front (clutch) teeth", value=setup.gearing.front_teeth or 10, step=1)
+    setup.gearing.front_teeth = c1.number_input("Front (clutch) teeth", value=setup.gearing.front_teeth or 12, step=1)
     setup.gearing.rear_teeth = c2.number_input("Rear axle teeth", value=setup.gearing.rear_teeth or 80, step=1)
     setup.gearing.chain_pitch = c3.text_input("Chain pitch", value=setup.gearing.chain_pitch)
 
@@ -382,54 +382,12 @@ if not all_sessions:
     st.markdown(
         "**What this tool does:** parses sparse/asynchronous Unipro telemetry, segments the track into "
         "corners from the GPS trace, and ranks where you're losing the most time -- with a plain-language "
-        "coaching note for each. Load your kart setup right after uploading to get setup-change hypotheses "
-        "folded into that ranking too."
+        "coaching note for each. Fill in your kart setup from the Kart Setup tab (per session, since gearing "
+        "and jetting can differ session to session) to get setup-change hypotheses folded into that ranking too."
     )
     st.stop()
 
 library = get_session_library()
-
-
-# ---------------------------------------------------------------------------
-# Upfront kart setup gate: asked once per file load, before any analysis is
-# shown, so medium/high-confidence setup hypotheses can be folded into the
-# Top 3 Focus Areas ranking rather than living only in a separate tab.
-# ---------------------------------------------------------------------------
-
-if "kart_setup" not in st.session_state:
-    # Pre-fill from the most recently saved setup in the history library, if
-    # any, rather than always starting blank -- this is what makes values
-    # actually "stick" across visits within this deploy's lifetime.
-    saved_setup = library.load_latest_kart_setup()
-    st.session_state.kart_setup = saved_setup if saved_setup is not None else KartSetup(driver=driver_name)
-if "setup_confirmed" not in st.session_state:
-    st.session_state.setup_confirmed = False
-
-if not st.session_state.setup_confirmed:
-    st.title("Kart Setup")
-    st.info(
-        "Tell us your kart setup before diving into the analysis. If it points to a likely gearing, "
-        "jetting, tyre-pressure, or chassis-balance issue, that'll be folded straight into your Top 3 "
-        "Focus Areas rather than buried in a separate tab. You can skip this and fill it in later from "
-        "the Kart Setup tab. Saved setups are remembered for next time (see the History tab)."
-    )
-    with st.form("onboarding_setup_form"):
-        edited_setup = render_setup_fields(st.session_state.kart_setup)
-        col_a, col_b = st.columns(2)
-        continue_clicked = col_a.form_submit_button("Continue to analysis", type="primary")
-        skip_clicked = col_b.form_submit_button("Skip for now (use defaults)")
-
-    if continue_clicked:
-        st.session_state.kart_setup = edited_setup
-        st.session_state.setup_confirmed = True
-        library.save_kart_setup(edited_setup, driver=driver_name)
-        st.rerun()
-    if skip_clicked:
-        st.session_state.setup_confirmed = True
-        st.rerun()
-    st.stop()
-
-setup: KartSetup = st.session_state.kart_setup
 
 
 session_labels = [label for label, _ in all_sessions]
@@ -462,6 +420,21 @@ active_label = st.sidebar.selectbox(
 )
 active_session = dict(all_sessions)[active_label]
 
+# Kart setup is stored per session, not globally -- different sessions on
+# the same track day can genuinely run different gearing/jetting/tyre
+# pressure, so a single "the" setup asked once upfront silently assumed
+# every session shared it. Reloaded only when the *active session itself*
+# changes (not on every rerun), same cache-invalidation pattern as the
+# session-picker default above; edits made in the Kart Setup tab live in
+# session_state until explicitly saved, same as before.
+active_session_key = (active_session.source_file, active_session.session_id, active_session.start_time)
+if st.session_state.get("_kart_setup_session_key") != active_session_key:
+    st.session_state["_kart_setup_session_key"] = active_session_key
+    loaded_setup = library.load_latest_kart_setup_for_session(*active_session_key)
+    st.session_state["kart_setup"] = loaded_setup if loaded_setup is not None else KartSetup(driver=driver_name)
+
+setup: KartSetup = st.session_state["kart_setup"]
+
 # Auto-save only the session actually being analyzed, not every session in
 # a multi-session file upfront -- saving pickles the full raw dataframe to
 # disk per session, and doing that eagerly for all 11 sessions in a real
@@ -469,10 +442,10 @@ active_session = dict(all_sessions)[active_label]
 # the "Session to analyze" picker saves whichever session is newly selected,
 # so browsing through sessions still builds up history over a visit.
 if library.find_session(active_session.source_file, active_session.session_id, active_session.start_time) is None:
-    library.save_session(active_session, driver=driver_name, track_name=st.session_state.get("kart_setup", KartSetup()).track_session.track_name)
+    library.save_session(active_session, driver=driver_name, track_name=setup.track_session.track_name)
 
 if st.sidebar.button("⚙️ Edit kart setup"):
-    st.session_state.setup_confirmed = False
+    st.session_state["selected_view"] = "Kart Setup"
     st.rerun()
 
 laps = compute_clean_laps(active_session)
@@ -667,6 +640,7 @@ selected_view = st.radio(
     ],
     horizontal=True,
     label_visibility="collapsed",
+    key="selected_view",
 )
 
 # --- Lap Times ---
@@ -947,7 +921,7 @@ elif selected_view == "Gearing Simulation":
     )
     front_delta = c2.number_input("Δ front (clutch) teeth", value=0, step=1)
 
-    current_front = setup.gearing.front_teeth or 10
+    current_front = setup.gearing.front_teeth or 12
     current_rear = setup.gearing.rear_teeth or 80
     new_front = max(current_front + front_delta, 1)
     new_rear = max(current_rear + rear_delta, 1)
@@ -1090,7 +1064,11 @@ elif selected_view == "Progression":
 # --- Kart Setup ---
 elif selected_view == "Kart Setup":
     st.subheader("Kart setup")
-    st.caption("Edit and re-save your setup any time -- changes here update the Top 3 Focus Areas and correlation suggestions below on the next run, and are remembered for next time you open the app.")
+    st.caption(
+        f"Setup for **{active_label}** specifically -- other sessions keep their own (see the session picker "
+        "in the sidebar). Edit and re-save any time; changes update the Top 3 Focus Areas and correlation "
+        "suggestions below on the next run, and are remembered for next time you open this session."
+    )
 
     with st.form("setup_form"):
         edited_setup = render_setup_fields(st.session_state.kart_setup)
@@ -1099,8 +1077,8 @@ elif selected_view == "Kart Setup":
     if submitted:
         st.session_state.kart_setup = edited_setup
         setup = edited_setup
-        library.save_kart_setup(edited_setup, driver=driver_name)
-        st.success("Setup saved -- remembered for next time (see History tab), and reflected in Top 3 Focus Areas above on the next run.")
+        library.save_kart_setup(edited_setup, *active_session_key, driver=driver_name)
+        st.success(f"Setup saved for {active_label} -- remembered for next time (see History tab), and reflected in Top 3 Focus Areas above on the next run.")
 
     yaml_bytes = io.BytesIO()
     yaml_bytes.write(yaml.safe_dump(setup.to_dict(), sort_keys=False).encode())
@@ -1132,15 +1110,23 @@ elif selected_view == "History":
         st.dataframe(display_history, width='stretch')
 
     st.subheader("Kart setup history")
+    st.caption("Setups are saved per session (see the Kart Setup tab) -- every snapshot ever saved, across every session, is listed here.")
     setup_history = library.list_kart_setups()
     if setup_history.empty:
         st.info("No setup snapshots saved yet.")
     else:
         st.dataframe(setup_history, width='stretch')
-        restore_id = st.selectbox("Restore a past setup", setup_history["id"], format_func=lambda i: f"#{i} — {setup_history.set_index('id').loc[i, 'saved_at']}")
-        if st.button("Restore selected setup"):
+        restore_id = st.selectbox(
+            f"Copy a past setup into the active session ({active_label})",
+            setup_history["id"],
+            format_func=lambda i: (
+                f"#{i} — {setup_history.set_index('id').loc[i, 'source_file']} session "
+                f"{setup_history.set_index('id').loc[i, 'session_index']} — {setup_history.set_index('id').loc[i, 'saved_at']}"
+            ),
+        )
+        if st.button("Copy selected setup into this session"):
             st.session_state.kart_setup = library.load_kart_setup(int(restore_id))
-            st.success("Restored -- open the Kart Setup tab to review and save it again if it looks right.")
+            st.success(f"Copied into {active_label} -- open the Kart Setup tab to review and save it there.")
             st.rerun()
 
 st.divider()

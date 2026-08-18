@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS laps (
 
 CREATE TABLE IF NOT EXISTS kart_setups (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_file TEXT,
+    session_index INTEGER,
+    start_time TEXT,
     driver TEXT,
     saved_at TEXT,
     setup_json TEXT
@@ -175,22 +178,30 @@ class SessionLibrary:
         with self._connect() as conn:
             return pd.read_sql_query("SELECT * FROM laps WHERE session_db_id = ? ORDER BY lap_number", conn, params=(session_db_id,))
 
-    def save_kart_setup(self, setup, driver: str | None = None) -> int:
-        """Persist a KartSetup snapshot (as JSON) with a timestamp, building
-        a history of setup changes over time rather than just overwriting
-        the last-saved value."""
+    def save_kart_setup(
+        self, setup, source_file: str, session_index: int, start_time: str | None, driver: str | None = None
+    ) -> int:
+        """Persist a KartSetup snapshot (as JSON) with a timestamp, scoped to
+        one specific session (identified the same way `find_session` does)
+        -- different sessions on the same track day can genuinely run
+        different gearing/jetting/tyre pressures, so a single global "the"
+        setup doesn't hold. Building a history per session (rather than just
+        overwriting the last-saved value) also means changes across a
+        session can be reviewed later."""
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO kart_setups (driver, saved_at, setup_json) VALUES (?, ?, ?)",
-                (driver, datetime.now(timezone.utc).isoformat(), json.dumps(setup.to_dict())),
+                "INSERT INTO kart_setups (source_file, session_index, start_time, driver, saved_at, setup_json) VALUES (?, ?, ?, ?, ?, ?)",
+                (source_file, session_index, start_time, driver, datetime.now(timezone.utc).isoformat(), json.dumps(setup.to_dict())),
             )
             conn.commit()
             return cur.lastrowid
 
     def list_kart_setups(self) -> pd.DataFrame:
         with self._connect() as conn:
-            return pd.read_sql_query("SELECT id, driver, saved_at FROM kart_setups ORDER BY saved_at DESC", conn)
+            return pd.read_sql_query(
+                "SELECT id, source_file, session_index, start_time, driver, saved_at FROM kart_setups ORDER BY saved_at DESC", conn
+            )
 
     def load_kart_setup(self, setup_id: int):
         from .setup_config import KartSetup
@@ -201,10 +212,17 @@ class SessionLibrary:
             raise KeyError(f"No kart setup with id {setup_id}")
         return KartSetup.from_dict(json.loads(row.iloc[0]["setup_json"]))
 
-    def load_latest_kart_setup(self):
-        """Most recently saved KartSetup, or None if nothing's been saved yet."""
+    def load_latest_kart_setup_for_session(self, source_file: str, session_index: int, start_time: str | None):
+        """Most recently saved KartSetup for this exact session (matched the
+        same way `find_session` identifies a session), or None if nothing's
+        been saved for it yet -- deliberately does NOT fall back to some
+        other session's setup, since assuming the same setup carried over is
+        exactly the assumption per-session storage exists to avoid."""
         with self._connect() as conn:
-            row = pd.read_sql_query("SELECT id FROM kart_setups ORDER BY saved_at DESC LIMIT 1", conn)
+            row = pd.read_sql_query(
+                "SELECT id FROM kart_setups WHERE source_file = ? AND session_index = ? AND start_time IS ? ORDER BY saved_at DESC LIMIT 1",
+                conn, params=(source_file, session_index, start_time),
+            )
         if row.empty:
             return None
         return self.load_kart_setup(int(row.iloc[0]["id"]))

@@ -49,22 +49,40 @@ def test_kart_setup_history_roundtrip(tmp_path):
     db_path = os.path.join(tmp_path, "sessions.db")
     lib = SessionLibrary(db_path)
 
-    assert lib.load_latest_kart_setup() is None
+    session_key = ("session1.tsv", 0, "10:00:00")
+    assert lib.load_latest_kart_setup_for_session(*session_key) is None
 
     setup1 = KartSetup(driver="Test Driver")
     setup1.gearing.rear_teeth = 78
-    lib.save_kart_setup(setup1, driver="Test Driver")
+    lib.save_kart_setup(setup1, *session_key, driver="Test Driver")
 
     setup2 = KartSetup(driver="Test Driver")
     setup2.gearing.rear_teeth = 80
-    setup_id_2 = lib.save_kart_setup(setup2, driver="Test Driver")
+    setup_id_2 = lib.save_kart_setup(setup2, *session_key, driver="Test Driver")
 
     history = lib.list_kart_setups()
     assert len(history) == 2
 
-    latest = lib.load_latest_kart_setup()
+    latest = lib.load_latest_kart_setup_for_session(*session_key)
     assert latest.gearing.rear_teeth == 80
 
     reloaded = lib.load_kart_setup(setup_id_2)
     assert reloaded.gearing.rear_teeth == 80
+    lib.close()
+
+
+def test_kart_setup_is_scoped_per_session(tmp_path):
+    db_path = os.path.join(tmp_path, "sessions.db")
+    lib = SessionLibrary(db_path)
+
+    session_a = ("session1.tsv", 0, "10:00:00")
+    session_b = ("session1.tsv", 1, "11:15:00")
+
+    setup_a = KartSetup(driver="Test Driver")
+    setup_a.gearing.rear_teeth = 78
+    lib.save_kart_setup(setup_a, *session_a, driver="Test Driver")
+
+    # Session B has never had a setup saved -- must NOT inherit session A's.
+    assert lib.load_latest_kart_setup_for_session(*session_b) is None
+    assert lib.load_latest_kart_setup_for_session(*session_a).gearing.rear_teeth == 78
     lib.close()

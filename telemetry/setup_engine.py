@@ -17,9 +17,9 @@ import pandas as pd
 from .metrics import add_braking_throttle_estimates, lap_metric_trace
 from .setup_config import KartSetup
 
-# Rotax Senior EVO peak-power RPM band -- a reasonable default, NOT a
-# confirmed spec. Override with the actual engine builder's numbers.
-DEFAULT_PEAK_POWER_RPM_BAND = (11_500, 13_000)
+# Peak-power RPM band -- a reasonable default, NOT a confirmed spec.
+# Override with the actual engine builder's numbers.
+DEFAULT_PEAK_POWER_RPM_BAND = (9_000, 12_500)
 
 
 def gearing_suggestion(

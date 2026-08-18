@@ -150,13 +150,9 @@ streamlit run app.py
 Then open the local URL Streamlit prints. A default sample file
 (`sample_data/default_session.tsv`) loads automatically so there's
 something to look at immediately -- upload your own `.tsv` in the sidebar
-any time to take over from it (does not overwrite the file on disk). You'll
-be asked for your kart setup right after that (skippable) -- if it points
-to a medium/high-confidence gearing, jetting, tyre-pressure, or
-chassis-balance issue, that gets folded straight into the **Top 3 Focus
-Areas** headline alongside the usual corner-based time-loss items, rather
-than sitting only in the separate setup section. That headline is the
-landing view, in plain language, before the deeper technical views
+any time to take over from it (does not overwrite the file on disk). The
+**Top 3 Focus Areas** headline is the landing view, in plain language,
+before the deeper technical views
 (hover-linked speed/RPM/delta traces + track map, track map, braking zones,
 RPM trace, per-corner entry/apex/exit speed & RPM, cross-session corner
 comparison, a what-if gearing simulator, peak-power RPM zone time,
@@ -214,13 +210,21 @@ there, and needs no outbound network access either.
 
 ## Filling in the kart setup
 
-You're prompted for gearing, carburettor, tyre, and chassis settings, plus
-track/session context and the engine's peak-power RPM band, right after
-uploading a file (none of this exists in the TSV, so it's all
-user-supplied) -- skip it if you just want to look at telemetry first, and
-fill it in later from the **Kart Setup** tab, which has the same form.
-Download it as YAML to keep a record; see `config/setup_example.yaml` for
-the file format, or load/save it directly via `telemetry.setup_config.KartSetup`.
+Gearing, carburettor, tyre, and chassis settings, plus track/session
+context and the engine's peak-power RPM band (none of this exists in the
+TSV, so it's all user-supplied) are entered from the **Kart Setup** tab.
+**Setup is stored per session, not globally** -- switch "Session to
+analyze" in the sidebar and each one keeps its own setup, since gearing,
+jetting, and tyre pressure routinely differ session to session on the same
+track day; there's no assumption that one setup applies to everything
+you've loaded. A session with nothing saved for it yet starts from
+defaults rather than silently inheriting whatever another session had (see
+`telemetry/storage.py::save_kart_setup` / `load_latest_kart_setup_for_session`).
+The History tab lists every setup ever saved across every session, and can
+copy any past one into the currently active session as a starting point.
+Download the active session's setup as YAML to keep a record; see
+`config/setup_example.yaml` for the file format, or load/save it directly
+via `telemetry.setup_config.KartSetup`.
 
 The setup correlation engine (also in that tab) cross-references your
 stated setup against telemetry patterns -- e.g. peak RPM on the longest
@@ -334,9 +338,11 @@ values and trends don't require re-entering/re-uploading every visit. The
 app wires this in automatically: whichever session you're actively
 analyzing gets saved (not every session in a multi-session file up front --
 that pickles a full raw dataframe per session, which was slow enough on an
-11-session real file to block the very first render for minutes), your
-kart setup is pre-filled from the last one you saved, and both are
-browsable from the **History** view.
+11-session real file to block the very first render for minutes), and each
+session's kart setup is pre-filled from the last one saved *for that
+specific session* (not from whatever session you looked at previously --
+see "Filling in the kart setup" above). Both are browsable from the
+**History** view.
 
 **Important caveat:** this storage lives on the app's local disk. On
 Streamlit Community Cloud specifically, that disk is wiped on every

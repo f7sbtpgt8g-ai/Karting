@@ -1,8 +1,10 @@
 driver: Example Driver
 class_name: Rotax Senior EVO
+peak_power_rpm_low: 9000
+peak_power_rpm_high: 12500
 
 gearing:
-  front_teeth: 10
+  front_teeth: 12
   rear_teeth: 80
   chain_pitch: "219"
   axle_type: fixed

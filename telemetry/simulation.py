@@ -122,7 +122,7 @@ def simulate_gearing_change(
     step, so a change in acceleration capability at the new RPM feeds
     back into the simulated speed for the rest of the straight.
     """
-    front = setup.gearing.front_teeth or 10
+    front = setup.gearing.front_teeth or 12
     rear = setup.gearing.rear_teeth or 80
     new_front = max(front + front_teeth_delta, 1)
     new_rear = max(rear + rear_teeth_delta, 1)
