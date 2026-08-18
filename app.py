@@ -611,11 +611,13 @@ def page_lap_times() -> None:
     if not _require_data():
         return
     st.subheader("Lap time table")
-    pb_across_loaded = min(
-        clean_lap_table(compute_clean_laps(s))["lap_time_s"].min()
-        for _, s in all_sessions
-        if not clean_lap_table(compute_clean_laps(s)).empty
-    )
+    # Reuses the per-session best times already computed (and cached in
+    # session_state) for the "Session to analyze" picker, rather than
+    # re-running outlier/anomaly detection across every loaded session from
+    # scratch on every visit to this page -- compute_clean_laps is
+    # deliberately uncached (see its docstring), so redoing that here too
+    # was showing up as a multi-second delay on a multi-session file.
+    pb_across_loaded = min(t for t in session_best_times.values() if t is not None)
     annotated = lap_time_with_deltas(laps, personal_best_s=pb_across_loaded)
     display_cols = ["lap_number", "lap_time_s", "delta_to_best_s", "delta_to_average_s", "delta_to_personal_best_s", "is_outlier", "outlier_reason", "likely_incident"]
     display_cols = [c for c in display_cols if c in annotated.columns]
