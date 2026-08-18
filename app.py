@@ -875,6 +875,28 @@ def page_corner_comparison() -> None:
                     line=dict(color="#d62728", width=5), hoverinfo="skip", showlegend=False,
                 )
             )
+            # Every segment labeled, same as the Top 3 Focus Areas track map,
+            # so it's obvious at a glance which corner is being discussed
+            # relative to the rest of the track -- not just a highlighted
+            # squiggle with no surrounding context.
+            where_labels = active_midpoints["segment_label"].str.replace("Corner ", "C", regex=False).str.replace("Straight ", "S", regex=False)
+            is_selected = active_midpoints["segment_label"] == selected_corner_label
+            fig_where.add_trace(
+                go.Scatter(
+                    x=active_midpoints["mid_lon"], y=active_midpoints["mid_lat"],
+                    mode="markers+text",
+                    text=where_labels,
+                    textposition="top center",
+                    marker=dict(
+                        size=[18 if sel else 10 for sel in is_selected],
+                        color=["#d62728" if sel else "#1f77b4" for sel in is_selected],
+                        line=dict(width=1, color="black"),
+                    ),
+                    hovertext=active_midpoints["segment_label"],
+                    hoverinfo="text",
+                    showlegend=False,
+                )
+            )
             fig_where.update_layout(xaxis_title="Longitude", yaxis_title="Latitude", height=400, yaxis=dict(scaleanchor="x"))
             st.plotly_chart(fig_where, width='stretch')
 
