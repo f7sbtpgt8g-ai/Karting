@@ -269,6 +269,14 @@ just "gear up/down" to avoid ambiguity.
   a reference lap; positive = slower than the reference at that point,
   negative = faster, and it's the single most direct view for pinpointing
   exactly where time is lost.
+- **Data Analysis**: the same cross-session lap picker as Speed & Delta (each
+  row's color matches its line below), stacked into a taller five-chart view
+  -- Speed, RPM, GPS Lateral Acceleration, GPS Longitudinal Acceleration, and
+  delta -- with a "Charts to show" control to hide any of them. No manual
+  reference/position pickers here: the fastest lap among your picks is always
+  the delta reference and the map's tracked position. The RPM chart shades
+  the peak-power band and lists each lap's % of lap time spent inside it in
+  its own legend alongside the chart.
 - **Braking zones / RPM trace / per-corner entry-apex-exit table**: labeled
   as *inferred* where relevant -- there's no direct brake or throttle
   channel, so braking zones come from deceleration patterns. The RPM trace
