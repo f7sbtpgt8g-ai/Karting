@@ -244,8 +244,10 @@ def render_linked_speed_delta(chart_fig: go.Figure, map_fig: go.Figure, dist: li
     `chart_fig` overlays multiple laps, each with its own distance-sampled
     trace of potentially different length, so there's no single shared
     "point index" to key off. All laps share the same x scale (distance in
-    metres) though, via `hovermode="x unified"` on `chart_fig`, so the
-    hovered *distance* is what's used to place the marker -- linearly
+    metres) though, so the hovered point's underlying *distance* (still
+    present in the `plotly_hover` event payload even though the tooltip
+    itself, via a custom `hovertemplate`, no longer displays it) is what's
+    used to place the marker -- linearly
     interpolated client-side into the map lap's own lat/lon arrays (`dist`/
     `lat`/`lon`), the same way the old slider-driven marker used
     `np.interp` server-side.
@@ -745,22 +747,38 @@ def page_speed_delta() -> None:
             # from different sessions (lap numbering restarts per session).
             tag = f"S{entry['session'].session_id}·L{entry['lap_number']}"
             fig.add_trace(
-                go.Scatter(x=trace["lap_distance_m"], y=trace["GPS Speed"], mode="lines", name=tag, legendgroup=tag, line=dict(color=color)),
+                go.Scatter(
+                    x=trace["lap_distance_m"], y=trace["GPS Speed"], mode="lines", name=tag, legendgroup=tag, line=dict(color=color),
+                    hovertemplate=f"{tag}: %{{y:.1f}} km/h<extra></extra>",
+                ),
                 row=1, col=1,
             )
             fig.add_trace(
-                go.Scatter(x=trace["lap_distance_m"], y=trace["RPM"], mode="lines", name=f"{tag} RPM", legendgroup=tag, line=dict(color=color), showlegend=False),
+                go.Scatter(
+                    x=trace["lap_distance_m"], y=trace["RPM"], mode="lines", name=f"{tag} RPM", legendgroup=tag, line=dict(color=color), showlegend=False,
+                    hovertemplate=f"{tag}: %{{y:.0f}} RPM<extra></extra>",
+                ),
                 row=2, col=1,
             )
             if not (entry["session"] is reference_session and entry["lap_number"] == reference_lap):
                 dt = cross_session_delta_trace(entry["session"], entry["lap_number"], reference_session, reference_lap)
                 fig.add_trace(
-                    go.Scatter(x=dt["distance_m"], y=dt["delta_s"], mode="lines", name=f"{tag} delta", legendgroup=tag, line=dict(color=color), showlegend=False),
+                    go.Scatter(
+                        x=dt["distance_m"], y=dt["delta_s"], mode="lines", name=f"{tag} delta", legendgroup=tag, line=dict(color=color), showlegend=False,
+                        hovertemplate=f"{tag}: %{{y:.4f}}s<extra></extra>",
+                    ),
                     row=3, col=1,
                 )
         fig.add_hline(y=0, row=3, col=1, line_dash="dash", line_color="gray")
         fig.update_xaxes(title_text="Distance (m)", row=3, col=1)
-        fig.update_layout(hovermode="x unified")
+        # "closest" (not "x"/"x unified"): both of those hovermodes draw
+        # the shared distance value as a small floating label right on the
+        # axis regardless of each trace's hovertemplate -- there's no layout
+        # option to suppress just that label, so "closest" is the only mode
+        # that shows nothing but each hovered trace's own (distance-free)
+        # tooltip. showspikes=False additionally drops the dotted guideline.
+        fig.update_layout(hovermode="closest")
+        fig.update_xaxes(showspikes=False)
 
         def _entry_map_label(idx: int) -> str:
             e = compare_entries[idx]
