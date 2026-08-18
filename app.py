@@ -137,20 +137,24 @@ def compute_clean_laps(session: Session) -> pd.DataFrame:
     return laps
 
 
-def fastest_lap_session_label(sessions_with_labels: list[tuple[str, Session]]) -> str | None:
+def session_best_lap_times(sessions_with_labels: list[tuple[str, Session]]) -> dict[str, float | None]:
+    """Fastest clean lap time per loaded session (None if a session has no
+    clean laps) -- shown in the "Session to analyze" picker so it's obvious
+    which session to look at without opening each one first, and used to
+    pick the default (see `fastest_lap_session_label`)."""
+    times: dict[str, float | None] = {}
+    for label, s in sessions_with_labels:
+        clean_s = clean_lap_table(compute_clean_laps(s))
+        times[label] = float(clean_s["lap_time_s"].min()) if not clean_s.empty else None
+    return times
+
+
+def fastest_lap_session_label(session_best_times: dict[str, float | None]) -> str | None:
     """Which loaded session has the single fastest clean lap -- used to
     default the "Session to analyze" picker so the driver doesn't have to
     manually hunt for their best session out of a multi-session file."""
-    best_label, best_time = None, float("inf")
-    for label, s in sessions_with_labels:
-        clean_s = clean_lap_table(compute_clean_laps(s))
-        if clean_s.empty:
-            continue
-        t = clean_s["lap_time_s"].min()
-        if t < best_time:
-            best_time = t
-            best_label = label
-    return best_label
+    valid = {label: t for label, t in session_best_times.items() if t is not None}
+    return min(valid, key=valid.get) if valid else None
 
 
 @st.cache_resource(show_spinner=False)
@@ -436,12 +440,26 @@ session_labels = [label for label, _ in all_sessions]
 # Streamlit reruns this whole script on every interaction regardless of tab.
 if st.session_state.get("_session_labels_seen") != session_labels:
     st.session_state["_session_labels_seen"] = session_labels
-    st.session_state["_default_session_label"] = fastest_lap_session_label(all_sessions)
+    st.session_state["_session_best_times"] = session_best_lap_times(all_sessions)
+    st.session_state["_default_session_label"] = fastest_lap_session_label(st.session_state["_session_best_times"])
 
+session_best_times: dict[str, float | None] = st.session_state.get("_session_best_times", {})
 default_session_label = st.session_state.get("_default_session_label")
 default_session_index = session_labels.index(default_session_label) if default_session_label in session_labels else 0
 
-active_label = st.sidebar.selectbox("Session to analyze", session_labels, index=default_session_index)
+
+def format_session_option(label: str) -> str:
+    # Best time first: the sidebar column is narrow enough that long session
+    # labels (filename + session index + timestamp) get truncated in the
+    # dropdown list before reaching anything appended at the end, and the
+    # lap time is the whole point of showing it here.
+    t = session_best_times.get(label)
+    return f"{t:.2f}s — {label}" if t is not None else label
+
+
+active_label = st.sidebar.selectbox(
+    "Session to analyze", session_labels, index=default_session_index, format_func=format_session_option
+)
 active_session = dict(all_sessions)[active_label]
 
 # Auto-save only the session actually being analyzed, not every session in
@@ -467,10 +485,23 @@ if clean.empty:
 clean_lap_numbers = clean["lap_number"].tolist()
 best_lap = int(clean.loc[clean["lap_time_s"].idxmin(), "lap_number"])
 
+# Shared by every lap-number selectbox/multiselect for the active session
+# (sidebar and every view below) so a lap is never just a bare number --
+# picking "which lap" without seeing its time meant opening it first to
+# find out.
+lap_time_by_number = dict(zip(laps["lap_number"], laps["lap_time_s"]))
+
+
+def format_lap_option(lap_no: int) -> str:
+    t = lap_time_by_number.get(lap_no)
+    return f"Lap {lap_no} — {t:.2f}s" if t is not None else f"Lap {lap_no}"
+
+
 analyzed_lap = st.sidebar.selectbox(
     "Lap to analyze against theoretical best",
     clean_lap_numbers,
     index=clean_lap_numbers.index(best_lap),
+    format_func=format_lap_option,
 )
 
 segments = build_reference_segments(active_session, best_lap)
@@ -655,8 +686,12 @@ if selected_view == "Lap Times":
 # --- Speed & Delta ---
 elif selected_view == "Speed & Delta":
     st.subheader("Speed, RPM & delta trace")
-    compare_laps = st.multiselect("Laps to overlay", clean_lap_numbers, default=clean_lap_numbers[: min(4, len(clean_lap_numbers))])
-    reference_lap = st.selectbox("Reference lap (for delta)", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="ref_lap_delta")
+    compare_laps = st.multiselect(
+        "Laps to overlay", clean_lap_numbers, default=clean_lap_numbers[: min(4, len(clean_lap_numbers))], format_func=format_lap_option
+    )
+    reference_lap = st.selectbox(
+        "Reference lap (for delta)", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="ref_lap_delta", format_func=format_lap_option
+    )
 
     if not compare_laps:
         st.info("Select at least one lap to overlay.")
@@ -691,7 +726,7 @@ elif selected_view == "Speed & Delta":
         fig.update_xaxes(title_text="Distance (m)", row=3, col=1)
         fig.update_layout(hovermode="x unified")
 
-        map_lap_choice = st.selectbox("Show position for lap", compare_laps, index=0, key="speed_tab_map_lap")
+        map_lap_choice = st.selectbox("Show position for lap", compare_laps, index=0, key="speed_tab_map_lap", format_func=format_lap_option)
         primary_trace = lap_traces[map_lap_choice].dropna(subset=["lap_distance_m", "Latitude", "Longitude"]).sort_values("lap_distance_m")
 
         map_fig = go.Figure()
@@ -720,7 +755,7 @@ elif selected_view == "Speed & Delta":
 # --- Track Map ---
 elif selected_view == "Track Map":
     st.subheader("Track map")
-    map_lap = st.selectbox("Lap", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="map_lap")
+    map_lap = st.selectbox("Lap", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="map_lap", format_func=format_lap_option)
     color_by = st.radio("Color by", ["Speed", "Delta vs reference (best lap)"], horizontal=True)
     trace = lap_gps_trace(active_session, map_lap)
 
@@ -751,7 +786,7 @@ elif selected_view == "Track Map":
 # --- Braking / RPM ---
 elif selected_view == "Braking / RPM":
     st.subheader("Braking zones (inferred — no brake channel in this export)")
-    brake_lap = st.selectbox("Lap", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="brake_lap")
+    brake_lap = st.selectbox("Lap", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="brake_lap", format_func=format_lap_option)
     trace = lap_metric_trace(active_session, brake_lap)
     trace = add_braking_throttle_estimates(trace)
     zones = braking_zones(trace)
@@ -808,7 +843,7 @@ elif selected_view == "Corner Comparison":
         compare_lap = st.selectbox(
             "Lap to compare (from the active session)", clean_lap_numbers,
             index=clean_lap_numbers.index(analyzed_lap) if analyzed_lap in clean_lap_numbers else 0,
-            key="corner_cmp_lap",
+            key="corner_cmp_lap", format_func=format_lap_option,
         )
 
         active_midpoints = segment_midpoints(_best_lap_trace, segments)
@@ -904,7 +939,7 @@ elif selected_view == "Gearing Simulation":
         "estimate, not a guarantee -- see \"How this estimate works\" below."
     )
 
-    sim_lap = st.selectbox("Lap to simulate", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="sim_lap")
+    sim_lap = st.selectbox("Lap to simulate", clean_lap_numbers, index=clean_lap_numbers.index(best_lap), key="sim_lap", format_func=format_lap_option)
     c1, c2 = st.columns(2)
     rear_delta = c1.number_input(
         "Δ rear sprocket teeth", value=1, step=1,
