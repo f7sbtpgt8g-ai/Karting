@@ -348,6 +348,73 @@ def render_setup_fields(setup: KartSetup) -> KartSetup:
 
 
 # ---------------------------------------------------------------------------
+# Table display: human-readable column headers
+#
+# Every dataframe rendered via st.dataframe() below is built with
+# code-friendly column names (snake_case, unit suffixes like `_s`/`_kmh`) so
+# the analysis modules stay easy to work with -- but shown verbatim in the
+# UI, those read like debug output rather than a table meant for a driver
+# to glance at trackside. COLUMN_LABELS/prettify_columns rename a display
+# copy just before st.dataframe(), leaving the underlying data untouched.
+# ---------------------------------------------------------------------------
+
+COLUMN_LABELS = {
+    "segment_label": "Segment",
+    "segment_kind": "Type",
+    "time_loss_s": "Time Available (s)",
+    "your_time_s": "Your Time (s)",
+    "best_time_s": "Best Time (s)",
+    "best_time_from_lap": "Best Set On Lap",
+    "lap_number": "Lap",
+    "lap_time_s": "Lap Time (s)",
+    "delta_to_best_s": "Δ to Best (s)",
+    "delta_to_average_s": "Δ to Average (s)",
+    "delta_to_personal_best_s": "Δ to Personal Best (s)",
+    "is_outlier": "Outlier",
+    "outlier_reason": "Outlier Reason",
+    "likely_incident": "Likely Incident",
+    "brake_point_m": "Brake Point (m)",
+    "end_m": "End (m)",
+    "duration_s": "Duration (s)",
+    "peak_decel_g": "Peak Decel (g)",
+    "entry_speed_kmh": "Entry Speed (km/h)",
+    "entry_rpm": "Entry RPM",
+    "apex_speed_kmh": "Apex Speed (km/h)",
+    "apex_rpm": "Apex RPM",
+    "exit_speed_kmh": "Exit Speed (km/h)",
+    "exit_rpm": "Exit RPM",
+    "min_speed_kmh": "Min Speed (km/h)",
+    "max_speed_kmh": "Max Speed (km/h)",
+    "avg_speed_kmh": "Avg Speed (km/h)",
+    "lateral_g_std": "Lateral G Std Dev",
+    "corner_time_s": "Corner Time (s)",
+    "session_label": "Session",
+    "session": "Session",
+    "best_lap_s": "Best Lap (s)",
+    "average_lap_s": "Average Lap (s)",
+    "std_dev_s": "Std Dev (s)",
+    "n_laps": "Laps",
+    "n_sessions": "Sessions",
+    "avg_time_loss_s": "Avg Time Lost (s)",
+    "total_time_loss_s": "Total Time Lost (s)",
+    "id": "ID",
+    "source_file": "Source File",
+    "driver": "Driver",
+    "track_name": "Track",
+    "session_type": "Session Type",
+    "start_date": "Date",
+    "start_time": "Start Time",
+    "ingested_at": "Saved At",
+    "session_index": "Session #",
+    "saved_at": "Saved At",
+}
+
+
+def prettify_columns(df: pd.DataFrame) -> pd.DataFrame:
+    return df.rename(columns=COLUMN_LABELS)
+
+
+# ---------------------------------------------------------------------------
 # Sidebar: file upload + context
 # ---------------------------------------------------------------------------
 
@@ -574,7 +641,7 @@ with st.expander(f"Full path to theoretical best — all {len(full_breakdown)} s
     breakdown_display[["time_loss_s", "your_time_s", "best_time_s"]] = breakdown_display[
         ["time_loss_s", "your_time_s", "best_time_s"]
     ].round(3)
-    st.dataframe(breakdown_display, width='stretch')
+    st.dataframe(prettify_columns(breakdown_display), width='stretch')
 
     st.caption("Where these segments are on track (labels abbreviated: C = Corner, S = Straight):")
     segment_locations = segment_midpoints(_best_lap_trace, segments)
@@ -654,8 +721,8 @@ if selected_view == "Lap Times":
     annotated = lap_time_with_deltas(laps, personal_best_s=pb_across_loaded)
     display_cols = ["lap_number", "lap_time_s", "delta_to_best_s", "delta_to_average_s", "delta_to_personal_best_s", "is_outlier", "outlier_reason", "likely_incident"]
     display_cols = [c for c in display_cols if c in annotated.columns]
-    st.dataframe(annotated[display_cols], width='stretch')
-    st.caption("Rows flagged `is_outlier` are excluded from best/average stats above but shown here for review.")
+    st.dataframe(prettify_columns(annotated[display_cols]), width='stretch')
+    st.caption("Rows flagged as an outlier are excluded from best/average stats above but shown here for review.")
 
 # --- Speed & Delta ---
 elif selected_view == "Speed & Delta":
@@ -764,7 +831,7 @@ elif selected_view == "Braking / RPM":
     trace = lap_metric_trace(active_session, brake_lap)
     trace = add_braking_throttle_estimates(trace)
     zones = braking_zones(trace)
-    st.dataframe(zones, width='stretch')
+    st.dataframe(prettify_columns(zones), width='stretch')
 
     st.subheader("RPM trace")
     fig5 = go.Figure()
@@ -784,7 +851,7 @@ elif selected_view == "Braking / RPM":
         "exit_speed_kmh", "exit_rpm",
         "min_speed_kmh", "max_speed_kmh", "avg_speed_kmh", "lateral_g_std",
     ]
-    st.dataframe(agg[[c for c in display_cols if c in agg.columns]], width='stretch')
+    st.dataframe(prettify_columns(agg[[c for c in display_cols if c in agg.columns]]), width='stretch')
 
     st.subheader("Time in peak-power RPM zone")
     st.caption(f"Band: {setup.peak_power_rpm_low}-{setup.peak_power_rpm_high} RPM (edit under Kart Setup — confirm against your engine builder's spec).")
@@ -876,7 +943,7 @@ elif selected_view == "Corner Comparison":
                 comparison_table = comparison_table.round(
                     {"corner_time_s": 3, "entry_speed_kmh": 1, "entry_rpm": 0, "apex_speed_kmh": 1, "apex_rpm": 0, "exit_speed_kmh": 1, "exit_rpm": 0}
                 )
-                st.dataframe(comparison_table, width='stretch')
+                st.dataframe(prettify_columns(comparison_table), width='stretch')
 
             st.subheader(f"Where {selected_corner_label} is on track")
             corner_row = segments[segments["label"] == selected_corner_label].iloc[0]
@@ -900,7 +967,7 @@ elif selected_view == "Corner Comparison":
             st.plotly_chart(fig_where, width='stretch')
 
             with st.expander(f"All laps analyzed for {selected_corner_label} ({len(comparison_df)} rows across {comparison_df['session_label'].nunique()} session(s))"):
-                st.dataframe(comparison_df.sort_values("corner_time_s"), width='stretch')
+                st.dataframe(prettify_columns(comparison_df.sort_values("corner_time_s")), width='stretch')
 
 # --- Gearing Simulation ---
 elif selected_view == "Gearing Simulation":
@@ -1036,7 +1103,7 @@ elif selected_view == "Progression":
         st.info("Load more than one session (or a file with multiple sessions) to see progression across sessions.")
     else:
         progression = session_progression(all_sessions)
-        st.dataframe(progression, width='stretch')
+        st.dataframe(prettify_columns(progression), width='stretch')
         fig7 = go.Figure()
         fig7.add_trace(go.Scatter(x=progression["session"], y=progression["best_lap_s"], mode="lines+markers", name="Best lap"))
         fig7.add_trace(go.Scatter(x=progression["session"], y=progression["average_lap_s"], mode="lines+markers", name="Average lap"))
@@ -1058,7 +1125,7 @@ elif selected_view == "Progression":
         if recurring.empty:
             st.info("No segment shows up as a top-3 focus area in more than one loaded session yet.")
         else:
-            st.dataframe(recurring, width='stretch')
+            st.dataframe(prettify_columns(recurring), width='stretch')
             st.caption("Segments appearing here are a recurring habit across sessions, not a one-off mistake.")
 
 # --- Kart Setup ---
@@ -1107,7 +1174,7 @@ elif selected_view == "History":
         display_history = session_history[
             ["id", "source_file", "driver", "track_name", "session_type", "start_date", "start_time", "best_lap_s", "average_lap_s", "n_laps", "ingested_at"]
         ].sort_values("ingested_at", ascending=False)
-        st.dataframe(display_history, width='stretch')
+        st.dataframe(prettify_columns(display_history), width='stretch')
 
     st.subheader("Kart setup history")
     st.caption("Setups are saved per session (see the Kart Setup tab) -- every snapshot ever saved, across every session, is listed here.")
@@ -1115,7 +1182,7 @@ elif selected_view == "History":
     if setup_history.empty:
         st.info("No setup snapshots saved yet.")
     else:
-        st.dataframe(setup_history, width='stretch')
+        st.dataframe(prettify_columns(setup_history), width='stretch')
         restore_id = st.selectbox(
             f"Copy a past setup into the active session ({active_label})",
             setup_history["id"],
