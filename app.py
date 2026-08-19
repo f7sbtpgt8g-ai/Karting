@@ -110,10 +110,33 @@ def parse_uploaded_file(file_bytes: bytes, filename: str) -> list[Session]:
     return sessions
 
 
-def session_label(filename: str, session: Session) -> str:
+def session_label(driver: str | None, session: Session, best_lap_s: float | None) -> str:
+    """Driver + session number + date/time + best lap -- deliberately
+    excludes the source filename (meaningless once sessions from several
+    drivers' exports are mixed together in one library; "default_session.tsv"
+    told you nothing a driver would recognize their own session by)."""
     date = session.start_date or "?"
     time = session.start_time or "?"
-    return f"{filename} — session {session.session_id} ({date} {time})"
+    best = f"{best_lap_s:.2f}s" if best_lap_s is not None else "no clean laps"
+    return f"{driver or 'Unknown driver'} — Session {session.session_id} — {date} {time} — {best}"
+
+
+@st.cache_resource(show_spinner="Loading saved sessions...")
+def load_persisted_sessions_cached(_library: SessionLibrary, _sessions_meta: pd.DataFrame, meta_key: tuple) -> list[tuple[str, Session]]:
+    """Fully reconstruct (unpickle) every session already saved in the
+    library -- this is what lets uploaded files persist across reruns and
+    app restarts without re-uploading, since `all_sessions` is built from
+    here instead of from a live file_uploader widget. Cached on `meta_key`
+    (a tuple of session DB ids) so this only redoes the actual unpickling
+    work when a session is added, not on every Streamlit rerun.
+    """
+    sessions: list[tuple[str, Session]] = []
+    for _, row in _sessions_meta.iterrows():
+        session = _library.load_session(int(row["id"]))
+        best_lap_s = float(row["best_lap_s"]) if pd.notna(row["best_lap_s"]) else None
+        label = session_label(session.driver, session, best_lap_s)
+        sessions.append((label, session))
+    return sessions
 
 
 def session_cache_key(session: Session) -> tuple:
@@ -492,7 +515,7 @@ def page_overview() -> None:
     if not _require_data():
         return
 
-    st.title(f"{driver_name} — Top 3 Focus Areas")
+    st.title(f"{active_session.driver or 'Unknown driver'} — Top 3 Focus Areas")
     st.caption(f"Analyzing lap {analyzed_lap} · {active_label}")
     if speed_is_estimated:
         st.caption("ℹ️ This export doesn't populate GPS Speed directly -- speed is estimated from GPS Distance instead. Treat speed-based figures as estimates, not direct measurements.")
@@ -698,7 +721,7 @@ def page_speed_delta() -> None:
         session_key, lap_key = f"sd_session_{row_id}", f"sd_lap_{row_id}"
         _ensure_valid_widget_state(session_key, session_labels, active_label)
         row_session_label = rc1.selectbox(
-            "Session", session_labels, key=session_key, format_func=format_session_option, label_visibility=label_visibility,
+            "Session", session_labels, key=session_key, label_visibility=label_visibility,
         )
         row_session = dict(all_sessions)[row_session_label]
         row_lap_numbers, row_lap_times = _session_clean_laps(row_session)
@@ -733,7 +756,7 @@ def page_speed_delta() -> None:
     st.session_state.setdefault("sd_ref_lap", best_lap)
     _ensure_valid_widget_state("sd_ref_session", session_labels, active_label)
     rfc1, rfc2 = st.columns(2)
-    ref_session_label = rfc1.selectbox("Reference session", session_labels, key="sd_ref_session", format_func=format_session_option)
+    ref_session_label = rfc1.selectbox("Reference session", session_labels, key="sd_ref_session")
     reference_session = dict(all_sessions)[ref_session_label]
     ref_lap_numbers, ref_lap_times = _session_clean_laps(reference_session)
 
@@ -881,7 +904,7 @@ def page_data_analysis() -> None:
         label_visibility = "visible" if idx == 0 else "collapsed"
         _ensure_valid_widget_state(session_key, session_labels, active_label)
         row_session_label = rc1.selectbox(
-            "Session", session_labels, key=session_key, format_func=format_session_option, label_visibility=label_visibility,
+            "Session", session_labels, key=session_key, label_visibility=label_visibility,
         )
         row_session = dict(all_sessions)[row_session_label]
         row_lap_numbers, row_lap_times = _session_clean_laps(row_session)
@@ -1451,7 +1474,7 @@ def page_kart_setup() -> None:
     if submitted:
         st.session_state.kart_setup = edited_setup
         setup = edited_setup
-        library.save_kart_setup(edited_setup, *active_session_key, driver=driver_name)
+        library.save_kart_setup(edited_setup, *active_session_key, driver=active_session.driver)
         st.success(f"Setup saved for {active_label} -- remembered for next time (see History page), and reflected in Top 3 Focus Areas on the next run.")
 
     yaml_bytes = io.BytesIO()
@@ -1473,9 +1496,9 @@ def page_history() -> None:
         return
     st.subheader("Session history")
     st.caption(
-        "Every loaded session is auto-saved locally so you can track progression over time. "
-        "Note: this storage lives on the app's local disk, which is wiped on every redeploy/reboot -- "
-        "treat it as a within-deploy convenience for now, not durable long-term history."
+        "Every session uploaded on the Settings page is saved here so you can track progression over time, "
+        "no re-uploading needed. Note: this storage lives on the app's local disk, which is wiped on every "
+        "redeploy/reboot -- treat it as a within-deploy convenience for now, not durable long-term history."
     )
     session_history = library.list_sessions()
     if session_history.empty:
@@ -1510,25 +1533,47 @@ def page_history() -> None:
 
 def page_settings() -> None:
     st.title("⚙️ Settings")
-    st.caption("Upload telemetry files and set the driver name shown throughout the app.")
-
-    uploaded_files = st.file_uploader(
-        "Upload Unipro TSV export(s)", type=["tsv", "txt"], accept_multiple_files=True
+    if flash := st.session_state.pop("settings_upload_result", None):
+        st.success(flash)
+    st.caption(
+        "Uploaded files are saved into your session library, so they persist across reruns and app restarts -- "
+        "no need to re-upload the same file next time. Upload each driver's files separately (with their name "
+        "below) to build up sessions you can compare across drivers, same as comparing across your own sessions."
     )
-    driver_name_input = st.text_input("Driver name", value=st.session_state.get("driver_name", "Driver"))
-    st.session_state["driver_name"] = driver_name_input
 
-    if uploaded_files:
-        sessions: list[tuple[str, Session]] = []
+    existing = library.list_sessions()
+    if not existing.empty:
+        n_drivers = existing["driver"].nunique()
+        st.caption(f"📚 Library currently has {len(existing)} session(s) from {n_drivers} driver(s).")
+
+    driver_input = st.text_input(
+        "Driver name for this upload", value="", placeholder="e.g. Alex Smith", key="settings_driver_name",
+    )
+    uploaded_files = st.file_uploader(
+        "Upload Unipro TSV export(s)", type=["tsv", "txt"], accept_multiple_files=True, key="settings_uploader",
+    )
+
+    if uploaded_files and not driver_input.strip():
+        st.warning("Enter a driver name above before loading -- every saved session needs to know who drove it.")
+    elif uploaded_files and st.button("Load file(s) into session library"):
+        driver = driver_input.strip()
+        added = 0
         for f in uploaded_files:
             for s in parse_uploaded_file(f.getvalue(), f.name):
-                sessions.append((session_label(f.name, s), s))
-        st.session_state["uploaded_all_sessions"] = sessions
-        st.success(f"Loaded {len(uploaded_files)} file(s), {len(sessions)} session(s).")
-    elif st.session_state.get("uploaded_all_sessions"):
-        st.info(f"Currently using {len(st.session_state['uploaded_all_sessions'])} previously uploaded session(s). Upload a file above to replace them.")
-    elif os.path.exists(DEFAULT_TSV_PATH):
-        st.caption("📎 Using the default sample file (upload above to use your own).")
+                if library.find_session(s.source_file, s.session_id, s.start_time, driver=driver) is not None:
+                    continue
+                s.driver = driver
+                library.save_session(s, driver=driver)
+                added += 1
+        if added:
+            # Flashed on the *next* run instead of shown here directly --
+            # the rerun below is what makes the sidebar's session picker and
+            # every other page see the new sessions immediately, but it also
+            # wipes any message set on this run before the user ever sees it.
+            st.session_state["settings_upload_result"] = f"Loaded {added} new session(s) for {driver}."
+            st.rerun()
+        else:
+            st.info("These sessions were already in your library -- nothing new to add.")
 
 
 # ---------------------------------------------------------------------------
@@ -1574,23 +1619,26 @@ st.sidebar.divider()
 
 library = get_session_library()
 
-if st.session_state.get("uploaded_all_sessions"):
-    all_sessions: list[tuple[str, Session]] = st.session_state["uploaded_all_sessions"]
-elif os.path.exists(DEFAULT_TSV_PATH):
+sessions_meta = library.list_sessions()
+if sessions_meta.empty and os.path.exists(DEFAULT_TSV_PATH):
     # Build-phase convenience: a default file ships with the app so it
-    # doesn't need re-uploading on every visit. Uploading anything on the
-    # Settings page takes over immediately -- it does not overwrite the
-    # file on disk.
+    # doesn't need uploading on the very first visit. This ingests it into
+    # the same session library real uploads use, exactly once ever -- every
+    # later run finds it already there via `sessions_meta` above and skips
+    # straight to loading, rather than re-parsing the raw TSV on every visit.
     with open(DEFAULT_TSV_PATH, "rb") as f:
         default_bytes = f.read()
-    all_sessions = [
-        (session_label(os.path.basename(DEFAULT_TSV_PATH), s), s)
-        for s in parse_uploaded_file(default_bytes, os.path.basename(DEFAULT_TSV_PATH))
-    ]
-else:
-    all_sessions = []
+    for s in parse_uploaded_file(default_bytes, os.path.basename(DEFAULT_TSV_PATH)):
+        s.driver = "Sample Driver"
+        library.save_session(s, driver="Sample Driver")
+    sessions_meta = library.list_sessions()
 
-driver_name = st.session_state.get("driver_name", "Driver")
+# A tuple of DB ids, not the DataFrame itself, so this stays cheap to
+# recompute every rerun while still giving load_persisted_sessions_cached a
+# real cache-invalidation signal -- it only redoes the (comparatively
+# expensive) unpickling work when a session is actually added or removed.
+sessions_meta_key = tuple(sessions_meta["id"]) if not sessions_meta.empty else ()
+all_sessions: list[tuple[str, Session]] = load_persisted_sessions_cached(library, sessions_meta, sessions_meta_key)
 
 data_ready = False
 data_error_message: str | None = None
@@ -1630,16 +1678,8 @@ if all_sessions:
     default_session_label = st.session_state.get("_default_session_label")
     default_session_index = session_labels.index(default_session_label) if default_session_label in session_labels else 0
 
-    def format_session_option(label: str) -> str:
-        # Best time first: the sidebar column is narrow enough that long
-        # session labels (filename + session index + timestamp) get
-        # truncated in the dropdown list before reaching anything appended
-        # at the end, and the lap time is the whole point of showing it here.
-        t = session_best_times.get(label)
-        return f"{t:.2f}s — {label}" if t is not None else label
-
     active_label = st.sidebar.selectbox(
-        "Session to analyze", session_labels, index=default_session_index, format_func=format_session_option
+        "Session to analyze", session_labels, index=default_session_index,
     )
     active_session = dict(all_sessions)[active_label]
 
@@ -1654,19 +1694,15 @@ if all_sessions:
     if st.session_state.get("_kart_setup_session_key") != active_session_key:
         st.session_state["_kart_setup_session_key"] = active_session_key
         loaded_setup = library.load_latest_kart_setup_for_session(*active_session_key)
-        st.session_state["kart_setup"] = loaded_setup if loaded_setup is not None else KartSetup(driver=driver_name)
+        st.session_state["kart_setup"] = loaded_setup if loaded_setup is not None else KartSetup(driver=active_session.driver)
 
     setup = st.session_state["kart_setup"]
 
-    # Auto-save only the session actually being analyzed, not every session in
-    # a multi-session file upfront -- saving pickles the full raw dataframe to
-    # disk per session, and doing that eagerly for all 11 sessions in a real
-    # multi-session file blocked the very first render for minutes. Switching
-    # the "Session to analyze" picker saves whichever session is newly
-    # selected, so browsing through sessions still builds up history over a
-    # visit.
-    if library.find_session(active_session.source_file, active_session.session_id, active_session.start_time) is None:
-        library.save_session(active_session, driver=driver_name, track_name=setup.track_session.track_name)
+    # No auto-save-on-select here: every session in `all_sessions` already
+    # came from the library (see load_persisted_sessions_cached above), so
+    # by construction there's nothing left to save the first time a session
+    # is selected -- unlike before this page loaded sessions from a live
+    # upload widget each rerun, uploading is now the only thing that saves.
 
     if st.sidebar.button("🔧 Edit kart setup"):
         st.switch_page(page_kart_setup_obj)

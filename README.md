@@ -148,10 +148,14 @@ streamlit run app.py
 ```
 
 Then open the local URL Streamlit prints. A default sample file
-(`sample_data/default_session.tsv`) loads automatically so there's
-something to look at immediately -- upload your own `.tsv` on the
-**Settings** page any time to take over from it (does not overwrite the
-file on disk). The **Top 3 Focus Areas** headline is its own landing page,
+(`sample_data/default_session.tsv`) is ingested into the session library
+automatically the very first time the app runs, under a placeholder
+"Sample Driver" -- upload your own `.tsv` files on the **Settings** page any
+time to add more (does not overwrite the file on disk). Every session
+that's ever been uploaded lives in the same SQLite-backed library
+(`data/sessions.db`), so nothing needs re-uploading on a later visit or
+after a page reload -- see "Session persistence & comparing across
+drivers" below. The **Top 3 Focus Areas** headline is its own landing page,
 in plain language, separate from the deeper technical pages
 (hover-linked speed/RPM/delta traces + track map, track map, braking zones,
 RPM trace, per-corner entry/apex/exit speed & RPM, cross-session corner
@@ -200,6 +204,41 @@ earlier version tried vendoring it as a static asset via Streamlit's
 Streamlit Community Cloud -- inlining costs a larger per-render payload but
 doesn't depend on a platform feature that's turned out to be unreliable
 there, and needs no outbound network access either.
+
+## Session persistence & comparing across drivers
+
+Uploading a file on the **Settings** page requires a driver name first --
+there's a text field above the uploader, and the "Load file(s)" button
+only appears (and only saves anything) once it's filled in, since every
+saved session needs to know who drove it. Once loaded, every session from
+that file is written into the same SQLite-backed library every other page
+reads from (`SessionLibrary` in `telemetry/storage.py`, the same store the
+History page and `scripts/ingest.py` use) -- so on the *next* run, whether
+that's the next rerun, a page reload, or the app restarting entirely, those
+sessions are there already, loaded from disk in `load_persisted_sessions_cached`
+in `app.py` instead of needing the raw `.tsv` re-uploaded and re-parsed.
+Re-uploading the exact same file under the same driver name is a no-op
+(matched by filename + session index + start time + driver, so the same
+file honestly re-uploaded by a *different* driver is still recorded, not
+silently dropped as a duplicate).
+
+Because every loaded session -- regardless of which file or which driver's
+upload it came from -- ends up in one flat pool, the session/lap pickers
+throughout the app (the sidebar's "Session to analyze", and the per-row
+pickers on Speed & Delta / Data Analysis / Corner Comparison) let you pick
+any combination across drivers exactly like they let you pick across your
+own sessions: there's no separate "driver" concept threaded through the
+comparison code, just more sessions to choose from. Session names
+(`session_label` in `app.py`) reflect this -- driver, session number,
+date/time, and best lap, deliberately not the source filename, since two
+drivers' exports both showing up as "default_session.tsv" would tell you
+nothing about whose lap you're looking at.
+
+This still shares the same disk-persistence caveat as the History page:
+`data/sessions.db` lives on local/container disk, wiped on every
+redeploy/reboot on platforms without persistent storage (e.g. Streamlit
+Community Cloud) -- a within-run/within-deploy convenience, not a durable
+database.
 
 ## Exporting the correct TSV from Unipro Analyser
 

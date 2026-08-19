@@ -97,17 +97,30 @@ class SessionLibrary:
         library explicitly (e.g. tests, scripts/ingest.py) -- there's no
         long-lived connection to close anymore."""
 
-    def find_session(self, source_file: str, session_index: int, start_time: str | None) -> int | None:
+    def find_session(
+        self, source_file: str, session_index: int, start_time: str | None, driver: str | None = None
+    ) -> int | None:
         """Existing DB id for a session already ingested from this exact
         file/session/start-time combination, if any -- lets callers avoid
         re-inserting the same session (e.g. the Streamlit app reruns its
         whole script on every interaction, so a naive save-on-every-run
-        would otherwise duplicate rows endlessly)."""
+        would otherwise duplicate rows endlessly).
+
+        `driver`, when given, is matched too: two different drivers' loggers
+        can genuinely export under the same default filename with the same
+        session index, and a real start-time collision between two actual
+        karts, while unlikely, isn't impossible either -- without this, a
+        second driver's upload that happened to collide on those three
+        fields alone would be silently treated as "already saved" and
+        dropped instead of recorded.
+        """
+        query = "SELECT id FROM sessions WHERE source_file = ? AND session_index = ? AND start_time IS ?"
+        params: tuple = (source_file, session_index, start_time)
+        if driver is not None:
+            query += " AND driver IS ?"
+            params += (driver,)
         with self._connect() as conn:
-            row = pd.read_sql_query(
-                "SELECT id FROM sessions WHERE source_file = ? AND session_index = ? AND start_time IS ?",
-                conn, params=(source_file, session_index, start_time),
-            )
+            row = pd.read_sql_query(query, conn, params=params)
         return int(row.iloc[0]["id"]) if not row.empty else None
 
     def save_session(self, session: Session, driver: str | None = None, track_name: str | None = None, session_type: str | None = None) -> int:
@@ -172,6 +185,7 @@ class SessionLibrary:
             df=df,
             start_date=r["start_date"],
             start_time=r["start_time"],
+            driver=r["driver"] if pd.notna(r["driver"]) else None,
         )
 
     def laps_for_session(self, session_db_id: int) -> pd.DataFrame:

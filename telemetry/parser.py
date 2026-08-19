@@ -129,6 +129,7 @@ class Session:
     df: pd.DataFrame
     start_date: str | None = None
     start_time: str | None = None
+    driver: str | None = None
     channel_cache: dict = field(default_factory=dict, repr=False)
 
     def extract_channel(self, column: str) -> pd.DataFrame:
