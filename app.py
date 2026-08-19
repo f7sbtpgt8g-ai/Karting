@@ -249,7 +249,10 @@ def build_accel_rpm_curve_cached(_session: Session, _key: tuple, clean_lap_numbe
 # Linked speed/RPM/delta trace + track map (Speed & Delta view)
 # ---------------------------------------------------------------------------
 
-def render_linked_speed_delta(chart_fig: go.Figure, map_fig: go.Figure, dist: list, lat: list, lon: list, height: int) -> None:
+def render_linked_speed_delta(
+    chart_fig: go.Figure, map_fig: go.Figure, dist: list, lat: list, lon: list,
+    height: int, map_height: int | None = None, chart_row_y_domains: list[tuple[float, float]] | None = None,
+) -> None:
     """A stacked speed/RPM/delta chart and a track map, hover-linked
     entirely client-side: hovering the chart (any row, any overlaid lap)
     moves a marker to the matching point on the map, with no Streamlit
@@ -274,14 +277,44 @@ def render_linked_speed_delta(chart_fig: go.Figure, map_fig: go.Figure, dist: li
     interpolated client-side into the map lap's own lat/lon arrays (`dist`/
     `lat`/`lon`), the same way the old slider-driven marker used
     `np.interp` server-side.
+
+    `map_height`, when shorter than `height`, keeps the map at that shorter
+    height and gives the chart column its own internal scrollbar instead of
+    letting it stretch the whole component -- since this whole block is one
+    `components.html` iframe (a separate browsing context Streamlit doesn't
+    scroll internally), true CSS `position: sticky` against the *page's*
+    scroll can't reach across that boundary. Capping the iframe itself to
+    `map_height` and scrolling the chart *inside* it produces the same
+    visible effect the caller actually wants -- the map staying in view
+    beside whichever part of a tall chart stack is currently scrolled into
+    frame -- without needing genuine sticky positioning at all.
+
+    `chart_row_y_domains`, one (y0, y1) pair per row of `chart_fig` (see
+    `_axis_y_domain`), draws a thin crosshair line at the hovered distance
+    across *every* row, not just the one being hovered -- e.g. hovering a
+    feature on the delta trace also marks that same distance on the speed
+    and RPM rows above it. Plotly's own built-in spike lines could do this
+    (`xaxis.showspikes` + `spikemode="across"`), but only in "x"/"x
+    unified" hovermode, which -- as described above -- always draws a
+    floating distance-value label on the axis with no way to suppress just
+    that; `hovermode="closest"` avoids the label but drops spike lines as a
+    side effect, so this draws the crosshair manually via `Plotly.relayout`
+    on every hover/unhover instead, independent of hovermode entirely.
     """
     chart_spec = chart_fig.to_json()
     map_spec = map_fig.to_json()
     marker_trace_index = len(map_fig.data) - 1
+    map_height = height if map_height is None else map_height
+    scroll_chart = map_height < height
+    chart_div_style = (
+        f"flex:1 1 62%; min-width:0; height:{map_height}px; overflow-y:auto; overflow-x:hidden; "
+        "border:1px solid rgba(128,128,128,0.25); border-radius:6px;"
+        if scroll_chart else "flex:1 1 62%; min-width:0;"
+    )
 
     html = f"""
-<div style="display:flex; gap:12px; width:100%; font-family:inherit;">
-  <div id="chartDiv" style="flex:1 1 62%; min-width:0;"></div>
+<div style="display:flex; gap:12px; width:100%; font-family:inherit; align-items:flex-start;">
+  <div id="chartDiv" style="{chart_div_style}"></div>
   <div id="mapDiv" style="flex:1 1 38%; min-width:0;"></div>
 </div>
 {plotlyjs_script_tag()}
@@ -296,10 +329,22 @@ def render_linked_speed_delta(chart_fig: go.Figure, map_fig: go.Figure, dist: li
 
   var chartDiv = document.getElementById("chartDiv");
   var mapDiv = document.getElementById("mapDiv");
+  var rowYDomains = {json.dumps([list(d) for d in chart_row_y_domains]) if chart_row_y_domains else "null"};
   chartSpec.layout.height = {height};
-  mapSpec.layout.height = {height};
+  mapSpec.layout.height = {map_height};
   Plotly.newPlot(chartDiv, chartSpec.data, chartSpec.layout, {{displayModeBar: false}});
   Plotly.newPlot(mapDiv, mapSpec.data, mapSpec.layout, {{displayModeBar: false}});
+
+  function crosshairShapes(x) {{
+    return rowYDomains.map(function(d, i) {{
+      var xref = i === 0 ? "x" : "x" + (i + 1);
+      return {{
+        type: "line", xref: xref, yref: "paper",
+        x0: x, x1: x, y0: d[0], y1: d[1],
+        line: {{color: "rgba(90,90,90,0.6)", width: 1, dash: "dot"}},
+      }};
+    }});
+  }}
 
   function interpAt(x) {{
     if (!dist.length) return null;
@@ -317,14 +362,24 @@ def render_linked_speed_delta(chart_fig: go.Figure, map_fig: go.Figure, dist: li
 
   chartDiv.on("plotly_hover", function(evt) {{
     if (!evt.points || !evt.points.length) return;
-    var p = interpAt(evt.points[0].x);
-    if (!p || p.lat == null || p.lon == null) return;
-    Plotly.restyle(mapDiv, {{x: [[p.lon]], y: [[p.lat]]}}, [markerTraceIndex]);
+    var x = evt.points[0].x;
+    var p = interpAt(x);
+    if (p && p.lat != null && p.lon != null) {{
+      Plotly.restyle(mapDiv, {{x: [[p.lon]], y: [[p.lat]]}}, [markerTraceIndex]);
+    }}
+    if (rowYDomains) {{
+      Plotly.relayout(chartDiv, {{shapes: crosshairShapes(x)}});
+    }}
   }});
+  if (rowYDomains) {{
+    chartDiv.on("plotly_unhover", function() {{
+      Plotly.relayout(chartDiv, {{shapes: []}});
+    }});
+  }}
 }})();
 </script>
 """
-    components.html(html, height=height + 20, scrolling=False)
+    components.html(html, height=map_height + 20, scrolling=False)
 
 
 # ---------------------------------------------------------------------------
@@ -654,6 +709,16 @@ def page_lap_times() -> None:
 # Shared between Speed & Delta and Data Analysis so a given row position
 # means the same color on both pages.
 LAP_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"]
+
+
+def _axis_y_domain(fig: go.Figure, row: int) -> tuple[float, float]:
+    """Paper-space [y0, y1] span of a `make_subplots` row's y-axis (row 1 ->
+    `yaxis`, row 2 -> `yaxis2`, ...) -- used to position UI elements (a
+    secondary legend, a cross-subplot crosshair) against one specific row
+    of a combined multi-row figure."""
+    axis_key = "yaxis" if row == 1 else f"yaxis{row}"
+    domain = fig.layout[axis_key].domain
+    return (float(domain[0]), float(domain[1]))
 
 
 def _lap_label(lap_no: int, times: dict[int, float]) -> str:
@@ -1022,8 +1087,7 @@ def page_data_analysis() -> None:
             y0=setup.peak_power_rpm_low, y1=setup.peak_power_rpm_high,
             row=rpm_row, col=1, fillcolor="green", opacity=0.1, line_width=0,
         )
-        rpm_axis_key = "yaxis" if rpm_row == 1 else f"yaxis{rpm_row}"
-        rpm_domain = fig.layout[rpm_axis_key].domain
+        rpm_domain = _axis_y_domain(fig, rpm_row)
         fig.update_layout(
             legend2=dict(
                 x=1.02, xanchor="left", y=(rpm_domain[0] + rpm_domain[1]) / 2, yanchor="middle",
@@ -1048,6 +1112,7 @@ def page_data_analysis() -> None:
     # trace's own tooltip, with no distance value floating on the axis.
     fig.update_layout(hovermode="closest")
     fig.update_xaxes(showspikes=False)
+    row_y_domains = [_axis_y_domain(fig, r) for r in range(1, n_rows + 1)]
 
     per_row_height = 260
     fig_height = per_row_height * n_rows
@@ -1071,12 +1136,14 @@ def page_data_analysis() -> None:
 
     st.caption(
         f"Fastest lap selected: {fastest_entry['tag']} ({fastest_entry['lap_time']:.2f}s) -- used as the delta "
-        "reference above and the map's tracked position below. Hover the charts to move the marker."
+        "reference above and the map's tracked position below. Scroll the charts on the left to see them all -- "
+        "the map stays put on the right, hovering anywhere in the charts moves its marker, and a crosshair line "
+        "marks the same distance across every chart so you can line up a feature in one against the others."
     )
     render_linked_speed_delta(
         fig, map_fig,
         primary_trace["lap_distance_m"].tolist(), primary_trace["Latitude"].tolist(), primary_trace["Longitude"].tolist(),
-        height=fig_height,
+        height=fig_height, map_height=per_row_height, chart_row_y_domains=row_y_domains,
     )
     render_footer()
 
@@ -1495,6 +1562,8 @@ def page_history() -> None:
     if not _require_data():
         return
     st.subheader("Session history")
+    if flash := st.session_state.pop("history_delete_result", None):
+        st.success(flash)
     st.caption(
         "Every session uploaded on the Settings page is saved here so you can track progression over time, "
         "no re-uploading needed. Note: this storage lives on the app's local disk, which is wiped on every "
@@ -1508,6 +1577,32 @@ def page_history() -> None:
             ["id", "source_file", "driver", "track_name", "session_type", "start_date", "start_time", "best_lap_s", "average_lap_s", "n_laps", "ingested_at"]
         ].sort_values("ingested_at", ascending=False)
         st.dataframe(prettify_columns(display_history), width='stretch')
+
+        by_id = display_history.set_index("id")
+        delete_id = st.selectbox(
+            "Delete a session",
+            display_history["id"],
+            format_func=lambda i: (
+                f"#{i} — {by_id.loc[i, 'driver']} — {by_id.loc[i, 'source_file']} session "
+                f"{by_id.loc[i, 'start_date']} {by_id.loc[i, 'start_time']}"
+            ),
+            key="history_delete_select",
+        )
+        if st.session_state.get("_confirm_delete_session_id") != delete_id:
+            if st.button("🗑️ Delete session", key="history_delete_btn"):
+                st.session_state["_confirm_delete_session_id"] = delete_id
+                st.rerun()
+        else:
+            st.warning("This permanently deletes the session's telemetry and lap data (not its kart setup history) -- this can't be undone.")
+            dc1, dc2 = st.columns(2)
+            if dc1.button("Yes, delete it", key="history_delete_confirm"):
+                library.delete_session(int(delete_id))
+                del st.session_state["_confirm_delete_session_id"]
+                st.session_state["history_delete_result"] = "Session deleted."
+                st.rerun()
+            if dc2.button("Cancel", key="history_delete_cancel"):
+                del st.session_state["_confirm_delete_session_id"]
+                st.rerun()
 
     st.subheader("Kart setup history")
     st.caption("Setups are saved per session (see the Kart Setup page) -- every snapshot ever saved, across every session, is listed here.")
@@ -1546,31 +1641,38 @@ def page_settings() -> None:
         n_drivers = existing["driver"].nunique()
         st.caption(f"📚 Library currently has {len(existing)} session(s) from {n_drivers} driver(s).")
 
-    driver_input = st.text_input(
+    dc1, dc2 = st.columns(2)
+    driver_input = dc1.text_input(
         "Driver name for this upload", value="", placeholder="e.g. Alex Smith", key="settings_driver_name",
+    )
+    track_input = dc2.text_input(
+        "Track name for this upload", value="", placeholder="e.g. Jyllandsringen", key="settings_track_name",
     )
     uploaded_files = st.file_uploader(
         "Upload Unipro TSV export(s)", type=["tsv", "txt"], accept_multiple_files=True, key="settings_uploader",
     )
 
-    if uploaded_files and not driver_input.strip():
-        st.warning("Enter a driver name above before loading -- every saved session needs to know who drove it.")
+    missing = [
+        field for field, value in (("driver name", driver_input), ("track name", track_input)) if not value.strip()
+    ]
+    if uploaded_files and missing:
+        st.warning(f"Enter a {' and '.join(missing)} above before loading -- every saved session needs both.")
     elif uploaded_files and st.button("Load file(s) into session library"):
-        driver = driver_input.strip()
+        driver, track = driver_input.strip(), track_input.strip()
         added = 0
         for f in uploaded_files:
             for s in parse_uploaded_file(f.getvalue(), f.name):
                 if library.find_session(s.source_file, s.session_id, s.start_time, driver=driver) is not None:
                     continue
                 s.driver = driver
-                library.save_session(s, driver=driver)
+                library.save_session(s, driver=driver, track_name=track)
                 added += 1
         if added:
             # Flashed on the *next* run instead of shown here directly --
             # the rerun below is what makes the sidebar's session picker and
             # every other page see the new sessions immediately, but it also
             # wipes any message set on this run before the user ever sees it.
-            st.session_state["settings_upload_result"] = f"Loaded {added} new session(s) for {driver}."
+            st.session_state["settings_upload_result"] = f"Loaded {added} new session(s) for {driver} at {track}."
             st.rerun()
         else:
             st.info("These sessions were already in your library -- nothing new to add.")

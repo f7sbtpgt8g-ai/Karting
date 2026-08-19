@@ -207,10 +207,11 @@ there, and needs no outbound network access either.
 
 ## Session persistence & comparing across drivers
 
-Uploading a file on the **Settings** page requires a driver name first --
-there's a text field above the uploader, and the "Load file(s)" button
-only appears (and only saves anything) once it's filled in, since every
-saved session needs to know who drove it. Once loaded, every session from
+Uploading a file on the **Settings** page requires a driver name and a
+track name first -- there are two text fields above the uploader, and the
+"Load file(s)" button only appears (and only saves anything) once both are
+filled in, since every saved session needs to know who drove it and where.
+Once loaded, every session from
 that file is written into the same SQLite-backed library every other page
 reads from (`SessionLibrary` in `telemetry/storage.py`, the same store the
 History page and `scripts/ingest.py` use) -- so on the *next* run, whether
@@ -239,6 +240,14 @@ This still shares the same disk-persistence caveat as the History page:
 redeploy/reboot on platforms without persistent storage (e.g. Streamlit
 Community Cloud) -- a within-run/within-deploy convenience, not a durable
 database.
+
+Uploaded the wrong file, or just want to clean one out? The History page's
+"Delete a session" picker (`SessionLibrary.delete_session`) removes a
+session's telemetry, lap rows, and cached dataframe permanently -- behind
+a confirm/cancel step, since this can't be undone. It deliberately leaves
+that session's kart setup history alone (a separate table, keyed by
+file/session/start-time rather than this row's id), since that's still a
+useful record even once the raw telemetry behind it is gone.
 
 ## Exporting the correct TSV from Unipro Analyser
 
@@ -315,7 +324,14 @@ just "gear up/down" to avoid ambiguity.
   reference/position pickers here: the fastest lap among your picks is always
   the delta reference and the map's tracked position. The RPM chart shades
   the peak-power band and lists each lap's % of lap time spent inside it in
-  its own legend alongside the chart.
+  its own legend alongside the chart. The track map is capped to one chart's
+  height rather than the full five-chart stack's, with the chart column
+  scrolling *inside* that same fixed-height area -- since map and charts
+  render together inside one embedded component (for the hover-linking to
+  work at all, see `render_linked_speed_delta`), genuine CSS sticky
+  positioning against the page's own scroll can't reach across that
+  boundary; capping the component's height and scrolling its chart side
+  internally produces the same "map always stays in view" effect instead.
 - **Braking zones / RPM trace / per-corner entry-apex-exit table**: labeled
   as *inferred* where relevant -- there's no direct brake or throttle
   channel, so braking zones come from deceleration patterns. The RPM trace

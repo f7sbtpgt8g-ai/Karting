@@ -172,6 +172,21 @@ class SessionLibrary:
         with self._connect() as conn:
             return pd.read_sql_query("SELECT * FROM sessions ORDER BY ingested_at", conn)
 
+    def delete_session(self, session_db_id: int) -> None:
+        """Remove a session's row, its lap rows, and its pickled dataframe
+        cache file. Does not touch kart_setups -- those are a separate
+        history keyed by (source_file, session_index, start_time), not by
+        this row's id, and stay useful as a record even once the raw
+        telemetry behind them is gone."""
+        with self._connect() as conn:
+            cur = conn.cursor()
+            row = cur.execute("SELECT cache_path FROM sessions WHERE id = ?", (session_db_id,)).fetchone()
+            cur.execute("DELETE FROM laps WHERE session_db_id = ?", (session_db_id,))
+            cur.execute("DELETE FROM sessions WHERE id = ?", (session_db_id,))
+            conn.commit()
+        if row and row[0] and os.path.exists(row[0]):
+            os.remove(row[0])
+
     def load_session(self, session_db_id: int) -> Session:
         with self._connect() as conn:
             row = pd.read_sql_query("SELECT * FROM sessions WHERE id = ?", conn, params=(session_db_id,))

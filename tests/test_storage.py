@@ -23,6 +23,25 @@ def test_save_and_load_session_roundtrip(tmp_path, session1):
     lib.close()
 
 
+def test_delete_session(tmp_path, session1, session2):
+    db_path = os.path.join(tmp_path, "sessions.db")
+    lib = SessionLibrary(db_path)
+
+    id1 = lib.save_session(session1, driver="Test Driver", track_name="Test Track")
+    id2 = lib.save_session(session2, driver="Test Driver", track_name="Test Track")
+    cache_path = lib.list_sessions().set_index("id").loc[id1, "cache_path"]
+    assert os.path.exists(cache_path)
+
+    lib.delete_session(id1)
+
+    remaining = lib.list_sessions()
+    assert len(remaining) == 1
+    assert remaining.iloc[0]["id"] == id2
+    assert lib.laps_for_session(id1).empty
+    assert not os.path.exists(cache_path)
+    lib.close()
+
+
 def test_progression_across_two_sessions(tmp_path, session1, session2):
     db_path = os.path.join(tmp_path, "sessions.db")
     lib = SessionLibrary(db_path)
