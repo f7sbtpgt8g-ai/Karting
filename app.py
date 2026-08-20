@@ -1660,13 +1660,14 @@ def page_settings() -> None:
     elif uploaded_files and st.button("Load file(s) into session library"):
         driver, track = driver_input.strip(), track_input.strip()
         added = 0
-        for f in uploaded_files:
-            for s in parse_uploaded_file(f.getvalue(), f.name):
-                if library.find_session(s.source_file, s.session_id, s.start_time, driver=driver) is not None:
-                    continue
-                s.driver = driver
-                library.save_session(s, driver=driver, track_name=track)
-                added += 1
+        with st.spinner(f"Parsing and saving {len(uploaded_files)} file(s)..."):
+            for f in uploaded_files:
+                for s in parse_uploaded_file(f.getvalue(), f.name):
+                    if library.find_session(s.source_file, s.session_id, s.start_time, driver=driver) is not None:
+                        continue
+                    s.driver = driver
+                    library.save_session(s, driver=driver, track_name=track)
+                    added += 1
         if added:
             # Flashed on the *next* run instead of shown here directly --
             # the rerun below is what makes the sidebar's session picker and
@@ -1728,12 +1729,17 @@ if sessions_meta.empty and os.path.exists(DEFAULT_TSV_PATH):
     # the same session library real uploads use, exactly once ever -- every
     # later run finds it already there via `sessions_meta` above and skips
     # straight to loading, rather than re-parsing the raw TSV on every visit.
-    with open(DEFAULT_TSV_PATH, "rb") as f:
-        default_bytes = f.read()
-    for s in parse_uploaded_file(default_bytes, os.path.basename(DEFAULT_TSV_PATH)):
-        s.driver = "Sample Driver"
-        library.save_session(s, driver="Sample Driver")
-    sessions_meta = library.list_sessions()
+    # The parse step alone runs ~10s on this file (shows its own spinner,
+    # see parse_uploaded_file); saving 11 sessions to the library on top of
+    # that adds a few more seconds with no feedback of its own otherwise --
+    # wrapped here so that doesn't read as a silent hang.
+    with st.spinner("Setting up your session library for the first time (this happens once)..."):
+        with open(DEFAULT_TSV_PATH, "rb") as f:
+            default_bytes = f.read()
+        for s in parse_uploaded_file(default_bytes, os.path.basename(DEFAULT_TSV_PATH)):
+            s.driver = "Sample Driver"
+            library.save_session(s, driver="Sample Driver")
+        sessions_meta = library.list_sessions()
 
 # A tuple of DB ids, not the DataFrame itself, so this stays cheap to
 # recompute every rerun while still giving load_persisted_sessions_cached a
