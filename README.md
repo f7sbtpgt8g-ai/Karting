@@ -125,7 +125,11 @@ telemetry/            Parsing + analysis core (independently testable, no UI cod
   setup_config.py           Kart setup schema (YAML-backed)
   setup_engine.py             Setup correlation / suggestion engine
   comparison.py                 Reference-lap diff, progression, driver comparison
-  storage.py                     SQLite session library (for the "history" feature)
+  corner_causal.py               Entry/apex/exit extraction + three-zone time deltas
+  pattern_rules.py                 Rule-based causal-pattern classification taxonomy
+  corner_engine.py                   Orchestrates the two above + complex/noise handling
+  narrative.py                        Plain-language phrasing (templated or Anthropic-assisted)
+  storage.py                     SQLite session library (history + corner/pattern trend logging)
 app.py                Streamlit UI (thin orchestration layer over telemetry/*)
 scripts/ingest.py     CLI ingestion into the session library (automation-friendly)
 tests/                pytest suite + synthetic fixture generator
@@ -366,6 +370,89 @@ just "gear up/down" to avoid ambiguity.
 - **Outlier laps**: out-laps, in-laps, and statistical outliers (e.g. a spin
   or a stoppage) are flagged and excluded from best/average stats, but stay
   visible in the lap table for review.
+- **Lap Comparison**: pick two or more laps (up to 4, from any loaded
+  session); the fastest is always the reference the others are compared
+  against. For each other lap, leads with plain-language headline findings
+  ranked by net time impact -- including the "gained time in the corner but
+  lost more than that down the following straight from a compromised exit"
+  pattern that a single corner-level time delta would hide -- then a full
+  per-corner metrics table, then the same hover-linked speed/delta trace +
+  track map used elsewhere. See "Corner-by-corner causal coaching engine"
+  below for how this is actually computed.
+- **Recurring Patterns**: a separate trend view over everything ever logged
+  from the Lap Comparison page -- which (corner, causal pattern)
+  combinations have shown up across 2 or more sessions, how often, and the
+  average time impact each time. A single comparison is "this lap"; this
+  page is "you're consistently doing X."
+
+## Corner-by-corner causal coaching engine
+
+Beyond a per-segment time delta, the engine on the **Lap Comparison** /
+**Recurring Patterns** pages tries to explain *why* time was gained or lost
+in a corner -- including the case where a driver carries more entry speed,
+gains time through the corner itself, but loses more than that down the
+following straight because the entry compromised the exit. Diagnosis is
+fully deterministic and rule-based (never inferred by an LLM); an optional
+LLM call is used only to phrase the already-computed facts as a sentence.
+
+**Extraction** (`telemetry/corner_causal.py`) reuses the existing
+braking-zone (`GPS Longitudinal Acceleration < -0.3g`) and power-on
+(`> 0.15g`) inference from `telemetry/metrics.py` rather than re-deriving
+entry/exit detection from scratch. For each corner, per lap:
+- **Entry** = where a braking zone begins on the approach (falls back to the
+  corner segment's own geometric start if no braking zone is found).
+- **Apex** = the minimum-speed point within the corner.
+- **Exit** = the first point after the apex where either power-on is
+  sustained for 3+ samples, or lateral G drops and stays below 0.15g
+  (whichever comes first) -- a documented default "exit gate," applied
+  identically to every lap being compared, not tuned per lap.
+- **Three zones**, not one corner-level number: Zone A (braking, entry→apex),
+  Zone B (the whole corner arc, entry→exit), Zone C (the following straight,
+  exit→next corner's own entry point). The fast-entry/compromised-exit
+  pattern is exactly "Zone B time gained, but Zone C time lost by more."
+- **Corner complexes**: consecutive corners with a very short (<0.5s) or
+  still-turning straight between them are grouped and flagged, so a
+  compromised entry to the complex isn't misattributed to whichever corner
+  the time happened to show up lost in -- `corner_engine.py` traces it back
+  to the earlier corner's exit when the two correlate.
+
+**Classification** (`telemetry/pattern_rules.py`) is an explicit,
+extensible taxonomy -- a list of plain rule functions, each checking the
+same per-zone/per-point deltas against configurable `SignificanceThresholds`
+(defaults: ~0.05s per zone, ~1 km/h speed, ~3m distance, refined further by
+`corner_engine.calibrate_thresholds` once a driver has 4+ of their own clean
+laps to measure real noise from). Named patterns: compromised exit from a
+fast entry, conservative entry/strong exit, early apex with a compromised
+exit, late apex rewarded on exit, a braking-point difference with no pace
+change either way, and "clean, no significant difference" (deliberately not
+manufactured as a finding). Anything real but unclassified is still
+surfaced, just at low confidence, rather than silently dropped. Adding a new
+pattern is adding one function to `pattern_rules.TAXONOMY_RULES`.
+
+**Phrasing** (`telemetry/narrative.py`) turns one classified corner's facts
+into 1-2 sentences, either via a fixed template per pattern (default, no
+external dependency) or, if the "Use AI phrasing" checkbox is on and
+`ANTHROPIC_API_KEY` is set in the environment, via a tightly-scoped
+Anthropic API call that's given only the already-computed structured facts
+and instructed never to invent a cause, number, or recommendation beyond
+them -- any failure (no key, no `anthropic` package, API error) falls back
+to the template silently.
+
+**Persistence** (`telemetry/storage.py`'s `corner_metrics` /
+`pattern_instances` tables) logs every corner's extracted points and every
+classified pattern instance from every comparison run on the Lap Comparison
+page, unconditionally -- this is the structured asset the Recurring
+Patterns page reads from, and the foundation for the personal-baselining,
+outcome-tracking, and eventual cross-driver-benchmarking layers described in
+`corner_engine.py`'s module docstring, most of which builds on data that
+needs to start accumulating well before there's a UI on top of it.
+
+Unit tests for this engine (`tests/test_corner_causal.py`,
+`tests/test_pattern_rules.py`, `tests/test_corner_engine.py`,
+`tests/test_narrative.py`) use hand-built synthetic entry/apex/exit trace
+pairs -- one scenario per taxonomy pattern -- rather than real telemetry, so
+the diagnosis logic is verified against known-correct answers before it's
+trusted on real, noisy GPS data.
 
 ## Validating against a real export
 

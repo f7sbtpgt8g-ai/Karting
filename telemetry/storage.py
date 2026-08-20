@@ -60,7 +60,71 @@ CREATE TABLE IF NOT EXISTS kart_setups (
     saved_at TEXT,
     setup_json TEXT
 );
+
+-- Structured log of every corner's extracted entry/apex/exit points +
+-- three-zone times, one row per (lap, corner). This is the raw asset the
+-- corner-by-corner causal coaching engine's Part 5 improvement layers
+-- (personal baselining, cross-driver benchmarking) are built on --
+-- populated as laps are analyzed, from day one, rather than only once a
+-- trend UI exists to consume it.
+CREATE TABLE IF NOT EXISTS corner_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_db_id INTEGER,
+    driver TEXT,
+    track_name TEXT,
+    conditions TEXT,
+    lap_number INTEGER,
+    corner_label TEXT,
+    entry_distance_m REAL,
+    entry_speed_kmh REAL,
+    apex_distance_m REAL,
+    apex_speed_kmh REAL,
+    exit_distance_m REAL,
+    exit_speed_kmh REAL,
+    zone_a_time_s REAL,
+    zone_b_time_s REAL,
+    zone_c_time_s REAL,
+    recorded_at TEXT,
+    FOREIGN KEY (session_db_id) REFERENCES sessions (id)
+);
+
+-- Structured log of every classified pattern instance from a lap-vs-
+-- reference comparison, one row per (lap, corner) -- the asset the
+-- "recurring pattern" trend view and the outcome-feedback loop are built
+-- on ("this is the fourth session in a row where you've lost time on Turn
+-- 4 exit..."). The narrative shown in the UI is a rendering of this table,
+-- not the other way around.
+CREATE TABLE IF NOT EXISTS pattern_instances (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    driver TEXT,
+    track_name TEXT,
+    conditions TEXT,
+    session_db_id INTEGER,
+    lap_number INTEGER,
+    reference_session_db_id INTEGER,
+    reference_lap_number INTEGER,
+    corner_label TEXT,
+    pattern_type TEXT,
+    confidence TEXT,
+    net_time_impact_s REAL,
+    evidence_json TEXT,
+    recorded_at TEXT,
+    FOREIGN KEY (session_db_id) REFERENCES sessions (id)
+);
 """
+
+
+def _safe_float(value) -> float | None:
+    """SQLite has no NaN -- coerce pandas/NumPy NaN (and anything else that
+    can't become a float) to NULL instead of writing a NaN literal that
+    would round-trip incorrectly."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if not pd.isna(f) else None
 
 
 class SessionLibrary:
@@ -255,3 +319,127 @@ class SessionLibrary:
         if row.empty:
             return None
         return self.load_kart_setup(int(row.iloc[0]["id"]))
+
+    def log_corner_metrics(
+        self,
+        session_db_id: int | None,
+        driver: str | None,
+        track_name: str | None,
+        lap_number: int,
+        corner_points: pd.DataFrame,
+        zone_times: pd.DataFrame,
+        conditions: str | None = None,
+    ) -> None:
+        """Persist one lap's per-corner entry/apex/exit + three-zone times
+        -- the structured asset Part 5's personal-baselining and
+        cross-driver benchmarking are built on. Safe to call unconditionally
+        every time a lap comparison is analyzed; a no-op if there's nothing
+        to log."""
+        if corner_points.empty:
+            return
+        merged = corner_points.merge(zone_times, on="corner_label", how="left")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.cursor()
+            for _, row in merged.iterrows():
+                cur.execute(
+                    """INSERT INTO corner_metrics
+                       (session_db_id, driver, track_name, conditions, lap_number, corner_label,
+                        entry_distance_m, entry_speed_kmh, apex_distance_m, apex_speed_kmh,
+                        exit_distance_m, exit_speed_kmh, zone_a_time_s, zone_b_time_s, zone_c_time_s, recorded_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        session_db_id, driver, track_name, conditions, int(lap_number), row["corner_label"],
+                        _safe_float(row.get("entry_distance_m")), _safe_float(row.get("entry_speed_kmh")),
+                        _safe_float(row.get("apex_distance_m")), _safe_float(row.get("apex_speed_kmh")),
+                        _safe_float(row.get("exit_distance_m")), _safe_float(row.get("exit_speed_kmh")),
+                        _safe_float(row.get("zone_a_time_s")), _safe_float(row.get("zone_b_time_s")),
+                        _safe_float(row.get("zone_c_time_s")), now,
+                    ),
+                )
+            conn.commit()
+
+    def log_pattern_instances(
+        self,
+        driver: str | None,
+        track_name: str | None,
+        session_db_id: int | None,
+        lap_number: int,
+        reference_session_db_id: int | None,
+        reference_lap_number: int,
+        comparisons: pd.DataFrame,
+        conditions: str | None = None,
+    ) -> None:
+        """Persist one lap-vs-reference comparison's classified patterns
+        (Part 5 step 2: log every classified pattern instance so the engine
+        can report trends over time). Every row of
+        `corner_engine.compare_corners`'s output is logged, not just
+        headline ones, so a later recurring-pattern query isn't limited to
+        whatever happened to be shown on screen at the time."""
+        if comparisons.empty:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.cursor()
+            for _, row in comparisons.iterrows():
+                cur.execute(
+                    """INSERT INTO pattern_instances
+                       (driver, track_name, conditions, session_db_id, lap_number, reference_session_db_id,
+                        reference_lap_number, corner_label, pattern_type, confidence, net_time_impact_s,
+                        evidence_json, recorded_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        driver, track_name, conditions, session_db_id, int(lap_number), reference_session_db_id,
+                        int(reference_lap_number), row["corner_label"], row["pattern_type"], row["confidence"],
+                        _safe_float(row.get("net_time_impact_s")), json.dumps(row.get("evidence") or {}, default=str), now,
+                    ),
+                )
+            conn.commit()
+
+    def recurring_pattern_summary(self, driver: str | None = None, min_occurrences: int = 2) -> pd.DataFrame:
+        """Trend view over everything logged by `log_pattern_instances`:
+        per (driver, track, corner, pattern_type), how many distinct
+        sessions it's shown up in, first/last seen, and average/total net
+        time impact -- the "this keeps showing up" signal the Recurring
+        Patterns page is built on. Excludes the two non-findings
+        (`clean_no_significant_delta` and `unclassified_time_delta`) --
+        neither is an actionable habit to track a trend on."""
+        query = """
+            SELECT driver, track_name, corner_label, pattern_type,
+                   COUNT(DISTINCT session_db_id) AS n_sessions,
+                   COUNT(*) AS n_laps,
+                   MIN(recorded_at) AS first_seen, MAX(recorded_at) AS last_seen,
+                   AVG(net_time_impact_s) AS avg_net_time_impact_s,
+                   SUM(net_time_impact_s) AS total_net_time_impact_s
+            FROM pattern_instances
+            WHERE pattern_type NOT IN ('clean_no_significant_delta', 'unclassified_time_delta', 'inconclusive')
+        """
+        params: tuple = ()
+        if driver is not None:
+            query += " AND driver IS ?"
+            params += (driver,)
+        query += (
+            " GROUP BY driver, track_name, corner_label, pattern_type "
+            "HAVING COUNT(DISTINCT session_db_id) >= ? "
+            "ORDER BY n_sessions DESC, total_net_time_impact_s DESC"
+        )
+        params += (min_occurrences,)
+        with self._connect() as conn:
+            return pd.read_sql_query(query, conn, params=params)
+
+    def pattern_instance_history(self, driver: str | None = None, corner_label: str | None = None) -> pd.DataFrame:
+        """Raw pattern-instance rows for a driver (optionally scoped to one
+        corner), oldest first -- the building block for Part 5's outcome
+        feedback loop: compare a corner's pattern over successive sessions
+        to see whether previously-flagged behavior actually changed."""
+        query = "SELECT * FROM pattern_instances WHERE 1=1"
+        params: tuple = ()
+        if driver is not None:
+            query += " AND driver IS ?"
+            params += (driver,)
+        if corner_label is not None:
+            query += " AND corner_label IS ?"
+            params += (corner_label,)
+        query += " ORDER BY recorded_at"
+        with self._connect() as conn:
+            return pd.read_sql_query(query, conn, params=params)

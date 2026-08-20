@@ -5,3 +5,7 @@ plotly>=5.18
 streamlit>=1.32
 pyyaml>=6.0
 pytest>=7.4
+# Optional: only used for the Lap Comparison page's "Use AI phrasing" toggle
+# (telemetry/narrative.py). Not required -- falls back to templated
+# sentences if this isn't installed or ANTHROPIC_API_KEY isn't set.
+# anthropic>=0.40

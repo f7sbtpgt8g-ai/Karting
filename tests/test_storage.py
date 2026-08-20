@@ -1,5 +1,7 @@
 import os
 
+import pandas as pd
+
 from telemetry.setup_config import KartSetup
 from telemetry.storage import SessionLibrary
 
@@ -87,6 +89,78 @@ def test_kart_setup_history_roundtrip(tmp_path):
 
     reloaded = lib.load_kart_setup(setup_id_2)
     assert reloaded.gearing.rear_teeth == 80
+    lib.close()
+
+
+def test_log_and_query_corner_metrics(tmp_path, session1):
+    db_path = os.path.join(tmp_path, "sessions.db")
+    lib = SessionLibrary(db_path)
+    session_db_id = lib.save_session(session1, driver="Test Driver", track_name="Test Track")
+
+    corner_points = pd.DataFrame(
+        [
+            {
+                "corner_label": "Corner 1", "entry_distance_m": 50.0, "entry_speed_kmh": 120.0,
+                "apex_distance_m": 80.0, "apex_speed_kmh": 50.0, "exit_distance_m": 95.0, "exit_speed_kmh": 70.0,
+            }
+        ]
+    )
+    zone_times = pd.DataFrame(
+        [{"corner_label": "Corner 1", "zone_a_time_s": 1.2, "zone_b_time_s": 2.0, "zone_c_time_s": 3.5}]
+    )
+    lib.log_corner_metrics(session_db_id, "Test Driver", "Test Track", 1, corner_points, zone_times)
+
+    with lib._connect() as conn:
+        logged = pd.read_sql_query("SELECT * FROM corner_metrics", conn)
+    assert len(logged) == 1
+    assert logged.iloc[0]["corner_label"] == "Corner 1"
+    assert logged.iloc[0]["apex_speed_kmh"] == 50.0
+    lib.close()
+
+
+def test_log_corner_metrics_is_noop_on_empty(tmp_path, session1):
+    db_path = os.path.join(tmp_path, "sessions.db")
+    lib = SessionLibrary(db_path)
+    session_db_id = lib.save_session(session1, driver="Test Driver", track_name="Test Track")
+    lib.log_corner_metrics(session_db_id, "Test Driver", "Test Track", 1, pd.DataFrame(), pd.DataFrame())
+    with lib._connect() as conn:
+        logged = pd.read_sql_query("SELECT * FROM corner_metrics", conn)
+    assert logged.empty
+    lib.close()
+
+
+def test_log_pattern_instances_and_recurring_summary(tmp_path, session1, session2):
+    db_path = os.path.join(tmp_path, "sessions.db")
+    lib = SessionLibrary(db_path)
+    id1 = lib.save_session(session1, driver="Test Driver", track_name="Test Track")
+    id2 = lib.save_session(session2, driver="Test Driver", track_name="Test Track")
+
+    comparisons = pd.DataFrame(
+        [
+            {
+                "corner_label": "Corner 1", "pattern_type": "compromised_exit_fast_entry", "confidence": "medium",
+                "net_time_impact_s": 0.25, "evidence": {"entry_speed_delta_kmh": 5.0},
+            },
+            {
+                "corner_label": "Corner 2", "pattern_type": "clean_no_significant_delta", "confidence": "high",
+                "net_time_impact_s": 0.0, "evidence": {},
+            },
+        ]
+    )
+    lib.log_pattern_instances("Test Driver", "Test Track", id1, 5, id2, 3, comparisons)
+    # Same pattern shows up again in a second session -> should count as recurring.
+    lib.log_pattern_instances("Test Driver", "Test Track", id2, 4, id2, 3, comparisons)
+
+    history = lib.pattern_instance_history(driver="Test Driver", corner_label="Corner 1")
+    assert len(history) == 2
+    assert history.iloc[0]["pattern_type"] == "compromised_exit_fast_entry"
+
+    summary = lib.recurring_pattern_summary(driver="Test Driver", min_occurrences=2)
+    assert len(summary) == 1  # only Corner 1's pattern recurs across 2 distinct sessions
+    row = summary.iloc[0]
+    assert row["corner_label"] == "Corner 1"
+    assert row["pattern_type"] == "compromised_exit_fast_entry"
+    assert row["n_sessions"] == 2
     lib.close()
 
 

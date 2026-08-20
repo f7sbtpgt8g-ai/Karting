@@ -22,9 +22,12 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from telemetry.comparison import corner_comparison_across_sessions, cross_session_delta_trace, session_progression
+from telemetry.corner_causal import corner_points_for_lap, three_zone_times
+from telemetry.corner_engine import calibrate_thresholds, compare_corners
 from telemetry.corners import assign_segments, build_reference_segments, lap_gps_trace, segment_midpoints
 from telemetry.delta import delta_time_trace, segment_times_for_lap, theoretical_best_lap
 from telemetry.focus_areas import blended_top_recommendations, recurring_weaknesses, time_loss_per_segment, top_focus_areas
+from telemetry.narrative import rank_headline_findings
 from telemetry.laps import (
     clean_lap_table,
     detect_anomalous_laps,
@@ -243,6 +246,23 @@ def fit_speed_rpm_scale_cached(_session: Session, _key: tuple, clean_lap_numbers
 @st.cache_resource(show_spinner=False)
 def build_accel_rpm_curve_cached(_session: Session, _key: tuple, clean_lap_numbers: tuple) -> pd.DataFrame:
     return build_accel_rpm_curve(_session, list(clean_lap_numbers))
+
+
+@st.cache_resource(show_spinner=False)
+def calibrate_thresholds_cached(_session: Session, _key: tuple, clean_lap_numbers: tuple, segments: pd.DataFrame):
+    """Noise-aware significance thresholds for the Lap Comparison page,
+    derived from the reference session's own repeat-lap variance (see
+    corner_engine.calibrate_thresholds) -- cached since it loops corner
+    extraction over every clean lap in the reference session."""
+    return calibrate_thresholds(_session, list(clean_lap_numbers), segments)
+
+
+@st.cache_resource(show_spinner="Analyzing corner-by-corner causes...")
+def compare_corners_cached(
+    _session_a: Session, key_a: tuple, lap_a: int, _session_b: Session, key_b: tuple, lap_b: int,
+    segments: pd.DataFrame, _thresholds,
+) -> pd.DataFrame:
+    return compare_corners(_session_a, lap_a, _session_b, lap_b, segments, _thresholds)
 
 
 # ---------------------------------------------------------------------------
@@ -1240,6 +1260,287 @@ def page_corner_comparison() -> None:
     render_footer()
 
 
+MAX_LAP_COMPARISON_LAPS = 4
+MAX_HEADLINE_CARDS = 3
+
+
+def page_lap_comparison() -> None:
+    if not _require_data():
+        return
+    st.subheader("Lap comparison")
+    st.caption(
+        "Corner-by-corner causal breakdown between two or more laps -- not just where time was gained or lost, "
+        "but why. A fast entry that gains time through the corner but costs more than that down the following "
+        "straight shows up here as a net loss, not a false 'good corner'. The fastest lap among your picks is "
+        "always the reference the others are compared against."
+    )
+
+    if "lc_row_ids" not in st.session_state:
+        default_rows = _default_data_analysis_rows(all_sessions)[:3]
+        st.session_state["lc_row_ids"] = list(range(len(default_rows)))
+        st.session_state["lc_next_row_id"] = len(default_rows)
+        for i, (sess_label, lap_no) in enumerate(default_rows):
+            st.session_state[f"lc_session_{i}"] = sess_label
+            st.session_state[f"lc_lap_{i}"] = lap_no
+
+    compare_entries = []
+    css_rules = []
+    with st.expander("Laps to compare", expanded=True):
+        for idx, row_id in enumerate(list(st.session_state["lc_row_ids"])):
+            row_color = LAP_COLORS[idx % len(LAP_COLORS)]
+            text_color = _readable_text_color(row_color)
+            session_key, lap_key = f"lc_session_{row_id}", f"lc_lap_{row_id}"
+            css_rules.append(
+                f'.st-key-{lap_key} [role="group"] {{ background-color: {row_color} !important; }}'
+                f'.st-key-{lap_key} input {{ color: {text_color} !important; }}'
+            )
+            rc1, rc2, rc3 = st.columns([4, 3, 1])
+            label_visibility = "visible" if idx == 0 else "collapsed"
+            _ensure_valid_widget_state(session_key, session_labels, active_label)
+            row_session_label = rc1.selectbox("Session", session_labels, key=session_key, label_visibility=label_visibility)
+            row_session = dict(all_sessions)[row_session_label]
+            row_lap_numbers, row_lap_times = _session_clean_laps(row_session)
+            if not row_lap_numbers:
+                rc2.caption("No clean laps in this session.")
+                if rc3.button("✕", key=f"lc_remove_{row_id}", help="Remove this row"):
+                    st.session_state["lc_row_ids"].remove(row_id)
+                    st.rerun()
+                continue
+            _ensure_valid_widget_state(lap_key, row_lap_numbers, row_lap_numbers[0])
+            row_lap = rc2.selectbox(
+                "Lap", row_lap_numbers, key=lap_key, format_func=lambda n, _t=row_lap_times: _lap_label(n, _t),
+                label_visibility=label_visibility,
+            )
+            if rc3.button("✕", key=f"lc_remove_{row_id}", help="Remove this row"):
+                st.session_state["lc_row_ids"].remove(row_id)
+                st.rerun()
+            compare_entries.append({
+                "row_id": row_id, "session_label": row_session_label, "session": row_session, "lap_number": row_lap,
+                "lap_time": row_lap_times.get(row_lap), "color": row_color, "tag": f"S{row_session.session_id}·L{row_lap}",
+            })
+
+        if css_rules:
+            st.markdown(f"<style>{''.join(css_rules)}</style>", unsafe_allow_html=True)
+
+        if len(st.session_state["lc_row_ids"]) >= MAX_LAP_COMPARISON_LAPS:
+            st.caption(f"Maximum {MAX_LAP_COMPARISON_LAPS} laps at once, for readability.")
+        elif st.button("+ Add lap to compare", key="lc_add_row"):
+            new_id = st.session_state["lc_next_row_id"]
+            st.session_state["lc_row_ids"].append(new_id)
+            st.session_state["lc_next_row_id"] = new_id + 1
+            st.rerun()
+
+    if len(compare_entries) < 2:
+        st.info("Add at least two laps to compare.")
+        render_footer()
+        return
+
+    use_anthropic = st.checkbox(
+        "Use AI phrasing for narrative sentences", value=False,
+        help="Sends the already-computed corner facts (deltas, pattern classification -- never raw telemetry) to "
+        "the Anthropic API to phrase 1-2 natural sentences. The analysis itself is always the same deterministic "
+        "rules either way -- this only changes the wording. Requires ANTHROPIC_API_KEY to be set in the environment; "
+        "silently falls back to the built-in templated sentences otherwise.",
+    )
+
+    fastest_entry = min(compare_entries, key=lambda e: e["lap_time"] if e["lap_time"] is not None else float("inf"))
+    other_entries = [e for e in compare_entries if e is not fastest_entry]
+
+    ref_session, ref_lap = fastest_entry["session"], fastest_entry["lap_number"]
+    ref_segments, _ = build_segments_and_midpoints_cached(ref_session, session_cache_key(ref_session), ref_lap)
+    if ref_segments.loc[ref_segments["kind"] == "corner"].empty:
+        st.info("No corners detected on the reference lap -- nothing to compare corner-by-corner.")
+        render_footer()
+        return
+
+    ref_clean_numbers, _ = _session_clean_laps(ref_session)
+    thresholds = calibrate_thresholds_cached(ref_session, session_cache_key(ref_session), tuple(ref_clean_numbers), ref_segments)
+
+    if len(ref_clean_numbers) >= 4:
+        st.caption(
+            f"Reference lap: {fastest_entry['tag']} ({fastest_entry['lap_time']:.2f}s) from {fastest_entry['session_label']}. "
+            f"Significance thresholds calibrated from {len(ref_clean_numbers)} of its session's own clean laps "
+            f"(±{thresholds.min_speed_delta_kmh:.1f} km/h entry/apex/exit speed, ±{thresholds.min_distance_delta_m:.0f}m braking point)."
+        )
+    else:
+        st.caption(
+            f"Reference lap: {fastest_entry['tag']} ({fastest_entry['lap_time']:.2f}s) from {fastest_entry['session_label']}. "
+            "Using default significance thresholds (fewer than 4 clean laps in the reference session to calibrate noise floor from)."
+        )
+
+    all_results = []
+    for entry in other_entries:
+        result_df = compare_corners_cached(
+            entry["session"], session_cache_key(entry["session"]), entry["lap_number"],
+            ref_session, session_cache_key(ref_session), ref_lap, ref_segments, thresholds,
+        )
+        if result_df.empty:
+            continue
+        all_results.append((entry, result_df))
+
+        # Part 5 step 2: log this comparison's structured facts unconditionally
+        # (not gated behind any trend UI existing) so the Recurring Patterns
+        # page has data to work with from the very first comparison ever run.
+        entry_db = session_db_lookup.get((entry["session"].source_file, entry["session"].session_id, entry["session"].start_time))
+        ref_db = session_db_lookup.get((ref_session.source_file, ref_session.session_id, ref_session.start_time))
+        entry_points = corner_points_for_lap(entry["session"], entry["lap_number"], ref_segments)
+        entry_zones = three_zone_times(entry["session"], entry["lap_number"], entry_points)
+        track_name = entry_db["track_name"] if entry_db else None
+        library.log_corner_metrics(
+            entry_db["id"] if entry_db else None, entry["session"].driver, track_name, entry["lap_number"], entry_points, entry_zones
+        )
+        library.log_pattern_instances(
+            entry["session"].driver, track_name, entry_db["id"] if entry_db else None, entry["lap_number"],
+            ref_db["id"] if ref_db else None, ref_lap, result_df,
+        )
+
+    if not all_results:
+        st.info("No corner-level data could be extracted for the selected laps (check GPS coverage on these laps).")
+        render_footer()
+        return
+
+    # Cross-lap recurrence: how many of the OTHER compared laps show the same
+    # (corner, pattern) -- Part 3's "one-off vs. you're consistently doing X"
+    # signal, applied across whatever laps happen to be selected here (they
+    # don't need to all be from the same session).
+    occurrence_counts: dict[tuple, int] = {}
+    for _, result_df in all_results:
+        significant = result_df[result_df["headline"] & (result_df["pattern_type"] != "clean_no_significant_delta")]
+        for key in set(zip(significant["corner_label"], significant["pattern_type"])):
+            occurrence_counts[key] = occurrence_counts.get(key, 0) + 1
+
+    for entry, result_df in all_results:
+        st.markdown(f"#### {entry['tag']} vs. reference ({fastest_entry['tag']})")
+        findings = rank_headline_findings(result_df, n=MAX_HEADLINE_CARDS, use_anthropic=use_anthropic)
+        if not findings:
+            st.success("No significant corner-by-corner differences vs. the reference lap.")
+        else:
+            cards = st.columns(len(findings))
+            for col, finding in zip(cards, findings):
+                with col:
+                    st.metric(finding["corner_label"], f"{finding['net_time_impact_s']:+.2f}s")
+                    st.write(finding["narrative"])
+                    n_also = occurrence_counts.get((finding["corner_label"], finding["pattern_type"]), 1)
+                    if n_also >= 2:
+                        st.caption(f"⚠️ Also showing up in {n_also - 1} of your other compared lap(s) here -- a repeated pattern, not a one-off.")
+                    if finding.get("root_cause_corner"):
+                        st.caption(f"Part of a corner complex -- traces back to {finding['root_cause_corner']}.")
+
+        with st.expander(f"Full corner-by-corner breakdown -- {entry['tag']} ({len(result_df)} corners)"):
+            table = result_df.copy()
+            table["complex_group"] = table["complex_group"].apply(lambda g: " → ".join(g) if isinstance(g, list) else g)
+            table["evidence"] = table["evidence"].apply(
+                lambda e: ", ".join(f"{k}={v:.2f}" if isinstance(v, float) else f"{k}={v}" for k, v in (e or {}).items())
+            )
+            display_cols = [
+                "corner_label", "pattern_type", "confidence", "net_time_impact_s",
+                "entry_speed_delta_kmh", "apex_speed_delta_kmh", "exit_speed_delta_kmh",
+                "entry_distance_delta_m", "apex_distance_delta_m",
+                "zone_a_delta_s", "zone_b_delta_s", "zone_c_delta_s",
+                "is_complex", "root_cause_corner", "evidence",
+            ]
+            table = table[display_cols].round(
+                {
+                    "net_time_impact_s": 3, "entry_speed_delta_kmh": 1, "apex_speed_delta_kmh": 1, "exit_speed_delta_kmh": 1,
+                    "entry_distance_delta_m": 1, "apex_distance_delta_m": 1,
+                    "zone_a_delta_s": 3, "zone_b_delta_s": 3, "zone_c_delta_s": 3,
+                }
+            )
+            st.dataframe(prettify_columns(table), width='stretch')
+
+    st.subheader("Speed & delta trace")
+    st.caption(
+        "For visual context -- the same linked chart/map view as the Data Analysis page, scoped to your selected "
+        "laps here. Delta is vs. the reference lap."
+    )
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+        subplot_titles=["Speed (km/h)", "Delta vs reference (s) — positive = time lost"],
+    )
+    lap_traces: dict[int, pd.DataFrame] = {}
+    for entry in compare_entries:
+        trace = lap_metric_trace(entry["session"], entry["lap_number"])
+        lap_traces[entry["row_id"]] = trace
+        fig.add_trace(
+            go.Scatter(
+                x=trace["lap_distance_m"], y=trace["GPS Speed"], mode="lines", name=entry["tag"], legendgroup=entry["tag"],
+                line=dict(color=entry["color"]), hovertemplate=f"{entry['tag']}: %{{y:.1f}} km/h<extra></extra>",
+            ),
+            row=1, col=1,
+        )
+        if entry is not fastest_entry:
+            dt = cross_session_delta_trace(entry["session"], entry["lap_number"], ref_session, ref_lap, n_points=800)
+            fig.add_trace(
+                go.Scatter(
+                    x=dt["distance_m"], y=dt["delta_s"], mode="lines", name=f"{entry['tag']} delta", legendgroup=entry["tag"],
+                    line=dict(color=entry["color"]), showlegend=False, hovertemplate=f"{entry['tag']}: %{{y:.4f}}s<extra></extra>",
+                ),
+                row=2, col=1,
+            )
+    fig.add_hline(y=0, row=2, col=1, line_dash="dash", line_color="gray")
+    fig.update_xaxes(title_text="Distance (m)", row=2, col=1)
+    fig.update_layout(hovermode="closest")
+    fig.update_xaxes(showspikes=False)
+    row_y_domains = [_axis_y_domain(fig, r) for r in (1, 2)]
+
+    ref_trace = lap_traces[fastest_entry["row_id"]].dropna(subset=["lap_distance_m", "Latitude", "Longitude"]).sort_values("lap_distance_m")
+    map_fig = go.Figure()
+    map_fig.add_trace(
+        go.Scattergl(x=ref_trace["Longitude"], y=ref_trace["Latitude"], mode="lines", line=dict(color=fastest_entry["color"], width=2), showlegend=False)
+    )
+    if not ref_trace.empty:
+        map_fig.add_trace(
+            go.Scatter(
+                x=[ref_trace["Longitude"].iloc[0]], y=[ref_trace["Latitude"].iloc[0]],
+                mode="markers", marker=dict(size=16, color="red", line=dict(width=2, color="white")), showlegend=False,
+            )
+        )
+    map_fig.update_layout(yaxis=dict(scaleanchor="x"), xaxis_title="Longitude", yaxis_title="Latitude", margin=dict(t=10))
+
+    render_linked_speed_delta(
+        fig, map_fig,
+        ref_trace["lap_distance_m"].tolist(), ref_trace["Latitude"].tolist(), ref_trace["Longitude"].tolist(),
+        height=520, map_height=260, chart_row_y_domains=row_y_domains,
+    )
+    render_footer()
+
+
+def page_recurring_patterns() -> None:
+    if not _require_data():
+        return
+    st.subheader("Recurring patterns")
+    st.caption(
+        "Trends across every comparison you've run on the Lap Comparison page, not just the most recent one -- a "
+        "pattern that keeps showing up session after session is a much stronger signal than any single comparison. "
+        "Only patterns seen in 2 or more sessions appear here; run more comparisons on the Lap Comparison page to "
+        "build this up."
+    )
+    driver = active_session.driver
+    summary = library.recurring_pattern_summary(driver=driver, min_occurrences=2)
+    if summary.empty:
+        st.info(
+            "Nothing recurring yet. Patterns are logged every time you run a comparison on the Lap Comparison page -- "
+            "this view fills in once the same corner + pattern shows up across 2 or more sessions."
+        )
+        render_footer()
+        return
+
+    for _, row in summary.iterrows():
+        pattern_label = str(row["pattern_type"]).replace("_", " ")
+        direction = "costing" if row["avg_net_time_impact_s"] > 0 else "gaining"
+        with st.container(border=True):
+            st.markdown(f"**{row['corner_label']} — {pattern_label}**")
+            st.write(
+                f"Showing up in {int(row['n_sessions'])} session(s) ({int(row['n_laps'])} lap comparison(s) total) -- "
+                f"averaging {abs(row['avg_net_time_impact_s']):.2f}s {direction} each time it appears "
+                f"(seen from {str(row['first_seen'])[:10]} to {str(row['last_seen'])[:10]})."
+            )
+
+    with st.expander("Raw pattern trend table"):
+        st.dataframe(prettify_columns(summary), width='stretch')
+    render_footer()
+
+
 def page_gearing_simulation() -> None:
     if not _require_data():
         return
@@ -1584,6 +1885,8 @@ page_data_analysis_obj = st.Page(page_data_analysis, title="Data Analysis", icon
 page_track_map_obj = st.Page(page_track_map, title="Track Map", icon="🗺️")
 page_braking_rpm_obj = st.Page(page_braking_rpm, title="Braking / RPM", icon="🛞")
 page_corner_comparison_obj = st.Page(page_corner_comparison, title="Corner Comparison", icon="📐")
+page_lap_comparison_obj = st.Page(page_lap_comparison, title="Lap Comparison", icon="🔬")
+page_recurring_patterns_obj = st.Page(page_recurring_patterns, title="Recurring Patterns", icon="🔁")
 page_gearing_simulation_obj = st.Page(page_gearing_simulation, title="Gearing Simulation", icon="🧮")
 page_consistency_obj = st.Page(page_consistency, title="Consistency", icon="📊")
 page_progression_obj = st.Page(page_progression, title="Progression", icon="📅")
@@ -1595,8 +1898,8 @@ nav = st.navigation(
     {
         "Analysis": [
             page_overview_obj, page_lap_times_obj, page_data_analysis_obj, page_track_map_obj,
-            page_braking_rpm_obj, page_corner_comparison_obj, page_gearing_simulation_obj,
-            page_consistency_obj, page_progression_obj, page_kart_setup_obj, page_history_obj,
+            page_braking_rpm_obj, page_corner_comparison_obj, page_lap_comparison_obj, page_recurring_patterns_obj,
+            page_gearing_simulation_obj, page_consistency_obj, page_progression_obj, page_kart_setup_obj, page_history_obj,
         ],
         "Settings": [page_settings_obj],
     }
@@ -1631,6 +1934,20 @@ if sessions_meta.empty and os.path.exists(DEFAULT_TSV_PATH):
 # expensive) unpickling work when a session is actually added or removed.
 sessions_meta_key = tuple(sessions_meta["id"]) if not sessions_meta.empty else ()
 all_sessions: list[tuple[str, Session]] = load_persisted_sessions_cached(library, sessions_meta, sessions_meta_key)
+
+# (source_file, session_index, start_time) -> {db id, track name} -- the
+# same identity triple SessionLibrary.find_session already matches a
+# session on, used here so the Lap Comparison page can log corner metrics /
+# pattern instances against the right session_db_id without re-querying
+# the library on every rerun.
+session_db_lookup: dict[tuple, dict] = {}
+if not sessions_meta.empty:
+    for _, _row in sessions_meta.iterrows():
+        _key = (_row["source_file"], int(_row["session_index"]), _row["start_time"] if pd.notna(_row["start_time"]) else None)
+        session_db_lookup[_key] = {
+            "id": int(_row["id"]),
+            "track_name": _row["track_name"] if pd.notna(_row["track_name"]) else None,
+        }
 
 data_ready = False
 data_error_message: str | None = None
