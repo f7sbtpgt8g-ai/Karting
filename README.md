@@ -178,9 +178,9 @@ fixed it and is strictly cheaper besides. The session/lap pickers and an
 visible from every page; file upload and the driver name live on the
 **Settings** page, out of the way of the analysis pages.
 
-The Speed & Delta view's stacked speed/RPM/delta chart and its track map
-are hover-linked client-side, not via a Streamlit rerun: hover anywhere on
-the chart (any of the three rows, any overlaid lap) and the map's position
+The Data Analysis view's stacked speed/RPM/G-force/delta chart and its
+track map are hover-linked client-side, not via a Streamlit rerun: hover
+anywhere on the chart (any row, any overlaid lap) and the map's position
 marker jumps to the matching point, replacing the old flow of reading a
 distance off the tooltip and dragging a slider to find it. `st.plotly_chart`
 has no way to sync hover state between two independently-rendered figures,
@@ -226,7 +226,7 @@ silently dropped as a duplicate).
 Because every loaded session -- regardless of which file or which driver's
 upload it came from -- ends up in one flat pool, the session/lap pickers
 throughout the app (the sidebar's "Session to analyze", and the per-row
-pickers on Speed & Delta / Data Analysis / Corner Comparison) let you pick
+pickers on Data Analysis / Corner Comparison) let you pick
 any combination across drivers exactly like they let you pick across your
 own sessions: there's no separate "driver" concept threaded through the
 comparison code, just more sessions to choose from. Session names
@@ -309,20 +309,21 @@ just "gear up/down" to avoid ambiguity.
   medium/high-confidence kart setup hypothesis, which is guaranteed a slot
   ahead of marginal corner items since a setup mismatch affects the whole
   session rather than one corner.
-- **Speed, RPM & delta trace** (Speed & Delta tab): stacked, distance-aligned
-  charts for each selected lap, plus a track map underneath that's
-  hover-linked to it -- hover anywhere on the charts to move the position
-  marker along the chosen lap's GPS path automatically, no manual
-  slider-dragging needed. The delta panel is continuous time gained/lost vs.
-  a reference lap; positive = slower than the reference at that point,
-  negative = faster, and it's the single most direct view for pinpointing
-  exactly where time is lost.
-- **Data Analysis**: the same cross-session lap picker as Speed & Delta (each
-  row's color matches its line below), stacked into a taller five-chart view
-  -- Speed, RPM, GPS Lateral Acceleration, GPS Longitudinal Acceleration, and
-  delta -- with a "Charts to show" control to hide any of them. No manual
-  reference/position pickers here: the fastest lap among your picks is always
-  the delta reference and the map's tracked position. The RPM chart shades
+- **Data Analysis**: a cross-session lap picker -- each row (add/remove
+  freely, up to 8) picks its own session and lap, so you can overlay laps
+  from different sessions, e.g. lap 5 from one session against lap 8 from
+  another, not just laps within the active session; each row's color
+  matches its line in the charts below. It defaults to the two fastest
+  clean laps from the most recent session plus the fastest clean lap from
+  the session before it, so there's a meaningful comparison on screen
+  before you touch anything; the "Laps to compare" section collapses via
+  its own expander once you're done picking. Five stacked, distance-aligned
+  charts follow -- Speed, RPM, GPS Lateral Acceleration, GPS Longitudinal
+  Acceleration, and delta -- with a "Charts to show" control to hide any of
+  them. No manual reference/position pickers: the fastest lap among your
+  picks is always the delta reference (continuous time gained/lost vs. that
+  lap; positive = slower, negative = faster) and the map's tracked
+  position. The RPM chart shades
   the peak-power band and lists each lap's % of lap time spent inside it in
   its own legend alongside the chart. The charts render at their full
   natural height (no inner scrollbar of their own -- the page scrolls them

@@ -246,7 +246,7 @@ def build_accel_rpm_curve_cached(_session: Session, _key: tuple, clean_lap_numbe
 
 
 # ---------------------------------------------------------------------------
-# Linked speed/RPM/delta trace + track map (Speed & Delta view)
+# Linked speed/RPM/G-force/delta trace + track map (Data Analysis page)
 # ---------------------------------------------------------------------------
 
 def render_linked_speed_delta(
@@ -723,8 +723,7 @@ def page_lap_times() -> None:
     render_footer()
 
 
-# Shared between Speed & Delta and Data Analysis so a given row position
-# means the same color on both pages.
+# Used to color-match each "Laps to compare" row to its line in the charts.
 LAP_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"]
 
 
@@ -755,10 +754,10 @@ def _readable_text_color(hex_color: str) -> str:
 
 def _session_clean_laps(session: Session) -> tuple[list[int], dict[int, float]]:
     """Clean lap numbers + their times for an arbitrary session (not
-    necessarily the active one) -- used by the Speed & Delta and Data
-    Analysis pages' per-row session/lap pickers, which need this for
-    whichever session each row currently points at, not just the sidebar's
-    active session."""
+    necessarily the active one) -- used by the Data Analysis page's per-row
+    session/lap pickers, which need this for whichever session each row
+    currently points at, not just the sidebar's active session, and by the
+    default lap selection below."""
     laps_df = clean_lap_table(compute_clean_laps(session))
     numbers = laps_df["lap_number"].tolist()
     times = dict(zip(laps_df["lap_number"], laps_df["lap_time_s"]))
@@ -776,166 +775,6 @@ def _ensure_valid_widget_state(key: str, valid_options: list, fallback) -> None:
         st.session_state[key] = fallback
 
 
-def page_speed_delta() -> None:
-    if not _require_data():
-        return
-    st.subheader("Speed, RPM & delta trace")
-    st.caption(
-        "Each row below picks its own session and lap, so you can overlay laps from different sessions -- "
-        "e.g. lap 5 from one session against lap 8 from another -- not just laps within the active session."
-    )
-
-    MAX_COMPARE_LAPS = 8
-
-    if "sd_row_ids" not in st.session_state:
-        default_n = min(4, len(clean_lap_numbers))
-        st.session_state["sd_row_ids"] = list(range(default_n))
-        st.session_state["sd_next_row_id"] = default_n
-        for i, lap_no in enumerate(clean_lap_numbers[:default_n]):
-            st.session_state[f"sd_session_{i}"] = active_label
-            st.session_state[f"sd_lap_{i}"] = lap_no
-
-    st.markdown("**Laps to compare**")
-    compare_entries = []
-    for idx, row_id in enumerate(list(st.session_state["sd_row_ids"])):
-        rc1, rc2, rc3 = st.columns([4, 3, 1])
-        label_visibility = "visible" if idx == 0 else "collapsed"
-        session_key, lap_key = f"sd_session_{row_id}", f"sd_lap_{row_id}"
-        _ensure_valid_widget_state(session_key, session_labels, active_label)
-        row_session_label = rc1.selectbox(
-            "Session", session_labels, key=session_key, label_visibility=label_visibility,
-        )
-        row_session = dict(all_sessions)[row_session_label]
-        row_lap_numbers, row_lap_times = _session_clean_laps(row_session)
-        if not row_lap_numbers:
-            rc2.caption("No clean laps in this session.")
-            if rc3.button("✕", key=f"sd_remove_{row_id}", help="Remove this row"):
-                st.session_state["sd_row_ids"].remove(row_id)
-                st.rerun()
-            continue
-        _ensure_valid_widget_state(lap_key, row_lap_numbers, row_lap_numbers[0])
-        row_lap = rc2.selectbox(
-            "Lap", row_lap_numbers, key=lap_key, format_func=lambda n, _t=row_lap_times: _lap_label(n, _t),
-            label_visibility=label_visibility,
-        )
-        if rc3.button("✕", key=f"sd_remove_{row_id}", help="Remove this row"):
-            st.session_state["sd_row_ids"].remove(row_id)
-            st.rerun()
-        compare_entries.append({
-            "row_id": row_id, "session_label": row_session_label, "session": row_session, "lap_number": row_lap,
-        })
-
-    if len(st.session_state["sd_row_ids"]) >= MAX_COMPARE_LAPS:
-        st.caption(f"Maximum {MAX_COMPARE_LAPS} laps at once.")
-    elif st.button("+ Add lap to compare"):
-        new_id = st.session_state["sd_next_row_id"]
-        st.session_state["sd_row_ids"].append(new_id)
-        st.session_state["sd_next_row_id"] = new_id + 1
-        st.rerun()
-
-    st.markdown("**Reference lap** (for delta)")
-    st.session_state.setdefault("sd_ref_session", active_label)
-    st.session_state.setdefault("sd_ref_lap", best_lap)
-    _ensure_valid_widget_state("sd_ref_session", session_labels, active_label)
-    rfc1, rfc2 = st.columns(2)
-    ref_session_label = rfc1.selectbox("Reference session", session_labels, key="sd_ref_session")
-    reference_session = dict(all_sessions)[ref_session_label]
-    ref_lap_numbers, ref_lap_times = _session_clean_laps(reference_session)
-
-    if not ref_lap_numbers:
-        st.warning("The selected reference session has no clean laps -- pick a different one.")
-    elif not compare_entries:
-        st.info("Add at least one lap to compare.")
-    else:
-        _ensure_valid_widget_state("sd_ref_lap", ref_lap_numbers, ref_lap_numbers[0])
-        reference_lap = rfc2.selectbox("Reference lap", ref_lap_numbers, key="sd_ref_lap", format_func=lambda n: _lap_label(n, ref_lap_times))
-
-        lap_colors = {entry["row_id"]: LAP_COLORS[i % len(LAP_COLORS)] for i, entry in enumerate(compare_entries)}
-
-        fig = make_subplots(
-            rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.06,
-            subplot_titles=("Speed (km/h)", "RPM", "Delta vs reference (s) — positive = time lost"),
-        )
-        lap_traces: dict[int, pd.DataFrame] = {}
-        for entry in compare_entries:
-            trace = lap_metric_trace(entry["session"], entry["lap_number"])
-            lap_traces[entry["row_id"]] = trace
-            color = lap_colors[entry["row_id"]]
-            # Compact "S<session id>·L<lap>" tag rather than the full session
-            # label -- the legend/hover strip is cramped, and this stays
-            # unambiguous even when several rows share a lap NUMBER but come
-            # from different sessions (lap numbering restarts per session).
-            tag = f"S{entry['session'].session_id}·L{entry['lap_number']}"
-            fig.add_trace(
-                go.Scatter(
-                    x=trace["lap_distance_m"], y=trace["GPS Speed"], mode="lines", name=tag, legendgroup=tag, line=dict(color=color),
-                    hovertemplate=f"{tag}: %{{y:.1f}} km/h<extra></extra>",
-                ),
-                row=1, col=1,
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=trace["lap_distance_m"], y=trace["RPM"], mode="lines", name=f"{tag} RPM", legendgroup=tag, line=dict(color=color), showlegend=False,
-                    hovertemplate=f"{tag}: %{{y:.0f}} RPM<extra></extra>",
-                ),
-                row=2, col=1,
-            )
-            if not (entry["session"] is reference_session and entry["lap_number"] == reference_lap):
-                dt = cross_session_delta_trace(entry["session"], entry["lap_number"], reference_session, reference_lap)
-                fig.add_trace(
-                    go.Scatter(
-                        x=dt["distance_m"], y=dt["delta_s"], mode="lines", name=f"{tag} delta", legendgroup=tag, line=dict(color=color), showlegend=False,
-                        hovertemplate=f"{tag}: %{{y:.4f}}s<extra></extra>",
-                    ),
-                    row=3, col=1,
-                )
-        fig.add_hline(y=0, row=3, col=1, line_dash="dash", line_color="gray")
-        fig.update_xaxes(title_text="Distance (m)", row=3, col=1)
-        # "closest" (not "x"/"x unified"): both of those hovermodes draw
-        # the shared distance value as a small floating label right on the
-        # axis regardless of each trace's hovertemplate -- there's no layout
-        # option to suppress just that label, so "closest" is the only mode
-        # that shows nothing but each hovered trace's own (distance-free)
-        # tooltip. showspikes=False additionally drops the dotted guideline.
-        fig.update_layout(hovermode="closest")
-        fig.update_xaxes(showspikes=False)
-
-        def _entry_map_label(idx: int) -> str:
-            e = compare_entries[idx]
-            return f"Lap {e['lap_number']} — {e['session_label']}"
-
-        _ensure_valid_widget_state("speed_tab_map_lap", list(range(len(compare_entries))), 0)
-        map_idx = st.selectbox(
-            "Show position for lap", list(range(len(compare_entries))), key="speed_tab_map_lap", format_func=_entry_map_label,
-        )
-        map_entry = compare_entries[map_idx]
-        primary_trace = lap_traces[map_entry["row_id"]].dropna(subset=["lap_distance_m", "Latitude", "Longitude"]).sort_values("lap_distance_m")
-
-        map_fig = go.Figure()
-        map_fig.add_trace(
-            go.Scattergl(
-                x=primary_trace["Longitude"], y=primary_trace["Latitude"], mode="lines",
-                line=dict(color=lap_colors[map_entry["row_id"]], width=2), showlegend=False,
-            )
-        )
-        if not primary_trace.empty:
-            map_fig.add_trace(
-                go.Scatter(
-                    x=[primary_trace["Longitude"].iloc[0]], y=[primary_trace["Latitude"].iloc[0]],
-                    mode="markers", marker=dict(size=16, color="red", line=dict(width=2, color="white")), showlegend=False,
-                )
-            )
-        map_fig.update_layout(yaxis=dict(scaleanchor="x"), xaxis_title="Longitude", yaxis_title="Latitude", margin=dict(t=10))
-
-        st.caption(f"Hover the chart below to move the marker along {_entry_map_label(map_idx)}'s track position -- no need to read off the distance and find it manually.")
-        render_linked_speed_delta(
-            fig, map_fig,
-            primary_trace["lap_distance_m"].tolist(), primary_trace["Latitude"].tolist(), primary_trace["Longitude"].tolist(),
-            height=700,
-        )
-    render_footer()
-
-
 DATA_ANALYSIS_CHART_LABELS = {
     "speed": "Speed (km/h)",
     "rpm": "RPM",
@@ -944,6 +783,33 @@ DATA_ANALYSIS_CHART_LABELS = {
     "delta": "Delta vs fastest lap (s) — positive = time lost",
 }
 DATA_ANALYSIS_CHART_KEYS = list(DATA_ANALYSIS_CHART_LABELS)
+
+
+def _default_data_analysis_rows(all_sessions: list[tuple[str, Session]]) -> list[tuple[str, int]]:
+    """(session_label, lap_number) pairs to preseed the "Laps to compare"
+    rows with: the two fastest clean laps from the most recent session (by
+    start date/time) plus the fastest clean lap from the session before
+    it -- a reasonable "how am I doing today vs. last time" starting
+    comparison without the user needing to pick anything themselves first.
+    """
+    if not all_sessions:
+        return []
+    ordered = sorted(all_sessions, key=lambda item: (item[1].start_date or "", item[1].start_time or ""), reverse=True)
+    rows: list[tuple[str, int]] = []
+
+    latest_label, latest_session = ordered[0]
+    latest_numbers, latest_times = _session_clean_laps(latest_session)
+    fastest_latest = sorted(latest_numbers, key=lambda n: latest_times[n])[:2]
+    rows.extend((latest_label, n) for n in fastest_latest)
+
+    if len(ordered) > 1:
+        prev_label, prev_session = ordered[1]
+        prev_numbers, prev_times = _session_clean_laps(prev_session)
+        if prev_numbers:
+            fastest_prev = min(prev_numbers, key=lambda n: prev_times[n])
+            rows.append((prev_label, fastest_prev))
+
+    return rows
 
 
 def page_data_analysis() -> None:
@@ -959,67 +825,67 @@ def page_data_analysis() -> None:
     MAX_COMPARE_LAPS = 8
 
     if "da_row_ids" not in st.session_state:
-        default_n = min(4, len(clean_lap_numbers))
-        st.session_state["da_row_ids"] = list(range(default_n))
-        st.session_state["da_next_row_id"] = default_n
-        for i, lap_no in enumerate(clean_lap_numbers[:default_n]):
-            st.session_state[f"da_session_{i}"] = active_label
+        default_rows = _default_data_analysis_rows(all_sessions)
+        st.session_state["da_row_ids"] = list(range(len(default_rows)))
+        st.session_state["da_next_row_id"] = len(default_rows)
+        for i, (sess_label, lap_no) in enumerate(default_rows):
+            st.session_state[f"da_session_{i}"] = sess_label
             st.session_state[f"da_lap_{i}"] = lap_no
 
-    st.markdown("**Laps to compare**")
     compare_entries = []
     css_rules = []
-    for idx, row_id in enumerate(list(st.session_state["da_row_ids"])):
-        row_color = LAP_COLORS[idx % len(LAP_COLORS)]
-        text_color = _readable_text_color(row_color)
-        session_key, lap_key = f"da_session_{row_id}", f"da_lap_{row_id}"
-        # Scoped via Streamlit's auto-generated `st-key-<key>` class on this
-        # specific widget's own wrapper -- recolors just this row's Lap
-        # dropdown to match its line color in the charts below, without
-        # touching any other widget on the page.
-        css_rules.append(
-            f'.st-key-{lap_key} [role="group"] {{ background-color: {row_color} !important; }}'
-            f'.st-key-{lap_key} input {{ color: {text_color} !important; }}'
-        )
+    with st.expander("Laps to compare", expanded=True):
+        for idx, row_id in enumerate(list(st.session_state["da_row_ids"])):
+            row_color = LAP_COLORS[idx % len(LAP_COLORS)]
+            text_color = _readable_text_color(row_color)
+            session_key, lap_key = f"da_session_{row_id}", f"da_lap_{row_id}"
+            # Scoped via Streamlit's auto-generated `st-key-<key>` class on
+            # this specific widget's own wrapper -- recolors just this row's
+            # Lap dropdown to match its line color in the charts below,
+            # without touching any other widget on the page.
+            css_rules.append(
+                f'.st-key-{lap_key} [role="group"] {{ background-color: {row_color} !important; }}'
+                f'.st-key-{lap_key} input {{ color: {text_color} !important; }}'
+            )
 
-        rc1, rc2, rc3 = st.columns([4, 3, 1])
-        label_visibility = "visible" if idx == 0 else "collapsed"
-        _ensure_valid_widget_state(session_key, session_labels, active_label)
-        row_session_label = rc1.selectbox(
-            "Session", session_labels, key=session_key, label_visibility=label_visibility,
-        )
-        row_session = dict(all_sessions)[row_session_label]
-        row_lap_numbers, row_lap_times = _session_clean_laps(row_session)
-        if not row_lap_numbers:
-            rc2.caption("No clean laps in this session.")
+            rc1, rc2, rc3 = st.columns([4, 3, 1])
+            label_visibility = "visible" if idx == 0 else "collapsed"
+            _ensure_valid_widget_state(session_key, session_labels, active_label)
+            row_session_label = rc1.selectbox(
+                "Session", session_labels, key=session_key, label_visibility=label_visibility,
+            )
+            row_session = dict(all_sessions)[row_session_label]
+            row_lap_numbers, row_lap_times = _session_clean_laps(row_session)
+            if not row_lap_numbers:
+                rc2.caption("No clean laps in this session.")
+                if rc3.button("✕", key=f"da_remove_{row_id}", help="Remove this row"):
+                    st.session_state["da_row_ids"].remove(row_id)
+                    st.rerun()
+                continue
+            _ensure_valid_widget_state(lap_key, row_lap_numbers, row_lap_numbers[0])
+            row_lap = rc2.selectbox(
+                "Lap", row_lap_numbers, key=lap_key, format_func=lambda n, _t=row_lap_times: _lap_label(n, _t),
+                label_visibility=label_visibility,
+            )
             if rc3.button("✕", key=f"da_remove_{row_id}", help="Remove this row"):
                 st.session_state["da_row_ids"].remove(row_id)
                 st.rerun()
-            continue
-        _ensure_valid_widget_state(lap_key, row_lap_numbers, row_lap_numbers[0])
-        row_lap = rc2.selectbox(
-            "Lap", row_lap_numbers, key=lap_key, format_func=lambda n, _t=row_lap_times: _lap_label(n, _t),
-            label_visibility=label_visibility,
-        )
-        if rc3.button("✕", key=f"da_remove_{row_id}", help="Remove this row"):
-            st.session_state["da_row_ids"].remove(row_id)
+            compare_entries.append({
+                "row_id": row_id, "session_label": row_session_label, "session": row_session, "lap_number": row_lap,
+                "lap_time": row_lap_times.get(row_lap), "color": row_color,
+                "tag": f"S{row_session.session_id}·L{row_lap}",
+            })
+
+        if css_rules:
+            st.markdown(f"<style>{''.join(css_rules)}</style>", unsafe_allow_html=True)
+
+        if len(st.session_state["da_row_ids"]) >= MAX_COMPARE_LAPS:
+            st.caption(f"Maximum {MAX_COMPARE_LAPS} laps at once.")
+        elif st.button("+ Add lap to compare", key="da_add_row"):
+            new_id = st.session_state["da_next_row_id"]
+            st.session_state["da_row_ids"].append(new_id)
+            st.session_state["da_next_row_id"] = new_id + 1
             st.rerun()
-        compare_entries.append({
-            "row_id": row_id, "session_label": row_session_label, "session": row_session, "lap_number": row_lap,
-            "lap_time": row_lap_times.get(row_lap), "color": row_color,
-            "tag": f"S{row_session.session_id}·L{row_lap}",
-        })
-
-    if css_rules:
-        st.markdown(f"<style>{''.join(css_rules)}</style>", unsafe_allow_html=True)
-
-    if len(st.session_state["da_row_ids"]) >= MAX_COMPARE_LAPS:
-        st.caption(f"Maximum {MAX_COMPARE_LAPS} laps at once.")
-    elif st.button("+ Add lap to compare", key="da_add_row"):
-        new_id = st.session_state["da_next_row_id"]
-        st.session_state["da_row_ids"].append(new_id)
-        st.session_state["da_next_row_id"] = new_id + 1
-        st.rerun()
 
     if not compare_entries:
         st.info("Add at least one lap to compare.")
@@ -1124,9 +990,11 @@ def page_data_analysis() -> None:
             )
 
     fig.update_xaxes(title_text="Distance (m)", row=n_rows, col=1)
-    # See the comment in page_speed_delta on why "closest" (not "x"/"x
-    # unified") is the only hovermode that shows nothing but each hovered
-    # trace's own tooltip, with no distance value floating on the axis.
+    # "closest" (not "x"/"x unified"): both of those hovermodes draw the
+    # shared distance value as a small floating label right on the axis
+    # regardless of each trace's hovertemplate -- there's no layout option
+    # to suppress just that label, so "closest" is the only mode that shows
+    # nothing but each hovered trace's own (distance-free) tooltip.
     fig.update_layout(hovermode="closest")
     fig.update_xaxes(showspikes=False)
     row_y_domains = [_axis_y_domain(fig, r) for r in range(1, n_rows + 1)]
@@ -1712,8 +1580,7 @@ st.sidebar.title("🏎️ Karting Telemetry")
 
 page_overview_obj = st.Page(page_overview, title="Top 3 Focus Areas", icon="🎯", default=True)
 page_lap_times_obj = st.Page(page_lap_times, title="Lap Times", icon="⏱️")
-page_speed_delta_obj = st.Page(page_speed_delta, title="Speed & Delta", icon="📈")
-page_data_analysis_obj = st.Page(page_data_analysis, title="Data Analysis", icon="🔬")
+page_data_analysis_obj = st.Page(page_data_analysis, title="Data Analysis", icon="📈")
 page_track_map_obj = st.Page(page_track_map, title="Track Map", icon="🗺️")
 page_braking_rpm_obj = st.Page(page_braking_rpm, title="Braking / RPM", icon="🛞")
 page_corner_comparison_obj = st.Page(page_corner_comparison, title="Corner Comparison", icon="📐")
@@ -1727,7 +1594,7 @@ page_settings_obj = st.Page(page_settings, title="Settings", icon="⚙️")
 nav = st.navigation(
     {
         "Analysis": [
-            page_overview_obj, page_lap_times_obj, page_speed_delta_obj, page_data_analysis_obj, page_track_map_obj,
+            page_overview_obj, page_lap_times_obj, page_data_analysis_obj, page_track_map_obj,
             page_braking_rpm_obj, page_corner_comparison_obj, page_gearing_simulation_obj,
             page_consistency_obj, page_progression_obj, page_kart_setup_obj, page_history_obj,
         ],
