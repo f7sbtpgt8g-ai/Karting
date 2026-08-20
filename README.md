@@ -324,14 +324,18 @@ just "gear up/down" to avoid ambiguity.
   reference/position pickers here: the fastest lap among your picks is always
   the delta reference and the map's tracked position. The RPM chart shades
   the peak-power band and lists each lap's % of lap time spent inside it in
-  its own legend alongside the chart. The track map is capped to one chart's
-  height rather than the full five-chart stack's, with the chart column
-  scrolling *inside* that same fixed-height area -- since map and charts
-  render together inside one embedded component (for the hover-linking to
-  work at all, see `render_linked_speed_delta`), genuine CSS sticky
-  positioning against the page's own scroll can't reach across that
-  boundary; capping the component's height and scrolling its chart side
-  internally produces the same "map always stays in view" effect instead.
+  its own legend alongside the chart. The charts render at their full
+  natural height (no inner scrollbar of their own -- the page scrolls them
+  like any other content), while the track map, capped to one chart's
+  height, stays pinned in view beside them as you scroll. Since map and
+  charts render together inside one embedded component (for the
+  hover-linking to work at all, see `render_linked_speed_delta`), genuine
+  CSS `position: sticky` against the page's own scroll can't reach across
+  that boundary -- the map's "sticky" behavior is hand-rolled instead, via
+  a small script that reads the component's own position in the page on
+  every animation frame (`window.frameElement.getBoundingClientRect()`)
+  and translates the map to match, clamped so it never drifts past the
+  bottom of the chart column.
 - **Braking zones / RPM trace / per-corner entry-apex-exit table**: labeled
   as *inferred* where relevant -- there's no direct brake or throttle
   channel, so braking zones come from deceleration patterns. The RPM trace

@@ -279,15 +279,19 @@ def render_linked_speed_delta(
     `np.interp` server-side.
 
     `map_height`, when shorter than `height`, keeps the map at that shorter
-    height and gives the chart column its own internal scrollbar instead of
-    letting it stretch the whole component -- since this whole block is one
-    `components.html` iframe (a separate browsing context Streamlit doesn't
-    scroll internally), true CSS `position: sticky` against the *page's*
-    scroll can't reach across that boundary. Capping the iframe itself to
-    `map_height` and scrolling the chart *inside* it produces the same
-    visible effect the caller actually wants -- the map staying in view
-    beside whichever part of a tall chart stack is currently scrolled into
-    frame -- without needing genuine sticky positioning at all.
+    height while the chart column renders at its full natural height beside
+    it -- the whole component's iframe is sized to fit that full height, so
+    the *page* scrolls it normally rather than the chart getting its own
+    internal scrollbar. The map is then kept visually in view with a
+    hand-rolled "sticky": genuine CSS `position: sticky` can't reach across
+    the `components.html` iframe boundary (it's a separate browsing context
+    with no scrolling of its own here -- sticky only ever responds to
+    scrolling *within* the same document, and the outer Streamlit page's
+    scroll is invisible to it), so instead this polls the iframe's own
+    position in the page via `window.frameElement.getBoundingClientRect()`
+    on every animation frame and translates the map down by just enough to
+    keep it pinned near the top of the viewport, clamped so it never drifts
+    past the bottom of the chart column.
 
     `chart_row_y_domains`, one (y0, y1) pair per row of `chart_fig` (see
     `_axis_y_domain`), draws a thin crosshair line at the hovered distance
@@ -305,17 +309,14 @@ def render_linked_speed_delta(
     map_spec = map_fig.to_json()
     marker_trace_index = len(map_fig.data) - 1
     map_height = height if map_height is None else map_height
-    scroll_chart = map_height < height
-    chart_div_style = (
-        f"flex:1 1 62%; min-width:0; height:{map_height}px; overflow-y:auto; overflow-x:hidden; "
-        "border:1px solid rgba(128,128,128,0.25); border-radius:6px;"
-        if scroll_chart else "flex:1 1 62%; min-width:0;"
-    )
+    floating_map = map_height < height
 
     html = f"""
 <div style="display:flex; gap:12px; width:100%; font-family:inherit; align-items:flex-start;">
-  <div id="chartDiv" style="{chart_div_style}"></div>
-  <div id="mapDiv" style="flex:1 1 38%; min-width:0;"></div>
+  <div id="chartDiv" style="flex:1 1 62%; min-width:0;"></div>
+  <div id="mapWrap" style="flex:1 1 38%; min-width:0; height:{map_height}px; position:relative;">
+    <div id="mapDiv" style="position:absolute; top:0; left:0; right:0;"></div>
+  </div>
 </div>
 {plotlyjs_script_tag()}
 <script>
@@ -329,11 +330,27 @@ def render_linked_speed_delta(
 
   var chartDiv = document.getElementById("chartDiv");
   var mapDiv = document.getElementById("mapDiv");
+  var mapWrap = document.getElementById("mapWrap");
   var rowYDomains = {json.dumps([list(d) for d in chart_row_y_domains]) if chart_row_y_domains else "null"};
   chartSpec.layout.height = {height};
   mapSpec.layout.height = {map_height};
   Plotly.newPlot(chartDiv, chartSpec.data, chartSpec.layout, {{displayModeBar: false}});
   Plotly.newPlot(mapDiv, mapSpec.data, mapSpec.layout, {{displayModeBar: false}});
+
+  if ({"true" if floating_map else "false"}) {{
+    var topGap = 12;
+    (function trackScroll() {{
+      var frameEl = window.frameElement;
+      if (frameEl) {{
+        var rect = frameEl.getBoundingClientRect();
+        var maxOffset = Math.max(0, rect.height - {map_height});
+        var offset = topGap - rect.top;
+        offset = Math.max(0, Math.min(offset, maxOffset));
+        mapWrap.style.transform = "translateY(" + offset + "px)";
+      }}
+      requestAnimationFrame(trackScroll);
+    }})();
+  }}
 
   function crosshairShapes(x) {{
     return rowYDomains.map(function(d, i) {{
@@ -379,7 +396,7 @@ def render_linked_speed_delta(
 }})();
 </script>
 """
-    components.html(html, height=map_height + 20, scrolling=False)
+    components.html(html, height=height + 20, scrolling=False)
 
 
 # ---------------------------------------------------------------------------
