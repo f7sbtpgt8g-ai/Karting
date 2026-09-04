@@ -45,7 +45,16 @@ CREATE TABLE IF NOT EXISTS sessions (
     humidity_pct REAL,
     pressure_hpa REAL,
     altitude_m REAL,
-    conditions_source TEXT
+    conditions_source TEXT,
+    -- Ownership/visibility -- see accounts.py. `driver_profile_id` is whose
+    -- data this is, `uploaded_by_user_id` is who uploaded it; they are not
+    -- the same question. Everything is private and unowned until something
+    -- explicitly says otherwise.
+    driver_profile_id INTEGER,
+    uploaded_by_user_id INTEGER,
+    visibility TEXT NOT NULL DEFAULT 'private',
+    attribution_status TEXT NOT NULL DEFAULT 'confirmed',
+    kart_class TEXT
 );
 
 CREATE TABLE IF NOT EXISTS laps (
@@ -159,14 +168,30 @@ class SessionLibrary:
     # `CREATE TABLE IF NOT EXISTS` in SCHEMA above only covers a *fresh* db;
     # a library that already exists on someone's disk from before this
     # feature needs these added in place, or every query naming them fails.
-    _TRACK_CONDITION_COLUMNS = {
+    _ADDED_COLUMNS = {
+        # Track conditions / jetting calibration.
         "track_condition": "TEXT", "temperature_c": "REAL", "humidity_pct": "REAL",
         "pressure_hpa": "REAL", "altitude_m": "REAL", "conditions_source": "TEXT",
+        # Ownership and visibility (see accounts.py). `driver_profile_id` is
+        # whose data this is; `uploaded_by_user_id` is who put it there --
+        # deliberately separate, since a shared team logger's file is
+        # uploaded by one person on several drivers' behalf.
+        #
+        # Both default-safe for pre-existing rows: an un-migrated session
+        # has no owner and stays `private`, so nothing that was on disk
+        # before this feature can leak into a leaderboard by default.
+        "driver_profile_id": "INTEGER",
+        "uploaded_by_user_id": "INTEGER",
+        "visibility": "TEXT NOT NULL DEFAULT 'private'",
+        "attribution_status": "TEXT NOT NULL DEFAULT 'confirmed'",
+        # Denormalized from the session's KartSetup so leaderboards can
+        # filter by class without unpacking every setup's JSON per query.
+        "kart_class": "TEXT",
     }
 
     def _migrate_sessions_table(self, conn: sqlite3.Connection) -> None:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
-        for column, sql_type in self._TRACK_CONDITION_COLUMNS.items():
+        for column, sql_type in self._ADDED_COLUMNS.items():
             if column not in existing:
                 conn.execute(f"ALTER TABLE sessions ADD COLUMN {column} {sql_type}")
 
@@ -221,15 +246,24 @@ class SessionLibrary:
         pressure_hpa: float | None = None,
         altitude_m: float | None = None,
         conditions_source: str | None = None,
+        driver_profile_id: int | None = None,
+        uploaded_by_user_id: int | None = None,
+        kart_class: str | None = None,
     ) -> int:
         """Persist a parsed session: lap summary rows to SQLite, full raw
         dataframe to a pickle cache. Returns the new session's DB id.
 
         `track_condition`/`temperature_c`/`humidity_pct`/`pressure_hpa`/
         `altitude_m` are the jetting-calibration fields entered (or
-        auto-defaulted from `telemetry.weather`) on the Settings page --
-        all optional here so existing callers (scripts/ingest.py, tests)
-        that don't have them keep working unchanged."""
+        auto-defaulted from `telemetry.weather`) on the Settings page.
+        `driver_profile_id`/`uploaded_by_user_id` are the ownership fields
+        from `accounts.py` -- whose data this is versus who uploaded it.
+
+        All optional here so existing callers (scripts/ingest.py, tests)
+        that don't have them keep working unchanged. A session saved
+        without a `driver_profile_id` is unowned and, per the visibility
+        gate in accounts.py, can never be publicly visible -- so omitting
+        ownership fails closed rather than open."""
         laps = flag_outlier_laps(lap_table(session))
         summary = summarize_laps(laps)
 
@@ -240,8 +274,9 @@ class SessionLibrary:
                    (source_file, session_index, driver, track_name, session_type,
                     start_date, start_time, ingested_at, best_lap_s, average_lap_s,
                     std_dev_s, n_laps, cache_path, track_condition, temperature_c,
-                    humidity_pct, pressure_hpa, altitude_m, conditions_source)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    humidity_pct, pressure_hpa, altitude_m, conditions_source,
+                    driver_profile_id, uploaded_by_user_id, kart_class)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     session.source_file,
                     session.session_id,
@@ -262,6 +297,9 @@ class SessionLibrary:
                     _safe_float(pressure_hpa),
                     _safe_float(altitude_m),
                     conditions_source,
+                    driver_profile_id,
+                    uploaded_by_user_id,
+                    kart_class,
                 ),
             )
             session_db_id = cur.lastrowid
