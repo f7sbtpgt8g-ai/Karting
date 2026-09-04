@@ -39,7 +39,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     average_lap_s REAL,
     std_dev_s REAL,
     n_laps INTEGER,
-    cache_path TEXT
+    cache_path TEXT,
+    track_condition TEXT,
+    temperature_c REAL,
+    humidity_pct REAL,
+    pressure_hpa REAL,
+    altitude_m REAL,
+    conditions_source TEXT
 );
 
 CREATE TABLE IF NOT EXISTS laps (
@@ -146,7 +152,23 @@ class SessionLibrary:
         os.makedirs(self.cache_dir, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate_sessions_table(conn)
             conn.commit()
+
+    # Columns added to `sessions` after its original CREATE TABLE shipped --
+    # `CREATE TABLE IF NOT EXISTS` in SCHEMA above only covers a *fresh* db;
+    # a library that already exists on someone's disk from before this
+    # feature needs these added in place, or every query naming them fails.
+    _TRACK_CONDITION_COLUMNS = {
+        "track_condition": "TEXT", "temperature_c": "REAL", "humidity_pct": "REAL",
+        "pressure_hpa": "REAL", "altitude_m": "REAL", "conditions_source": "TEXT",
+    }
+
+    def _migrate_sessions_table(self, conn: sqlite3.Connection) -> None:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        for column, sql_type in self._TRACK_CONDITION_COLUMNS.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE sessions ADD COLUMN {column} {sql_type}")
 
     @contextmanager
     def _connect(self):
@@ -187,9 +209,27 @@ class SessionLibrary:
             row = pd.read_sql_query(query, conn, params=params)
         return int(row.iloc[0]["id"]) if not row.empty else None
 
-    def save_session(self, session: Session, driver: str | None = None, track_name: str | None = None, session_type: str | None = None) -> int:
+    def save_session(
+        self,
+        session: Session,
+        driver: str | None = None,
+        track_name: str | None = None,
+        session_type: str | None = None,
+        track_condition: str | None = None,
+        temperature_c: float | None = None,
+        humidity_pct: float | None = None,
+        pressure_hpa: float | None = None,
+        altitude_m: float | None = None,
+        conditions_source: str | None = None,
+    ) -> int:
         """Persist a parsed session: lap summary rows to SQLite, full raw
-        dataframe to a pickle cache. Returns the new session's DB id."""
+        dataframe to a pickle cache. Returns the new session's DB id.
+
+        `track_condition`/`temperature_c`/`humidity_pct`/`pressure_hpa`/
+        `altitude_m` are the jetting-calibration fields entered (or
+        auto-defaulted from `telemetry.weather`) on the Settings page --
+        all optional here so existing callers (scripts/ingest.py, tests)
+        that don't have them keep working unchanged."""
         laps = flag_outlier_laps(lap_table(session))
         summary = summarize_laps(laps)
 
@@ -199,8 +239,9 @@ class SessionLibrary:
                 """INSERT INTO sessions
                    (source_file, session_index, driver, track_name, session_type,
                     start_date, start_time, ingested_at, best_lap_s, average_lap_s,
-                    std_dev_s, n_laps, cache_path)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    std_dev_s, n_laps, cache_path, track_condition, temperature_c,
+                    humidity_pct, pressure_hpa, altitude_m, conditions_source)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     session.source_file,
                     session.session_id,
@@ -215,6 +256,12 @@ class SessionLibrary:
                     summary.get("std_dev_s"),
                     summary.get("n_laps"),
                     None,
+                    track_condition,
+                    _safe_float(temperature_c),
+                    _safe_float(humidity_pct),
+                    _safe_float(pressure_hpa),
+                    _safe_float(altitude_m),
+                    conditions_source,
                 ),
             )
             session_db_id = cur.lastrowid

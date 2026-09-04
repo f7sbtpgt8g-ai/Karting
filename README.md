@@ -129,6 +129,7 @@ telemetry/            Parsing + analysis core (independently testable, no UI cod
   pattern_rules.py                 Rule-based causal-pattern classification taxonomy
   corner_engine.py                   Orchestrates the two above + complex/noise handling
   narrative.py                        Plain-language phrasing (templated or Anthropic-assisted)
+  weather.py                            Track-conditions auto-detect (Open-Meteo, keyless/free)
   storage.py                     SQLite session library (history + corner/pattern trend logging)
 app.py                Streamlit UI (thin orchestration layer over telemetry/*)
 scripts/ingest.py     CLI ingestion into the session library (automation-friendly)
@@ -214,8 +215,9 @@ there, and needs no outbound network access either.
 Uploading a file on the **Settings** page requires a driver name and a
 track name first -- there are two text fields above the uploader, and the
 "Load file(s)" button only appears (and only saves anything) once both are
-filled in, since every saved session needs to know who drove it and where.
-Once loaded, every session from
+filled in, plus the five track-conditions fields described below, since
+every saved session needs to know who drove it, where, and in what
+conditions. Once loaded, every session from
 that file is written into the same SQLite-backed library every other page
 reads from (`SessionLibrary` in `telemetry/storage.py`, the same store the
 History page and `scripts/ingest.py` use) -- so on the *next* run, whether
@@ -252,6 +254,45 @@ a confirm/cancel step, since this can't be undone. It deliberately leaves
 that session's kart setup history alone (a separate table, keyed by
 file/session/start-time rather than this row's id), since that's still a
 useful record even once the raw telemetry behind it is gone.
+
+## Track conditions & jetting calibration
+
+Every upload also requires **track conditions** for the session(s) in that
+file -- a dry/wet/mixed summary plus temperature, humidity, pressure, and
+altitude, entered once per upload (not per session; if conditions genuinely
+changed partway through a track day, upload that later batch of sessions
+separately with different values here). These feed the jetting suggestion
+on the Kart Setup page and are stored per session for later corner-comparison
+filtering.
+
+**Auto-detected where possible** (`telemetry/weather.py`): as soon as file(s)
+are selected, the app looks at the earliest-starting session's own GPS
+location and `Start Date`/`Start Time`, and queries
+[Open-Meteo](https://open-meteo.com) -- a free, keyless weather API with
+global historical coverage, chosen specifically so this works anywhere in
+the world without an API key or signup. Temperature, humidity, and pressure
+come from Open-Meteo's hourly data at the session's own local hour
+(`timezone=auto` resolves this from the GPS coordinates, matching the
+logger's tz-naive local timestamp); dry/wet/mixed is inferred from hourly
+precipitation at and just before that hour. **Altitude comes from the
+session's own GPS trace** (median `Altitude` across its fixes), not the
+weather API -- it's more accurate for the exact spot than a nearby grid
+cell, and it's data the file already contains. A "🔄 Re-fetch weather"
+button re-runs the lookup (overwriting manual edits) if the first attempt
+failed or looks wrong.
+
+**Every field stays editable, and all five are still mandatory even when
+auto-detection fails** -- no internet access, no GPS fixes in the file, or a
+date genuinely outside Open-Meteo's coverage all fall back to blank fields
+with a "couldn't auto-detect, enter manually" notice rather than silently
+guessing or blocking the upload entirely. Whether a session's values came
+from the auto-lookup or manual entry is recorded (`conditions_source` in
+`telemetry/storage.py`), for traceability.
+
+A library created before this feature shipped gets its `sessions` table
+migrated in place (new columns added via `ALTER TABLE`, not a fresh table)
+the next time it's opened -- existing sessions keep their data with these
+new fields simply blank, nothing is lost or needs re-uploading.
 
 ## Exporting the correct TSV from Unipro Analyser
 

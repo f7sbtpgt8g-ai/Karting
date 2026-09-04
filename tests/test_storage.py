@@ -1,4 +1,5 @@
 import os
+import sqlite3
 
 import pandas as pd
 
@@ -178,4 +179,68 @@ def test_kart_setup_is_scoped_per_session(tmp_path):
     # Session B has never had a setup saved -- must NOT inherit session A's.
     assert lib.load_latest_kart_setup_for_session(*session_b) is None
     assert lib.load_latest_kart_setup_for_session(*session_a).gearing.rear_teeth == 78
+    lib.close()
+
+
+def test_save_session_roundtrips_track_conditions(tmp_path, session1):
+    db_path = os.path.join(tmp_path, "sessions.db")
+    lib = SessionLibrary(db_path)
+
+    lib.save_session(
+        session1, driver="Test Driver", track_name="Test Track",
+        track_condition="Wet", temperature_c=14.5, humidity_pct=88.0, pressure_hpa=1005.0, altitude_m=32.0,
+        conditions_source="open-meteo (archive) + GPS altitude",
+    )
+    listed = lib.list_sessions()
+    row = listed.iloc[0]
+    assert row["track_condition"] == "Wet"
+    assert row["temperature_c"] == 14.5
+    assert row["humidity_pct"] == 88.0
+    assert row["pressure_hpa"] == 1005.0
+    assert row["altitude_m"] == 32.0
+    assert row["conditions_source"] == "open-meteo (archive) + GPS altitude"
+    lib.close()
+
+
+def test_save_session_without_conditions_leaves_columns_null(tmp_path, session1):
+    db_path = os.path.join(tmp_path, "sessions.db")
+    lib = SessionLibrary(db_path)
+    lib.save_session(session1, driver="Test Driver", track_name="Test Track")
+    row = lib.list_sessions().iloc[0]
+    assert pd.isna(row["track_condition"])
+    assert pd.isna(row["temperature_c"])
+    lib.close()
+
+
+def test_existing_db_without_condition_columns_is_migrated_in_place(tmp_path, session1):
+    """A library created before this feature shipped has a `sessions` table
+    with no track-condition columns -- opening it with the current
+    SessionLibrary must add them in place (ALTER TABLE), not fail, and not
+    lose any pre-existing rows."""
+    db_path = os.path.join(tmp_path, "sessions.db")
+    old_schema = """
+        CREATE TABLE sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_file TEXT, session_index INTEGER, driver TEXT, track_name TEXT,
+            session_type TEXT, start_date TEXT, start_time TEXT, ingested_at TEXT,
+            best_lap_s REAL, average_lap_s REAL, std_dev_s REAL, n_laps INTEGER, cache_path TEXT
+        );
+    """
+    conn = sqlite3.connect(db_path)
+    conn.executescript(old_schema)
+    conn.execute(
+        "INSERT INTO sessions (source_file, session_index, driver, track_name, ingested_at, n_laps) "
+        "VALUES ('old.tsv', 0, 'Old Driver', 'Old Track', '2024-01-01T00:00:00', 5)"
+    )
+    conn.commit()
+    conn.close()
+
+    lib = SessionLibrary(db_path)  # must not raise despite the pre-existing table missing new columns
+    listed = lib.list_sessions()
+    assert len(listed) == 1
+    assert listed.iloc[0]["driver"] == "Old Driver"
+    assert pd.isna(listed.iloc[0]["track_condition"])
+
+    new_id = lib.save_session(session1, driver="New Driver", track_name="New Track", track_condition="Dry", temperature_c=20.0)
+    assert lib.list_sessions().set_index("id").loc[new_id, "track_condition"] == "Dry"
     lib.close()

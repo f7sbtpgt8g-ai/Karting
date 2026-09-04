@@ -28,6 +28,7 @@ from telemetry.corners import assign_segments, build_reference_segments, lap_gps
 from telemetry.delta import delta_time_trace, segment_times_for_lap, theoretical_best_lap
 from telemetry.focus_areas import blended_top_recommendations, recurring_weaknesses, time_loss_per_segment, top_focus_areas
 from telemetry.narrative import rank_headline_findings
+from telemetry.weather import CONDITION_OPTIONS, fetch_track_conditions
 from telemetry.laps import (
     clean_lap_table,
     detect_anomalous_laps,
@@ -1386,12 +1387,14 @@ def page_lap_comparison() -> None:
         entry_points = corner_points_for_lap(entry["session"], entry["lap_number"], ref_segments)
         entry_zones = three_zone_times(entry["session"], entry["lap_number"], entry_points)
         track_name = entry_db["track_name"] if entry_db else None
+        conditions = entry_db["track_condition"] if entry_db else None
         library.log_corner_metrics(
-            entry_db["id"] if entry_db else None, entry["session"].driver, track_name, entry["lap_number"], entry_points, entry_zones
+            entry_db["id"] if entry_db else None, entry["session"].driver, track_name, entry["lap_number"],
+            entry_points, entry_zones, conditions=conditions,
         )
         library.log_pattern_instances(
             entry["session"].driver, track_name, entry_db["id"] if entry_db else None, entry["lap_number"],
-            ref_db["id"] if ref_db else None, ref_lap, result_df,
+            ref_db["id"] if ref_db else None, ref_lap, result_df, conditions=conditions,
         )
 
     if not all_results:
@@ -1812,6 +1815,12 @@ def page_history() -> None:
     render_footer()
 
 
+_CONDITIONS_WIDGET_KEYS = (
+    "settings_condition_select", "settings_temperature_c", "settings_humidity_pct",
+    "settings_pressure_hpa", "settings_altitude_m",
+)
+
+
 def page_settings() -> None:
     st.title("⚙️ Settings")
     if flash := st.session_state.pop("settings_upload_result", None):
@@ -1841,8 +1850,81 @@ def page_settings() -> None:
     missing = [
         field for field, value in (("driver name", driver_input), ("track name", track_input)) if not value.strip()
     ]
+
+    # Track conditions -- entered once per upload (not per session inside a
+    # multi-session file): a full day at the track is the common case, and a
+    # driver whose conditions genuinely changed partway through can just
+    # upload that batch of sessions separately with different values here.
+    track_condition = temperature_c = humidity_pct = pressure_hpa = altitude_m = None
+    conditions_source: str | None = None
+
+    if uploaded_files:
+        parsed_sessions: list[Session] = []
+        for f in uploaded_files:
+            parsed_sessions.extend(parse_uploaded_file(f.getvalue(), f.name))
+        # The earliest-starting session in the batch, GPS/time-wise -- a
+        # reasonable single representative point to fetch weather for when a
+        # multi-session file spans a couple of hours, without needing a
+        # separate lookup per session.
+        representative_session = (
+            min(parsed_sessions, key=lambda s: (s.start_date or "", s.start_time or "")) if parsed_sessions else None
+        )
+
+        st.markdown("**Track conditions for this upload**")
+        st.caption(
+            "Applied to every session loaded from these file(s) -- auto-detected from GPS location + session "
+            "start time via Open-Meteo (free, no signup) where possible, and always editable. Used to calibrate "
+            "the jetting suggestions on the Kart Setup page."
+        )
+
+        upload_fingerprint = tuple((f.name, f.size) for f in uploaded_files)
+        is_new_upload = st.session_state.get("settings_conditions_fingerprint") != upload_fingerprint
+        refetch_clicked = False if is_new_upload else st.button(
+            "🔄 Re-fetch weather", key="settings_refetch_weather",
+            help="Re-run the auto-detection (e.g. after a flaky first attempt), overwriting any manual edits below.",
+        )
+
+        if (is_new_upload or refetch_clicked) and representative_session is not None:
+            with st.spinner("Looking up track conditions..."):
+                fetched = fetch_track_conditions(representative_session)
+            st.session_state["settings_conditions_fingerprint"] = upload_fingerprint
+            st.session_state["settings_fetched_conditions"] = fetched
+            if fetched is not None:
+                st.session_state["settings_condition_select"] = fetched.condition
+                st.session_state["settings_temperature_c"] = fetched.temperature_c
+                st.session_state["settings_humidity_pct"] = fetched.humidity_pct
+                st.session_state["settings_pressure_hpa"] = fetched.pressure_hpa
+                st.session_state["settings_altitude_m"] = fetched.altitude_m
+            else:
+                for key in _CONDITIONS_WIDGET_KEYS:
+                    st.session_state.pop(key, None)
+
+        fetched = st.session_state.get("settings_fetched_conditions")
+        if fetched is not None:
+            st.caption(f"✅ Auto-detected from {fetched.source} -- adjust below if it looks wrong.")
+        else:
+            st.caption(
+                "⚠️ Couldn't auto-detect conditions (no internet access, no GPS fixes in the file, or the date is "
+                "out of range) -- enter these manually."
+            )
+
+        cc1, cc2, cc3, cc4, cc5 = st.columns(5)
+        track_condition = cc1.selectbox(
+            "Conditions", CONDITION_OPTIONS, key="settings_condition_select", index=None, placeholder="Select...",
+        )
+        temperature_c = cc2.number_input("Temp (°C)", key="settings_temperature_c", value=None, step=0.5, format="%.1f")
+        humidity_pct = cc3.number_input(
+            "Humidity (%)", key="settings_humidity_pct", value=None, min_value=0.0, max_value=100.0, step=1.0, format="%.0f",
+        )
+        pressure_hpa = cc4.number_input("Pressure (hPa)", key="settings_pressure_hpa", value=None, step=1.0, format="%.0f")
+        altitude_m = cc5.number_input("Altitude (m)", key="settings_altitude_m", value=None, step=1.0, format="%.0f")
+        conditions_source = fetched.source if fetched is not None else "manual"
+
+        if track_condition is None or None in (temperature_c, humidity_pct, pressure_hpa, altitude_m):
+            missing.append("track conditions (all 5 fields)")
+
     if uploaded_files and missing:
-        st.warning(f"Enter a {' and '.join(missing)} above before loading -- every saved session needs both.")
+        st.warning(f"Enter a {' and '.join(missing)} above before loading -- every saved session needs all of these.")
     elif uploaded_files and st.button("Load file(s) into session library"):
         driver, track = driver_input.strip(), track_input.strip()
         added = 0
@@ -1852,7 +1934,11 @@ def page_settings() -> None:
                     if library.find_session(s.source_file, s.session_id, s.start_time, driver=driver) is not None:
                         continue
                     s.driver = driver
-                    library.save_session(s, driver=driver, track_name=track)
+                    library.save_session(
+                        s, driver=driver, track_name=track,
+                        track_condition=track_condition, temperature_c=temperature_c, humidity_pct=humidity_pct,
+                        pressure_hpa=pressure_hpa, altitude_m=altitude_m, conditions_source=conditions_source,
+                    )
                     added += 1
         if added:
             # Flashed on the *next* run instead of shown here directly --
@@ -1947,6 +2033,7 @@ if not sessions_meta.empty:
         session_db_lookup[_key] = {
             "id": int(_row["id"]),
             "track_name": _row["track_name"] if pd.notna(_row["track_name"]) else None,
+            "track_condition": _row["track_condition"] if "track_condition" in _row and pd.notna(_row["track_condition"]) else None,
         }
 
 data_ready = False
