@@ -302,6 +302,22 @@ def test_pending_attribution_is_never_public(libs, session1):
     assert accounts.leaderboard("Test Track").empty
 
 
+def test_uploader_keeps_access_to_what_they_uploaded_for_someone_else(libs, session1):
+    """A team manager who uploads on a driver's behalf still needs to see
+    (and be able to delete) what they uploaded -- otherwise a mistaken
+    upload becomes unfixable for the person who made it."""
+    sessions_lib, accounts = libs
+    uploader, _ = accounts.register_user_with_profile("manager@example.com")
+    placeholder, _ = accounts.create_unclaimed_profile("Junior", created_by_user_id=uploader)
+    sid = _save(sessions_lib, session1)
+    accounts.attribute_session(sid, placeholder, uploaded_by_user_id=uploader)
+
+    assert sid in set(accounts.visible_sessions_for_user(uploader)["id"])
+    # ...but a bystander sees nothing.
+    bystander, _ = accounts.register_user_with_profile("bystander@example.com")
+    assert accounts.visible_sessions_for_user(bystander).empty
+
+
 def test_visible_sessions_for_user_scopes_correctly(libs, session1, session2):
     sessions_lib, accounts = libs
     alice, alice_profile = accounts.register_user_with_profile("alice@example.com")

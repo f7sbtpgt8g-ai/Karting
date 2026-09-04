@@ -11,6 +11,7 @@ import io
 import json
 import os
 import tempfile
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -27,6 +28,26 @@ from telemetry.corner_engine import calibrate_thresholds, compare_corners
 from telemetry.corners import assign_segments, build_reference_segments, lap_gps_trace, segment_midpoints
 from telemetry.delta import delta_time_trace, segment_times_for_lap, theoretical_best_lap
 from telemetry.focus_areas import blended_top_recommendations, recurring_weaknesses, time_loss_per_segment, top_focus_areas
+from telemetry.accounts import (
+    CLAIM_CLAIMED,
+    CLAIM_UNCLAIMED,
+    CONSENT_GRANTED,
+    VISIBILITY_PRIVATE,
+    VISIBILITY_SHARED,
+    AccountLibrary,
+    is_minor,
+)
+from telemetry.auth import AuthStore, LocalAuthProvider, provider_from_env
+from telemetry.mailer import (
+    OutboxEmailSender,
+    attribution_request_email,
+    claim_invite_email,
+    claim_notification_email,
+    guardian_consent_email,
+    password_reset_email,
+    sender_from_env,
+    verification_email,
+)
 from telemetry.narrative import rank_headline_findings
 from telemetry.weather import CONDITION_OPTIONS, fetch_track_conditions
 from telemetry.laps import (
@@ -78,6 +99,49 @@ def plotlyjs_script_tag() -> str:
     every rerun.
     """
     return f"<script>{get_plotlyjs()}</script>"
+
+
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:8501").rstrip("/")
+
+
+@st.cache_resource(show_spinner=False)
+def get_account_library() -> AccountLibrary:
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    return AccountLibrary(DB_PATH)
+
+
+@st.cache_resource(show_spinner=False)
+def get_auth_store() -> AuthStore:
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    return AuthStore(DB_PATH)
+
+
+@st.cache_resource(show_spinner=False)
+def get_email_sender():
+    return sender_from_env(DB_PATH)
+
+
+@st.cache_resource(show_spinner=False)
+def get_auth_provider(_accounts: AccountLibrary, _store: AuthStore):
+    return provider_from_env(_accounts, _store)
+
+
+def email_delivery_configured() -> bool:
+    """Whether this deployment can actually deliver mail. When it can't
+    (the default local setup, which records to an outbox instead), the
+    email-verification step is skipped rather than leaving accounts stuck
+    behind a link that will never arrive -- see `complete_registration`."""
+    return not isinstance(get_email_sender(), OutboxEmailSender)
+
+
+def dev_show_email_links() -> bool:
+    """Print links that would have been emailed straight onto the page.
+
+    Off unless explicitly enabled, and deliberately so: showing a password
+    reset link for an arbitrary address on screen is account takeover, not
+    a convenience. Intended only for local development against the outbox
+    sender."""
+    return os.environ.get("KARTING_DEV_SHOW_EMAIL_LINKS", "").strip().lower() in ("1", "true", "yes")
 
 
 @st.cache_resource(show_spinner=False)
@@ -1758,7 +1822,14 @@ def page_history() -> None:
         "no re-uploading needed. Note: this storage lives on the app's local disk, which is wiped on every "
         "redeploy/reboot -- treat it as a within-deploy convenience for now, not durable long-term history."
     )
+    # Scoped to what this account owns or uploaded -- `library.list_sessions()`
+    # would list (and offer to delete) every session on the instance,
+    # including other drivers' private ones.
     session_history = library.list_sessions()
+    session_history = session_history[
+        (session_history["driver_profile_id"] == current_profile["id"])
+        | (session_history["uploaded_by_user_id"] == current_user["id"])
+    ]
     if session_history.empty:
         st.info("No sessions saved yet.")
     else:
@@ -1827,29 +1898,22 @@ def page_settings() -> None:
         st.success(flash)
     st.caption(
         "Uploaded files are saved into your session library, so they persist across reruns and app restarts -- "
-        "no need to re-upload the same file next time. Upload each driver's files separately (with their name "
-        "below) to build up sessions you can compare across drivers, same as comparing across your own sessions."
+        "no need to re-upload the same file next time. A file containing several sessions (a shared team logger, "
+        "say) can be split between drivers: you attribute each session individually after it's parsed."
     )
 
-    existing = library.list_sessions()
+    existing = accounts_lib.visible_sessions_for_user(current_user["id"])
     if not existing.empty:
-        n_drivers = existing["driver"].nunique()
-        st.caption(f"📚 Library currently has {len(existing)} session(s) from {n_drivers} driver(s).")
+        st.caption(f"📚 You can currently see {len(existing)} session(s).")
 
-    dc1, dc2 = st.columns(2)
-    driver_input = dc1.text_input(
-        "Driver name for this upload", value="", placeholder="e.g. Alex Smith", key="settings_driver_name",
-    )
-    track_input = dc2.text_input(
+    track_input = st.text_input(
         "Track name for this upload", value="", placeholder="e.g. Jyllandsringen", key="settings_track_name",
     )
     uploaded_files = st.file_uploader(
         "Upload Unipro TSV export(s)", type=["tsv", "txt"], accept_multiple_files=True, key="settings_uploader",
     )
 
-    missing = [
-        field for field, value in (("driver name", driver_input), ("track name", track_input)) if not value.strip()
-    ]
+    missing = [field for field, value in (("track name", track_input),) if not value.strip()]
 
     # Track conditions -- entered once per upload (not per session inside a
     # multi-session file): a full day at the track is the common case, and a
@@ -1921,34 +1985,749 @@ def page_settings() -> None:
         conditions_source = fetched.source if fetched is not None else "manual"
 
         if track_condition is None or None in (temperature_c, humidity_pct, pressure_hpa, altitude_m):
-            missing.append("track conditions (all 5 fields)")
+            missing.append("all 5 track-conditions fields")
 
-    if uploaded_files and missing:
-        st.warning(f"Enter a {' and '.join(missing)} above before loading -- every saved session needs all of these.")
-    elif uploaded_files and st.button("Load file(s) into session library"):
-        driver, track = driver_input.strip(), track_input.strip()
-        added = 0
-        with st.spinner(f"Parsing and saving {len(uploaded_files)} file(s)..."):
-            for f in uploaded_files:
-                for s in parse_uploaded_file(f.getvalue(), f.name):
-                    if library.find_session(s.source_file, s.session_id, s.start_time, driver=driver) is not None:
-                        continue
-                    s.driver = driver
-                    library.save_session(
-                        s, driver=driver, track_name=track,
-                        track_condition=track_condition, temperature_c=temperature_c, humidity_pct=humidity_pct,
-                        pressure_hpa=pressure_hpa, altitude_m=altitude_m, conditions_source=conditions_source,
+    if uploaded_files:
+        # The review screen renders regardless of what's still missing --
+        # being unable to see which sessions were even detected until every
+        # other field is filled in is backwards. Saving is what's blocked.
+        render_attribution_review(
+            uploaded_files, track_input.strip(),
+            dict(
+                track_condition=track_condition, temperature_c=temperature_c, humidity_pct=humidity_pct,
+                pressure_hpa=pressure_hpa, altitude_m=altitude_m, conditions_source=conditions_source,
+            ),
+            missing_fields=missing,
+        )
+
+    if links := st.session_state.pop("settings_invite_links", None):
+        st.markdown("**Claim links** (shown because dev link display is on):")
+        for link in links:
+            st.code(link, language=None)
+
+    # Sample data is loaded on request rather than seeded automatically:
+    # with per-account ownership, auto-seeding on an empty view would give
+    # every new account its own duplicate copy of an 82MB file.
+    if os.path.exists(DEFAULT_TSV_PATH):
+        st.divider()
+        with st.expander("Load the bundled sample data"):
+            st.caption(
+                "A real multi-session export ships with the app for trying things out. It'll be filed under your "
+                "own driver profile, private like anything else."
+            )
+            if st.button("Load sample sessions"):
+                added = 0
+                with st.spinner("Parsing and saving the sample file (this takes a moment)..."):
+                    with open(DEFAULT_TSV_PATH, "rb") as f:
+                        sample_bytes = f.read()
+                    for s in parse_uploaded_file(sample_bytes, os.path.basename(DEFAULT_TSV_PATH)):
+                        if library.find_session(s.source_file, s.session_id, s.start_time) is not None:
+                            continue
+                        s.driver = current_profile["display_name"]
+                        sid = library.save_session(
+                            s, driver=current_profile["display_name"], track_name="Sample Track",
+                            driver_profile_id=int(current_profile["id"]), uploaded_by_user_id=current_user["id"],
+                        )
+                        accounts_lib.attribute_session(sid, int(current_profile["id"]), current_user["id"])
+                        added += 1
+                st.session_state["settings_upload_result"] = f"Loaded {added} sample session(s)."
+                st.rerun()
+
+
+# Attribution options offered per detected session.
+ATTRIBUTE_ME = "Me"
+ATTRIBUTE_REGISTERED = "Another registered driver"
+ATTRIBUTE_UNCLAIMED = "An existing unclaimed profile"
+ATTRIBUTE_NEW = "A new driver profile"
+
+
+def render_attribution_review(
+    uploaded_files, track_name: str, conditions: dict, missing_fields: list[str] | None = None
+) -> None:
+    """The post-upload review step: every session detected in the uploaded
+    file(s), each attributed to exactly one driver before anything is saved.
+
+    Deliberately separate from parsing -- the parser already returns a list
+    of detected sessions and knows nothing about who owns them, so this is a
+    UI/data layer on top rather than a change to the parsing logic.
+    """
+    parsed: list[tuple[str, Session]] = []
+    for f in uploaded_files:
+        for s in parse_uploaded_file(f.getvalue(), f.name):
+            parsed.append((f.name, s))
+
+    if not parsed:
+        st.warning("No sessions were detected in those file(s).")
+        return
+
+    already_saved = [
+        (name, s) for name, s in parsed
+        if library.find_session(s.source_file, s.session_id, s.start_time) is not None
+    ]
+    new_sessions = [
+        (name, s) for name, s in parsed
+        if library.find_session(s.source_file, s.session_id, s.start_time) is None
+    ]
+    if already_saved:
+        st.caption(f"{len(already_saved)} of {len(parsed)} session(s) are already in the library and will be skipped.")
+    if not new_sessions:
+        st.info("These sessions were already in your library -- nothing new to add.")
+        return
+
+    st.markdown("**Who drove each session?**")
+    st.caption(
+        "One file can hold sessions from several drivers. Each is filed under the driver it belongs to -- which "
+        "doesn't have to be you, and doesn't have to be someone with an account yet."
+    )
+
+    registered = accounts_lib.list_registered_drivers()
+    registered = registered[registered["user_id"] != current_user["id"]]
+    unclaimed = accounts_lib.list_profiles(claim_status=CLAIM_UNCLAIMED)
+    invited = accounts_lib.list_profiles(claim_status="invited")
+    unclaimed_all = pd.concat([unclaimed, invited], ignore_index=True) if not invited.empty else unclaimed
+
+    choices: list[dict] = []
+    for index, (file_name, session) in enumerate(new_sessions):
+        laps = compute_clean_laps(session)
+        duration = laps["lap_time_s"].sum() if not laps.empty else 0.0
+        label = (
+            f"{file_name} · session {session.session_id} · {session.start_date or '?'} {session.start_time or ''} "
+            f"· {len(laps)} laps · {duration / 60:.0f} min"
+        )
+        with st.container(border=True):
+            st.markdown(f"**{label}**")
+            mode = st.radio(
+                "Attribute to", [ATTRIBUTE_ME, ATTRIBUTE_REGISTERED, ATTRIBUTE_UNCLAIMED, ATTRIBUTE_NEW],
+                key=f"attr_mode_{index}", horizontal=True, label_visibility="collapsed",
+            )
+            entry: dict = {"file_name": file_name, "session": session, "mode": mode}
+
+            if mode == ATTRIBUTE_REGISTERED:
+                if registered.empty:
+                    st.caption("No other registered drivers yet.")
+                    entry["blocked"] = "no registered drivers to choose from"
+                else:
+                    picked = st.selectbox(
+                        "Driver", registered["id"], key=f"attr_reg_{index}",
+                        format_func=lambda i, _r=registered: _r.set_index("id").loc[i, "display_name"],
                     )
-                    added += 1
-        if added:
-            # Flashed on the *next* run instead of shown here directly --
-            # the rerun below is what makes the sidebar's session picker and
-            # every other page see the new sessions immediately, but it also
-            # wipes any message set on this run before the user ever sees it.
-            st.session_state["settings_upload_result"] = f"Loaded {added} new session(s) for {driver} at {track}."
-            st.rerun()
+                    entry["profile_id"] = int(picked)
+                    st.caption(
+                        "They'll be asked to confirm before it's added to their history -- it won't appear "
+                        "there until they accept."
+                    )
+            elif mode == ATTRIBUTE_UNCLAIMED:
+                if unclaimed_all.empty:
+                    st.caption("No unclaimed profiles exist yet.")
+                    entry["blocked"] = "no unclaimed profiles to choose from"
+                else:
+                    picked = st.selectbox(
+                        "Profile", unclaimed_all["id"], key=f"attr_unc_{index}",
+                        format_func=lambda i, _u=unclaimed_all: _u.set_index("id").loc[i, "display_name"],
+                    )
+                    entry["profile_id"] = int(picked)
+            elif mode == ATTRIBUTE_NEW:
+                nc1, nc2 = st.columns(2)
+                entry["new_name"] = nc1.text_input("Driver name", key=f"attr_new_name_{index}")
+                entry["new_email"] = nc2.text_input(
+                    "Their email (optional)", key=f"attr_new_email_{index}",
+                    help=(
+                        "With an email, they're invited to claim the profile and see this data. Without one, "
+                        "a private placeholder is created and nobody is contacted."
+                    ),
+                )
+                if not entry["new_email"].strip():
+                    st.caption("No email -- a private placeholder is created and nobody is contacted.")
+                elif not invite_emails_enabled_ui():
+                    st.caption(
+                        "⚠️ Invite emails are currently disabled for this deployment, so the profile is created "
+                        "but no invite is sent. The claim link is still generated and shown to you."
+                    )
+                if not entry["new_name"].strip():
+                    entry["blocked"] = "a name for the new driver profile"
+            choices.append(entry)
+
+    outstanding = sorted({c["blocked"] for c in choices if c.get("blocked")}) + list(missing_fields or [])
+    if outstanding:
+        st.warning(f"Before saving, still needed: {', '.join(outstanding)}.")
+        return
+
+    if not st.button("Save sessions", type="primary"):
+        return
+
+    saved, pending, invites = 0, 0, []
+    with st.spinner(f"Saving {len(choices)} session(s)..."):
+        for choice in choices:
+            session = choice["session"]
+            profile_id, requires_confirmation, claim_token = _resolve_attribution_target(choice)
+
+            profile = accounts_lib.get_profile(profile_id)
+            session.driver = profile["display_name"]
+            session_db_id = library.save_session(
+                session, driver=profile["display_name"], track_name=track_name,
+                driver_profile_id=profile_id, uploaded_by_user_id=current_user["id"],
+                kart_class=setup.class_name if setup else None, **conditions,
+            )
+            accounts_lib.attribute_session(
+                session_db_id, profile_id, uploaded_by_user_id=current_user["id"],
+                requires_confirmation=requires_confirmation,
+            )
+            saved += 1
+            if requires_confirmation:
+                pending += 1
+                _send_attribution_request(profile, session, track_name)
+            if claim_token:
+                invites.append((profile["display_name"], profile["invite_email"], claim_token))
+
+    for name, email, token in invites:
+        _send_claim_invite(name, email, token, track_name)
+
+    message = f"Saved {saved} session(s)."
+    if pending:
+        message += f" {pending} awaiting the other driver's confirmation."
+    st.session_state["settings_upload_result"] = message
+    if invites and dev_show_email_links():
+        st.session_state["settings_invite_links"] = [_link(f"?claim={t}") for _n, _e, t in invites]
+    st.rerun()
+
+
+def invite_emails_enabled_ui() -> bool:
+    from telemetry.mailer import invite_emails_enabled
+
+    return invite_emails_enabled()
+
+
+def _resolve_attribution_target(choice: dict) -> tuple[int, bool, str | None]:
+    """Turn one review-screen choice into `(profile_id,
+    requires_confirmation, claim_token)`.
+
+    Only the "already-registered driver" path needs confirmation: there is a
+    real account behind it whose history would otherwise be written to
+    without their say-so. Unclaimed profiles have no account to protect --
+    the check for those happens at claim time instead."""
+    mode = choice["mode"]
+    if mode == ATTRIBUTE_ME:
+        return int(current_profile["id"]), False, None
+    if mode == ATTRIBUTE_REGISTERED:
+        return choice["profile_id"], True, None
+    if mode == ATTRIBUTE_UNCLAIMED:
+        return choice["profile_id"], False, None
+
+    email = choice["new_email"].strip() or None
+    profile_id, token = accounts_lib.create_unclaimed_profile(
+        choice["new_name"].strip(), created_by_user_id=current_user["id"], invite_email=email,
+    )
+    return profile_id, False, token
+
+
+def _send_attribution_request(profile: dict, session: Session, track_name: str) -> None:
+    target_user = accounts_lib.get_user(int(profile["user_id"]))
+    if not target_user:
+        return
+    summary = f"{track_name}, {session.start_date or 'unknown date'} {session.start_time or ''}".strip()
+    get_email_sender().send(
+        attribution_request_email(
+            target_user["email"], current_user["display_name"] or current_user["email"], summary,
+            _link("?page=pending"),
+        )
+    )
+
+
+def _send_claim_invite(driver_name: str, email: str | None, token: str, track_name: str) -> None:
+    if not email:
+        return
+    get_email_sender().send(
+        claim_invite_email(
+            email, driver_name, current_user["display_name"] or current_user["email"],
+            f"{track_name} — uploaded {date.today().isoformat()}", _link(f"?claim={token}"),
+        )
+    )
+
+
+def page_my_sessions() -> None:
+    """Ownership and sharing: what this driver owns, what each session's
+    visibility is, and what is waiting on them."""
+    st.subheader("My sessions & sharing")
+    st.caption(
+        "Everything filed under your driver profile. Sessions are private until you share them -- sharing a "
+        "session makes it selectable as a comparison reference by other drivers and eligible for that track's "
+        "leaderboard."
+    )
+
+    pending = accounts_lib.pending_attribution_requests(int(current_profile["id"]))
+    if not pending.empty:
+        st.markdown("**Waiting for your confirmation**")
+        st.caption("Someone else uploaded these and says they're yours. They're not in your history until you accept.")
+        for _, request in pending.iterrows():
+            with st.container(border=True):
+                st.write(
+                    f"**{request['track_name'] or 'Unknown track'}** — {request['start_date'] or '?'} "
+                    f"{request['start_time'] or ''} · {int(request['n_laps'] or 0)} laps"
+                )
+                st.caption(f"Uploaded by {request['requested_by_email'] or 'someone'}")
+                accept_col, reject_col, _ = st.columns([1, 1, 4])
+                if accept_col.button("Accept", key=f"accept_{request['id']}", type="primary"):
+                    accounts_lib.resolve_attribution_request(int(request["id"]), accept=True)
+                    st.rerun()
+                if reject_col.button("Reject", key=f"reject_{request['id']}"):
+                    accounts_lib.resolve_attribution_request(int(request["id"]), accept=False)
+                    st.rerun()
+        st.divider()
+
+    owned = accounts_lib.sessions_for_profile(int(current_profile["id"]))
+    if owned.empty:
+        st.info("No sessions filed under your profile yet -- upload one from the Settings page.")
+        render_footer()
+        return
+
+    for _, row in owned.iterrows():
+        with st.container(border=True):
+            info_col, toggle_col = st.columns([4, 1])
+            info_col.write(
+                f"**{row['track_name'] or 'Unknown track'}** — {row['start_date'] or '?'} {row['start_time'] or ''}"
+            )
+            info_col.caption(
+                f"{int(row['n_laps'] or 0)} laps · best {row['best_lap_s']:.2f}s"
+                if pd.notna(row["best_lap_s"]) else f"{int(row['n_laps'] or 0)} laps"
+            )
+            shared = row["visibility"] == VISIBILITY_SHARED
+            new_value = toggle_col.toggle("Shared", value=shared, key=f"share_{row['id']}")
+            if new_value != shared:
+                accounts_lib.set_session_visibility(
+                    int(row["id"]), VISIBILITY_SHARED if new_value else VISIBILITY_PRIVATE
+                )
+                st.rerun()
+    render_footer()
+
+
+def page_find_profile() -> None:
+    """The unprompted claim path: someone who registered on their own
+    recognising an unclaimed placeholder as themselves."""
+    st.subheader("Find my driver profile")
+    st.caption(
+        "If someone uploaded your data before you had an account, it may be sitting under an unclaimed profile. "
+        "Search for your name below."
+    )
+
+    if current_profile and accounts_lib.sessions_for_profile(int(current_profile["id"])).shape[0] > 0:
+        st.caption(f"You're currently linked to the profile **{current_profile['display_name']}**.")
+
+    query = st.text_input("Search unclaimed profiles by name", key="claim_search")
+    if not query.strip():
+        render_footer()
+        return
+
+    matches = accounts_lib.list_profiles(name_query=query)
+    matches = matches[matches["claim_status"] != CLAIM_CLAIMED]
+    if matches.empty:
+        st.info("No unclaimed profiles match that name.")
+        render_footer()
+        return
+
+    for _, profile in matches.iterrows():
+        sessions = accounts_lib.sessions_for_profile(int(profile["id"]), include_pending=True)
+        with st.container(border=True):
+            st.write(f"**{profile['display_name']}** — {len(sessions)} session(s)")
+            if not sessions.empty:
+                tracks = sorted({t for t in sessions["track_name"].dropna().unique()})
+                st.caption(f"Tracks: {', '.join(tracks) if tracks else 'unknown'}")
+            if st.button("This is me", key=f"claimreq_{profile['id']}"):
+                accounts_lib.request_profile_claim(int(profile["id"]), current_user["id"])
+                try:
+                    accounts_lib.claim_profile(int(profile["id"]), current_user["id"])
+                except ValueError as exc:
+                    # Most often: this account already has its own profile.
+                    # Recorded as a request for a human to sort out rather
+                    # than merging two driver identities automatically.
+                    st.warning(f"{exc} Your request has been recorded.")
+                else:
+                    _notify_uploader_of_claim(accounts_lib, int(profile["id"]), current_user["id"])
+                    st.success("Claimed -- those sessions are now in your history.")
+                    st.rerun()
+
+    st.divider()
+    with st.expander("Something attributed to you incorrectly?"):
+        reason = st.text_area("What's wrong?", key="report_reason")
+        if st.button("Report incorrect attribution"):
+            accounts_lib.report_attribution(current_user["id"], reason=reason)
+            st.success("Reported -- thanks, someone will look into it.")
+    render_footer()
+
+
+def page_shared_laps() -> None:
+    """Browse other drivers' explicitly-shared sessions and pick one as a
+    comparison reference."""
+    st.subheader("Shared laps from other drivers")
+    st.caption(
+        "Only sessions that another driver has explicitly shared appear here. Selecting one sets it as the "
+        "reference lap on the Lap Comparison page."
+    )
+
+    fc1, fc2, fc3 = st.columns(3)
+    track_filter = fc1.text_input("Track", key="shared_track")
+    driver_filter = fc2.text_input("Driver name", key="shared_driver")
+    condition_filter = fc3.selectbox(
+        "Conditions", ["Any"] + CONDITION_OPTIONS, key="shared_conditions",
+    )
+
+    results = accounts_lib.shareable_reference_sessions(
+        exclude_user_id=current_user["id"],
+        track_name=track_filter.strip() or None,
+        driver_query=driver_filter.strip() or None,
+        track_condition=None if condition_filter == "Any" else condition_filter,
+    )
+    if results.empty:
+        st.info("No shared sessions match those filters yet.")
+        render_footer()
+        return
+
+    display = results[
+        ["driver_display_name", "track_name", "start_date", "track_condition", "kart_class", "n_laps", "best_lap_s"]
+    ].copy()
+    display["best_lap_s"] = display["best_lap_s"].round(2)
+    st.dataframe(prettify_columns(display), width="stretch")
+
+    picked = st.selectbox(
+        "Use as comparison reference", results["id"],
+        format_func=lambda i, _r=results: (
+            f"{_r.set_index('id').loc[i, 'driver_display_name']} — "
+            f"{_r.set_index('id').loc[i, 'track_name']} {_r.set_index('id').loc[i, 'start_date']}"
+        ),
+    )
+    if st.button("Set as reference lap", type="primary"):
+        st.session_state["lc_reference_session_db_id"] = int(picked)
+        st.success("Set. Open the Lap Comparison page to compare against it.")
+    render_footer()
+
+
+def page_leaderboards() -> None:
+    st.subheader("Leaderboards")
+    st.caption(
+        "Best lap per driver at each track. Only sessions a driver has explicitly shared are eligible -- private "
+        "sessions never appear, and neither does data belonging to a profile nobody has claimed yet."
+    )
+
+    tracks = accounts_lib.leaderboard_tracks()
+    if not tracks:
+        st.info(
+            "No shared sessions yet, so there's nothing to rank. Share one of your own from the "
+            "'My sessions & sharing' page to start a board."
+        )
+        render_footer()
+        return
+
+    fc1, fc2, fc3 = st.columns(3)
+    track = fc1.selectbox("Track", tracks, key="lb_track")
+    condition = fc2.selectbox("Conditions", ["Overall"] + CONDITION_OPTIONS, key="lb_conditions")
+    classes = sorted(
+        {
+            c for c in accounts_lib.shareable_reference_sessions(track_name=track)["kart_class"].dropna().unique()
+        }
+    )
+    kart_class = fc3.selectbox("Class", ["All classes"] + classes, key="lb_class")
+
+    board = accounts_lib.leaderboard(
+        track,
+        track_condition=None if condition == "Overall" else condition,
+        kart_class=None if kart_class == "All classes" else kart_class,
+    )
+    if board.empty:
+        st.info("Nothing on this board with those filters yet.")
+        render_footer()
+        return
+
+    display = board[["rank", "driver_display_name", "best_lap_s", "qualifying_sessions"]].copy()
+    display["best_lap_s"] = display["best_lap_s"].round(3)
+    st.dataframe(prettify_columns(display), width="stretch", hide_index=True)
+    if condition == "Overall":
+        st.caption("'Overall' pools every condition and ranks on time alone -- wet and dry laps compete directly.")
+    render_footer()
+
+
+# ---------------------------------------------------------------------------
+# Authentication gate
+#
+# Everything below runs before st.navigation: a signed-out visitor gets the
+# sign-in / register / reset / claim screens and nothing else, so no page
+# function ever has to defend itself against there being no current user.
+# ---------------------------------------------------------------------------
+
+SESSION_TOKEN_KEY = "_auth_session_token"
+
+
+def current_user_id() -> int | None:
+    """The signed-in account, resolved from a server-side session token so
+    that signing out (or a password reset) genuinely invalidates it, rather
+    than just clearing a client-side flag."""
+    return get_auth_store().user_for_session(st.session_state.get(SESSION_TOKEN_KEY))
+
+
+def sign_in(user_id: int) -> None:
+    st.session_state[SESSION_TOKEN_KEY] = get_auth_store().start_session(user_id)
+
+
+def sign_out() -> None:
+    token = st.session_state.pop(SESSION_TOKEN_KEY, None)
+    if token:
+        get_auth_store().revoke_session(token)
+    # Everything else in session_state belongs to the account that was
+    # signed in -- selected laps, cached pickers, upload drafts. Dropping
+    # the lot is what stops one account's state bleeding into the next
+    # on a shared machine.
+    for key in [k for k in st.session_state.keys() if not k.startswith("_st")]:
+        st.session_state.pop(key, None)
+
+
+def _link(path_and_query: str) -> str:
+    return f"{APP_BASE_URL}/{path_and_query.lstrip('/')}"
+
+
+def complete_registration(accounts: AccountLibrary, provider, result, guardian_email: str | None) -> None:
+    """Post-registration side effects: verification mail (or auto-verify
+    where no mail transport exists) and the guardian consent request."""
+    sender = get_email_sender()
+    user = accounts.get_user(result.user_id)
+
+    if email_delivery_configured() and result.token:
+        sender.send(verification_email(user["email"], _link(f"?verify={result.token}")))
+        st.success("Account created. Check your email for a link to confirm your address.")
+    elif email_delivery_configured():
+        st.success("Account created. Check your email for a link to confirm your address.")
+    else:
+        # No mail transport configured -- holding the account behind a link
+        # that can never arrive would just lock the user out of their own
+        # local install.
+        accounts.set_email_verified(result.user_id, True)
+        st.success("Account created.")
+        st.caption(
+            "Email verification was skipped because no mail server is configured for this deployment "
+            "(set SMTP_HOST, or use Supabase, to turn it on)."
+        )
+
+    if guardian_email:
+        sender.send(
+            guardian_consent_email(
+                guardian_email, user["display_name"] or user["email"], _link(f"?consent={result.user_id}")
+            )
+        )
+        st.info(
+            f"Because this driver is under 16, the account stays inactive until {guardian_email} approves it. "
+            "A request has been sent to them."
+        )
+        if dev_show_email_links():
+            st.code(_link(f"?consent={result.user_id}"), language=None)
+
+
+def render_claim_landing(accounts: AccountLibrary, provider, token: str) -> None:
+    """The invite link's destination. Claiming *is* registration -- same
+    signup path as anyone else, including the age/guardian handling -- and
+    then links the existing profile instead of creating a fresh one, so
+    every session already recorded under it is immediately theirs."""
+    profile = accounts.get_profile_by_claim_token(token)
+    if profile is None:
+        st.error("That claim link is invalid, already used, or has expired.")
+        st.caption("Ask whoever sent it to generate a new one.")
+        return
+
+    sessions = accounts.sessions_for_profile(int(profile["id"]), include_pending=True)
+    st.subheader(f"Session data recorded for {profile['display_name']}")
+    st.write(
+        f"Someone uploaded karting data and recorded it under the name **{profile['display_name']}**. "
+        f"There {'is' if len(sessions) == 1 else 'are'} **{len(sessions)}** session(s) waiting."
+    )
+    if not sessions.empty:
+        preview = sessions[["track_name", "start_date", "start_time", "n_laps", "best_lap_s"]].copy()
+        st.dataframe(prettify_columns(preview), width="stretch")
+    st.caption(
+        "This data is private -- nobody else can see it and it isn't on any leaderboard. "
+        "If it isn't yours, you don't need to do anything, and you can ask for it to be deleted instead."
+    )
+
+    signed_in = current_user_id()
+    if signed_in:
+        st.info("You're already signed in. You can link this profile to your account.")
+        if st.button("This is me -- link it to my account", type="primary"):
+            try:
+                accounts.claim_profile_by_token(token, signed_in)
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                _notify_uploader_of_claim(accounts, int(profile["id"]), signed_in)
+                st.query_params.clear()
+                st.success("Linked. Those sessions are now in your history.")
+                st.rerun()
+        return
+
+    st.divider()
+    st.markdown("**Create your account to access it**")
+    with st.form("claim_register"):
+        email = st.text_input("Email", value=profile["invite_email"] or "")
+        password = st.text_input("Password", type="password")
+        dob = st.date_input("Date of birth", value=None, min_value=date(1920, 1, 1), format="YYYY-MM-DD")
+        guardian = st.text_input(
+            "Parent/guardian email (required if under 16)", value="",
+            help="Under-16 accounts stay inactive until a parent or guardian approves them.",
+        )
+        submitted = st.form_submit_button("Create account and claim", type="primary")
+    if submitted:
+        result = provider.register(
+            email, password, display_name=profile["display_name"],
+            date_of_birth=dob.isoformat() if dob else None, guardian_email=guardian.strip() or None,
+        )
+        if not result.ok:
+            st.error(result.error)
+            return
+        try:
+            accounts.claim_profile_by_token(token, result.user_id)
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+        complete_registration(accounts, provider, result, guardian.strip() or None)
+        _notify_uploader_of_claim(accounts, int(profile["id"]), result.user_id)
+        st.query_params.clear()
+
+
+def _notify_uploader_of_claim(accounts: AccountLibrary, profile_id: int, claimed_by_user_id: int) -> None:
+    """Tell whoever created a placeholder that it's been claimed. A light
+    sanity check, not an approval gate -- see `request_profile_claim`."""
+    profile = accounts.get_profile(profile_id)
+    if not profile or not profile.get("created_by_user_id"):
+        return
+    uploader = accounts.get_user(int(profile["created_by_user_id"]))
+    claimer = accounts.get_user(claimed_by_user_id)
+    if uploader and claimer:
+        get_email_sender().send(
+            claim_notification_email(
+                uploader["email"], profile["display_name"], claimer["display_name"] or claimer["email"]
+            )
+        )
+
+
+def render_auth_gate(accounts: AccountLibrary, provider) -> None:
+    """The entire signed-out experience."""
+    st.title("🏎️ Karting Telemetry")
+
+    params = st.query_params
+    if "claim" in params:
+        render_claim_landing(accounts, provider, params["claim"])
+        return
+    if "verify" in params:
+        result = provider.verify_email(params["verify"])
+        if result.ok:
+            st.success("Email confirmed. You can sign in now.")
+            st.query_params.clear()
         else:
-            st.info("These sessions were already in your library -- nothing new to add.")
+            st.error(result.error)
+    if "reset" in params:
+        _render_reset_form(provider, params["reset"])
+        return
+
+    st.caption(
+        "Sign in to analyze your telemetry. Your sessions are private by default -- nothing is shared, "
+        "or appears on a leaderboard, unless you explicitly choose to share it."
+    )
+    sign_in_tab, register_tab, forgot_tab = st.tabs(["Sign in", "Create account", "Forgot password"])
+
+    with sign_in_tab:
+        with st.form("sign_in"):
+            email = st.text_input("Email", key="signin_email")
+            password = st.text_input("Password", type="password", key="signin_password")
+            submitted = st.form_submit_button("Sign in", type="primary")
+        if submitted:
+            result = provider.login(email, password)
+            if result.ok:
+                sign_in(result.user_id)
+                st.rerun()
+            else:
+                st.error(result.error)
+
+    with register_tab:
+        with st.form("register"):
+            email = st.text_input("Email", key="reg_email")
+            name = st.text_input("Driver name", key="reg_name", placeholder="How you want to appear to others")
+            password = st.text_input("Password", type="password", key="reg_password")
+            dob = st.date_input(
+                "Date of birth", value=None, min_value=date(1920, 1, 1), format="YYYY-MM-DD", key="reg_dob",
+                help="Used only to apply the right protections for under-16 drivers.",
+            )
+            guardian = st.text_input("Parent/guardian email (required if under 16)", key="reg_guardian")
+            submitted = st.form_submit_button("Create account", type="primary")
+        if submitted:
+            result = provider.register(
+                email, password, display_name=name.strip() or None,
+                date_of_birth=dob.isoformat() if dob else None, guardian_email=guardian.strip() or None,
+            )
+            if result.ok:
+                complete_registration(accounts, provider, result, guardian.strip() or None)
+                if dev_show_email_links() and result.token:
+                    st.code(_link(f"?verify={result.token}"), language=None)
+            else:
+                st.error(result.error)
+
+    with forgot_tab:
+        if not email_delivery_configured() and not dev_show_email_links():
+            st.info(
+                "Password reset needs a configured mail server (SMTP_HOST, or Supabase Auth). "
+                "This deployment doesn't have one, so reset links can't be delivered."
+            )
+        with st.form("forgot"):
+            email = st.text_input("Email", key="forgot_email")
+            submitted = st.form_submit_button("Send reset link")
+        if submitted:
+            result = provider.request_password_reset(email)
+            # Always the same message -- confirming whether an address is
+            # registered would let anyone enumerate accounts.
+            st.success("If that address has an account, a reset link is on its way.")
+            if result.token:
+                get_email_sender().send(password_reset_email(email, _link(f"?reset={result.token}")))
+                if dev_show_email_links():
+                    st.code(_link(f"?reset={result.token}"), language=None)
+
+
+def _render_reset_form(provider, token: str) -> None:
+    st.subheader("Choose a new password")
+    with st.form("reset_form"):
+        password = st.text_input("New password", type="password")
+        submitted = st.form_submit_button("Set new password", type="primary")
+    if submitted:
+        result = provider.reset_password(token, password)
+        if result.ok:
+            st.query_params.clear()
+            st.success("Password updated -- you can sign in with it now.")
+        else:
+            st.error(result.error)
+
+
+def render_account_blocked(accounts: AccountLibrary, provider, user_id: int, reason: str) -> None:
+    """Shown when a signed-in account isn't usable yet: unverified email,
+    or a minor waiting on guardian consent."""
+    user = accounts.get_user(user_id)
+    st.title("🏎️ Karting Telemetry")
+    st.warning(reason)
+
+    if not user["email_verified"]:
+        if st.button("Resend confirmation email"):
+            result = provider.request_email_verification(user_id)
+            if result.ok:
+                if result.token:
+                    get_email_sender().send(verification_email(user["email"], _link(f"?verify={result.token}")))
+                    if dev_show_email_links():
+                        st.code(_link(f"?verify={result.token}"), language=None)
+                st.success("Sent.")
+            else:
+                st.error(result.error)
+
+    elif is_minor(user["date_of_birth"]):
+        st.caption(
+            f"A consent request has gone to {user['guardian_email']}. The account stays inactive until they "
+            "approve it."
+        )
+        if dev_show_email_links():
+            st.code(_link(f"?consent={user_id}"), language=None)
+
+    if st.button("Sign out"):
+        sign_out()
+        st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -1963,9 +2742,67 @@ def page_settings() -> None:
 # unconditionally on every rerun regardless of which page is selected.
 # ---------------------------------------------------------------------------
 
+# Auth runs before anything else is rendered: a signed-out visitor never
+# gets as far as the sidebar or a page function, so no page has to defend
+# itself against there being no current user.
+accounts_lib = get_account_library()
+auth_store = get_auth_store()
+auth_provider = get_auth_provider(accounts_lib, auth_store)
+
+# The guardian consent link is followed by a parent who has no account of
+# their own, so it is handled before the sign-in gate rather than behind it.
+if "consent" in st.query_params:
+    _consent_user_id = int(st.query_params["consent"])
+    _consent_user = accounts_lib.get_user(_consent_user_id)
+    st.title("🏎️ Karting Telemetry")
+    if _consent_user is None:
+        st.error("That consent link doesn't match an account.")
+    else:
+        st.subheader(f"Permission for {_consent_user['display_name'] or _consent_user['email']}")
+        st.write(
+            "This account belongs to a driver under 16 and stays inactive until you approve it. It stores lap "
+            "timing data from their kart's logger. Sessions are private by default and are only shared if they "
+            "explicitly choose to share them."
+        )
+        approve_col, decline_col, _ = st.columns([1, 1, 3])
+        if approve_col.button("Approve", type="primary"):
+            accounts_lib.set_guardian_consent(_consent_user_id, CONSENT_GRANTED)
+            st.query_params.clear()
+            st.success("Approved. They can use the account now.")
+        if decline_col.button("Decline"):
+            accounts_lib.set_guardian_consent(_consent_user_id, "denied")
+            st.query_params.clear()
+            st.warning("Declined. The account stays inactive.")
+    st.stop()
+
+_signed_in_user_id = current_user_id()
+if _signed_in_user_id is None:
+    render_auth_gate(accounts_lib, auth_provider)
+    st.stop()
+
+_usable, _blocked_reason = accounts_lib.account_is_usable(_signed_in_user_id)
+if not _usable:
+    render_account_blocked(accounts_lib, auth_provider, _signed_in_user_id, _blocked_reason)
+    st.stop()
+
+current_user: dict = accounts_lib.get_user(_signed_in_user_id)
+current_profile: dict = accounts_lib.get_profile_for_user(_signed_in_user_id)
+if current_profile is None:
+    # Every account gets a profile at registration; this only happens for a
+    # row created some other way (a manual insert, an older build). Create
+    # one rather than crashing every page that assumes it exists.
+    _pid = accounts_lib.create_profile_for_user(
+        _signed_in_user_id, current_user["display_name"] or current_user["email"]
+    )
+    current_profile = accounts_lib.get_profile(_pid)
+
 st.sidebar.title("🏎️ Karting Telemetry")
 
 page_overview_obj = st.Page(page_overview, title="Top 3 Focus Areas", icon="🎯", default=True)
+page_my_sessions_obj = st.Page(page_my_sessions, title="My Sessions & Sharing", icon="🔒")
+page_shared_laps_obj = st.Page(page_shared_laps, title="Shared Laps", icon="🤝")
+page_leaderboards_obj = st.Page(page_leaderboards, title="Leaderboards", icon="🏆")
+page_find_profile_obj = st.Page(page_find_profile, title="Find My Profile", icon="🔍")
 page_lap_times_obj = st.Page(page_lap_times, title="Lap Times", icon="⏱️")
 page_data_analysis_obj = st.Page(page_data_analysis, title="Data Analysis", icon="📈")
 page_track_map_obj = st.Page(page_track_map, title="Track Map", icon="🗺️")
@@ -1987,32 +2824,24 @@ nav = st.navigation(
             page_braking_rpm_obj, page_corner_comparison_obj, page_lap_comparison_obj, page_recurring_patterns_obj,
             page_gearing_simulation_obj, page_consistency_obj, page_progression_obj, page_kart_setup_obj, page_history_obj,
         ],
-        "Settings": [page_settings_obj],
+        "Community": [page_shared_laps_obj, page_leaderboards_obj],
+        "Account": [page_my_sessions_obj, page_find_profile_obj, page_settings_obj],
     }
 )
 
 st.sidebar.divider()
+st.sidebar.caption(f"Signed in as **{current_profile['display_name']}**")
+if st.sidebar.button("Sign out"):
+    sign_out()
+    st.rerun()
 
 library = get_session_library()
 
-sessions_meta = library.list_sessions()
-if sessions_meta.empty and os.path.exists(DEFAULT_TSV_PATH):
-    # Build-phase convenience: a default file ships with the app so it
-    # doesn't need uploading on the very first visit. This ingests it into
-    # the same session library real uploads use, exactly once ever -- every
-    # later run finds it already there via `sessions_meta` above and skips
-    # straight to loading, rather than re-parsing the raw TSV on every visit.
-    # The parse step alone runs ~10s on this file (shows its own spinner,
-    # see parse_uploaded_file); saving 11 sessions to the library on top of
-    # that adds a few more seconds with no feedback of its own otherwise --
-    # wrapped here so that doesn't read as a silent hang.
-    with st.spinner("Setting up your session library for the first time (this happens once)..."):
-        with open(DEFAULT_TSV_PATH, "rb") as f:
-            default_bytes = f.read()
-        for s in parse_uploaded_file(default_bytes, os.path.basename(DEFAULT_TSV_PATH)):
-            s.driver = "Sample Driver"
-            library.save_session(s, driver="Sample Driver")
-        sessions_meta = library.list_sessions()
+# Scoped to this account: their own driver profile's confirmed sessions,
+# anything they uploaded themselves, and other drivers' explicitly shared
+# sessions. Nothing else is loaded, so no page can display a session the
+# signed-in user isn't entitled to see.
+sessions_meta = accounts_lib.visible_sessions_for_user(_signed_in_user_id)
 
 # A tuple of DB ids, not the DataFrame itself, so this stays cheap to
 # recompute every rerun while still giving load_persisted_sessions_cached a

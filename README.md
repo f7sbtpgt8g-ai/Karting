@@ -130,6 +130,9 @@ telemetry/            Parsing + analysis core (independently testable, no UI cod
   corner_engine.py                   Orchestrates the two above + complex/noise handling
   narrative.py                        Plain-language phrasing (templated or Anthropic-assisted)
   weather.py                            Track-conditions auto-detect (Open-Meteo, keyless/free)
+  accounts.py                            Driver profiles, attribution, claiming, visibility gate
+  auth.py                                 Registration/login/reset (Supabase or local provider)
+  mailer.py                                Email templates + pluggable delivery
   storage.py                     SQLite session library (history + corner/pattern trend logging)
 app.py                Streamlit UI (thin orchestration layer over telemetry/*)
 scripts/ingest.py     CLI ingestion into the session library (automation-friendly)
@@ -254,6 +257,92 @@ a confirm/cancel step, since this can't be undone. It deliberately leaves
 that session's kart setup history alone (a separate table, keyed by
 file/session/start-time rather than this row's id), since that's still a
 useful record even once the raw telemetry behind it is gone.
+
+## Accounts, drivers, and who can see what
+
+The app is multi-user: everyone signs in, and **a driver is not the same
+thing as an account**.
+
+- A **User** is a login (email + password, or a Supabase account).
+- A **DriverProfile** is a person whose telemetry can exist here. It can be
+  *unclaimed* -- created by someone uploading data on that driver's behalf,
+  with no account behind it -- or linked to exactly one User once claimed.
+- Every session records **both** the driver profile it belongs to *and* the
+  account that uploaded it. Those are different questions: a team manager
+  uploading a shared logger's file attributes each session to a different
+  driver, and needs to keep access to what they uploaded.
+
+Registering normally creates the matching driver profile automatically --
+for the ordinary case this is invisible plumbing.
+
+### Attributing an upload
+
+A single Unipro file can hold several sessions from several drivers. After
+parsing, the Settings page shows each detected session (track, date, lap
+count) and asks who drove it. Each one goes to exactly one of:
+
+1. **You** -- the common case.
+2. **Another registered driver.** They get a pending confirmation first; it
+   does *not* appear in their history until they accept, and rejecting it
+   leaves the session with whoever uploaded it rather than deleting it.
+3. **An existing unclaimed profile**, searched by name.
+4. **A new driver profile** -- with an email, they're invited to claim it;
+   without one, a silent placeholder is created and nobody is contacted.
+
+### Claiming a profile
+
+An invite link is a single-use, 14-day claim token. Claiming *is*
+registration -- the same signup path as anyone else, including the
+under-16 guardian flow -- and then links the existing profile to the new
+account, so every session already recorded under it becomes theirs with no
+data movement. Someone who registered independently can also search
+unclaimed profiles from "Find My Profile"; the original uploader is
+notified rather than being made an approval gate, with a "report incorrect
+attribution" escape hatch as the safety valve.
+
+### Privacy rules
+
+Sessions are **private by default**, whoever uploaded them. A session is
+only visible to others when all of these hold, checked by one shared
+predicate (`PUBLIC_VISIBILITY_SQL` in `accounts.py`) that every query uses:
+
+1. the driver explicitly shared that session;
+2. its attribution is settled (not pending, not rejected);
+3. the owning profile is genuinely **claimed** by a real account.
+
+Point 3 is a hard gate, not a default. An uploader marking an unclaimed
+driver's session as shared has *no effect* -- that driver has never had the
+chance to set their own preference, so their data cannot reach a
+leaderboard or be selected as anyone's comparison reference until they
+claim the profile and choose for themselves.
+
+### Auth and email configuration
+
+Auth is behind a provider interface (`auth.py`):
+
+- **Supabase Auth** when `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set --
+  the intended production path.
+- **A local provider** otherwise (PBKDF2 hashing, tokens in SQLite), so a
+  single-machine install works with no external service. Not recommended
+  for a real multi-user deployment.
+
+Email delivery (`mailer.py`) uses SMTP when `SMTP_HOST` is set and
+otherwise records messages to an `email_outbox` table without sending. When
+no mail transport is configured, email verification is skipped rather than
+locking accounts behind a link that can never arrive; password reset needs
+a real mailer.
+
+**Claim invites are gated off by default.** Set
+`KARTING_ENABLE_INVITE_EMAILS=1` to actually send them. They are
+unsolicited contact with someone who has not consented to being on the
+platform, often a minor, so that copy wants a legal/privacy review before
+it goes anywhere near a real inbox -- until then the invite is generated
+and recorded, just not delivered.
+
+For local development, `KARTING_DEV_SHOW_EMAIL_LINKS=1` prints
+verification/reset/claim links on screen instead of emailing them. Never
+set this on a shared deployment: it would show a password reset link for
+any address anyone types in.
 
 ## Track conditions & jetting calibration
 
