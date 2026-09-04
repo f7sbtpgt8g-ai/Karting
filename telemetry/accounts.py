@@ -23,6 +23,14 @@ default someone can override, and a single shared predicate is what stops
 that guarantee from drifting apart between the leaderboard query, the
 comparison browser, and any view added later.
 
+Sessions are shared by default (`VISIBILITY_DEFAULT`) and can be unshared
+one toggle at a time. Note the asymmetry that creates, and why it is
+intentional: a *claimed* profile's owner is present to opt out, so
+defaulting them in is a reversible choice they control. An *unclaimed*
+profile has nobody who can opt out on their behalf, so the claim gate keeps
+their data out of every public surface until they have an account and can
+decide for themselves.
+
 Lives alongside `storage.py` in the same SQLite file (one database, one
 connection-per-call convention -- see `SessionLibrary`'s docstring for why
 connections are not held open).
@@ -56,6 +64,15 @@ CLAIM_CLAIMED = "claimed"
 
 VISIBILITY_PRIVATE = "private"
 VISIBILITY_SHARED = "shared"
+
+# New sessions are shared by default: the comparison and leaderboard
+# features are only worth anything if there is something in the pool to
+# compare against, and a default of private leaves every new driver looking
+# at an empty board. Unsharing is a single toggle per session, and the
+# `PUBLIC_VISIBILITY_SQL` gate below still applies -- in particular a
+# driver who has no account yet cannot be opted in by anyone else, since
+# "you can always unshare" is meaningless for someone with no way to.
+VISIBILITY_DEFAULT = VISIBILITY_SHARED
 
 ATTRIBUTION_CONFIRMED = "confirmed"
 ATTRIBUTION_PENDING = "pending_confirmation"
@@ -704,6 +721,70 @@ class AccountLibrary:
         if not board.empty:
             board.insert(0, "rank", range(1, len(board) + 1))
         return board
+
+    def community_stats(self) -> dict:
+        """Headline numbers for the shared pool -- how many sessions,
+        drivers and tracks are actually available to compare against.
+
+        Used to show what sharing is *for*, rather than nagging people into
+        it: an empty pool is the honest reason a new driver's leaderboard
+        and comparison pages look bare."""
+        with self._connect() as conn:
+            row = conn.execute(
+                f"""SELECT COUNT(*) AS shared_sessions,
+                           COUNT(DISTINCT p.id) AS drivers,
+                           COUNT(DISTINCT s.track_name) AS tracks
+                    FROM sessions s
+                    JOIN driver_profiles p ON p.id = s.driver_profile_id
+                    WHERE {PUBLIC_VISIBILITY_SQL}"""
+            ).fetchone()
+        return dict(row) if row else {"shared_sessions": 0, "drivers": 0, "tracks": 0}
+
+    def driver_contribution(self, driver_profile_id: int) -> dict:
+        """This driver's own share/withhold split, plus how many *other*
+        drivers' sessions they can currently compare against."""
+        with self._connect() as conn:
+            own = conn.execute(
+                """SELECT
+                       SUM(CASE WHEN visibility = 'shared' THEN 1 ELSE 0 END) AS shared,
+                       SUM(CASE WHEN visibility = 'private' THEN 1 ELSE 0 END) AS private
+                   FROM sessions
+                   WHERE driver_profile_id = ? AND attribution_status = 'confirmed'""",
+                (driver_profile_id,),
+            ).fetchone()
+            available = conn.execute(
+                f"""SELECT COUNT(*) AS n FROM sessions s
+                    JOIN driver_profiles p ON p.id = s.driver_profile_id
+                    WHERE {PUBLIC_VISIBILITY_SQL} AND p.id != ?""",
+                (driver_profile_id,),
+            ).fetchone()
+        return {
+            "shared": int(own["shared"] or 0) if own else 0,
+            "private": int(own["private"] or 0) if own else 0,
+            "available_from_others": int(available["n"] or 0) if available else 0,
+        }
+
+    def driver_rankings(self, driver_profile_id: int) -> pd.DataFrame:
+        """Where this driver currently sits on each track's board they
+        qualify for. Empty when they've shared nothing."""
+        tracks = self.leaderboard_tracks()
+        rows = []
+        for track in tracks:
+            board = self.leaderboard(track, limit=1000)
+            if board.empty:
+                continue
+            mine = board[board["driver_profile_id"] == driver_profile_id]
+            if mine.empty:
+                continue
+            rows.append(
+                {
+                    "track_name": track,
+                    "rank": int(mine.iloc[0]["rank"]),
+                    "field_size": len(board),
+                    "best_lap_s": float(mine.iloc[0]["best_lap_s"]),
+                }
+            )
+        return pd.DataFrame(rows)
 
     def leaderboard_tracks(self) -> list[str]:
         """Tracks that have at least one leaderboard-eligible session --

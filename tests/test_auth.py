@@ -253,6 +253,26 @@ def test_smtp_sender_does_not_send_suppressed_invites(auth, monkeypatch, tmp_pat
     assert recorded[0]["sent"] == 0
 
 
+def test_guardian_consent_copy_describes_the_sharing_default_accurately():
+    """Sessions default to shared, so the consent a parent gives has to say
+    so -- this copy previously promised the opposite and would have made
+    their approval uninformed."""
+    from telemetry.mailer import guardian_consent_email
+
+    body = guardian_consent_email("parent@example.com", "Sam", "https://x/consent").body.lower()
+    assert "shared by default" in body
+    assert "leaderboard" in body
+    assert "private" in body  # the opt-out is stated too
+    assert "private by default" not in body  # the old, now-false claim
+
+
+def test_claim_invite_copy_warns_that_claiming_shares_by_default():
+    email = claim_invite_email("kid@example.com", "Sam", "Team Manager", "Ring, 2026-08-15", "https://x/claim")
+    body = email.body.lower()
+    assert "shared by default" in body
+    assert "leaderboard" in body
+
+
 def test_claim_invite_copy_offers_deletion_as_prominently_as_signup():
     """The invite goes to someone who never consented to be contacted, so
     declining has to be a real, stated option -- not buried."""

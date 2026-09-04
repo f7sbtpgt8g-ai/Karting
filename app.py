@@ -32,6 +32,7 @@ from telemetry.accounts import (
     CLAIM_CLAIMED,
     CLAIM_UNCLAIMED,
     CONSENT_GRANTED,
+    VISIBILITY_DEFAULT,
     VISIBILITY_PRIVATE,
     VISIBILITY_SHARED,
     AccountLibrary,
@@ -589,6 +590,17 @@ COLUMN_LABELS = {
     "ingested_at": "Saved At",
     "session_index": "Session #",
     "saved_at": "Saved At",
+    "rank": "Rank",
+    "driver_display_name": "Driver",
+    "qualifying_sessions": "Sessions",
+    "track_condition": "Conditions",
+    "kart_class": "Class",
+    "attribution_status": "Status",
+    "visibility": "Visibility",
+    "temperature_c": "Temp (°C)",
+    "humidity_pct": "Humidity (%)",
+    "pressure_hpa": "Pressure (hPa)",
+    "altitude_m": "Altitude (m)",
 }
 
 
@@ -2080,6 +2092,24 @@ def render_attribution_review(
         "doesn't have to be you, and doesn't have to be someone with an account yet."
     )
 
+    stats = accounts_lib.community_stats()
+    if stats["shared_sessions"]:
+        st.caption(
+            f"🤝 These will be shared by default, joining {stats['shared_sessions']} session(s) from "
+            f"{stats['drivers']} driver(s) across {stats['tracks']} track(s) that everyone here can learn from. "
+            "You can switch any session back to private later from 'My Sessions & Sharing'."
+        )
+    else:
+        st.caption(
+            "🤝 These will be shared by default, so other drivers can compare against your laps and you'll "
+            "appear on the track leaderboard. You can switch any session back to private later from "
+            "'My Sessions & Sharing'."
+        )
+    keep_private = st.checkbox(
+        "Keep this upload private for now", key="attr_keep_private",
+        help="Nothing here reaches a leaderboard or another driver. You can share individual sessions later.",
+    )
+
     registered = accounts_lib.list_registered_drivers()
     registered = registered[registered["user_id"] != current_user["id"]]
     unclaimed = accounts_lib.list_profiles(claim_status=CLAIM_UNCLAIMED)
@@ -2166,7 +2196,9 @@ def render_attribution_review(
             session_db_id = library.save_session(
                 session, driver=profile["display_name"], track_name=track_name,
                 driver_profile_id=profile_id, uploaded_by_user_id=current_user["id"],
-                kart_class=setup.class_name if setup else None, **conditions,
+                kart_class=setup.class_name if setup else None,
+                visibility=VISIBILITY_PRIVATE if keep_private else VISIBILITY_DEFAULT,
+                **conditions,
             )
             accounts_lib.attribute_session(
                 session_db_id, profile_id, uploaded_by_user_id=current_user["id"],
@@ -2249,10 +2281,33 @@ def page_my_sessions() -> None:
     visibility is, and what is waiting on them."""
     st.subheader("My sessions & sharing")
     st.caption(
-        "Everything filed under your driver profile. Sessions are private until you share them -- sharing a "
-        "session makes it selectable as a comparison reference by other drivers and eligible for that track's "
-        "leaderboard."
+        "Everything filed under your driver profile. Sessions are shared by default -- a shared session is "
+        "selectable as a comparison reference by other drivers and eligible for that track's leaderboard. "
+        "Switch any of them to private below; nothing else changes and it comes off the leaderboards straight "
+        "away."
     )
+
+    contribution = accounts_lib.driver_contribution(int(current_profile["id"]))
+    stats = accounts_lib.community_stats()
+    mc1, mc2, mc3 = st.columns(3)
+    mc1.metric("Your shared sessions", contribution["shared"])
+    mc2.metric("Kept private", contribution["private"])
+    mc3.metric("Available to compare against", contribution["available_from_others"])
+
+    rankings = accounts_lib.driver_rankings(int(current_profile["id"]))
+    if not rankings.empty:
+        placings = ", ".join(
+            f"P{int(row['rank'])} of {int(row['field_size'])} at {row['track_name']}"
+            for _, row in rankings.iterrows()
+        )
+        st.caption(f"🏆 You're currently {placings}.")
+    elif contribution["shared"]:
+        st.caption("Your shared sessions are in the pool -- they'll show on a leaderboard once a track has a board.")
+    elif stats["shared_sessions"]:
+        st.caption(
+            f"Nothing of yours is shared right now. {stats['drivers']} other driver(s) have shared "
+            f"{stats['shared_sessions']} session(s) you can still compare against."
+        )
 
     pending = accounts_lib.pending_attribution_requests(int(current_profile["id"]))
     if not pending.empty:
@@ -2359,8 +2414,8 @@ def page_shared_laps() -> None:
     comparison reference."""
     st.subheader("Shared laps from other drivers")
     st.caption(
-        "Only sessions that another driver has explicitly shared appear here. Selecting one sets it as the "
-        "reference lap on the Lap Comparison page."
+        "Sessions other drivers are sharing. Selecting one sets it as the reference lap on the Lap Comparison "
+        "page, so you can run the full corner-by-corner breakdown against their lap."
     )
 
     fc1, fc2, fc3 = st.columns(3)
@@ -2377,7 +2432,14 @@ def page_shared_laps() -> None:
         track_condition=None if condition_filter == "Any" else condition_filter,
     )
     if results.empty:
-        st.info("No shared sessions match those filters yet.")
+        stats = accounts_lib.community_stats()
+        if stats["shared_sessions"]:
+            st.info("No shared sessions match those filters yet -- try widening them.")
+        else:
+            st.info(
+                "Nobody has shared a session yet. Sessions are shared by default, so as drivers upload, "
+                "their laps will show up here to compare against."
+            )
         render_footer()
         return
 
@@ -2403,15 +2465,22 @@ def page_shared_laps() -> None:
 def page_leaderboards() -> None:
     st.subheader("Leaderboards")
     st.caption(
-        "Best lap per driver at each track. Only sessions a driver has explicitly shared are eligible -- private "
-        "sessions never appear, and neither does data belonging to a profile nobody has claimed yet."
+        "Best lap per driver at each track, from sessions drivers are sharing. Sessions anyone has switched to "
+        "private never appear, and neither does data belonging to a profile nobody has claimed yet."
     )
+
+    stats = accounts_lib.community_stats()
+    if stats["shared_sessions"]:
+        sc1, sc2, sc3 = st.columns(3)
+        sc1.metric("Drivers", stats["drivers"])
+        sc2.metric("Shared sessions", stats["shared_sessions"])
+        sc3.metric("Tracks", stats["tracks"])
 
     tracks = accounts_lib.leaderboard_tracks()
     if not tracks:
         st.info(
-            "No shared sessions yet, so there's nothing to rank. Share one of your own from the "
-            "'My sessions & sharing' page to start a board."
+            "No shared sessions yet, so there's nothing to rank. Upload a session -- they're shared by "
+            "default -- and this is where you'll see how you stack up."
         )
         render_footer()
         return
@@ -2539,8 +2608,14 @@ def render_claim_landing(accounts: AccountLibrary, provider, token: str) -> None
         preview = sessions[["track_name", "start_date", "start_time", "n_laps", "best_lap_s"]].copy()
         st.dataframe(prettify_columns(preview), width="stretch")
     st.caption(
-        "This data is private -- nobody else can see it and it isn't on any leaderboard. "
-        "If it isn't yours, you don't need to do anything, and you can ask for it to be deleted instead."
+        "Right now this is private -- nobody else can see it and it isn't on any leaderboard, because it "
+        "hasn't been confirmed as yours. If it isn't yours, you don't need to do anything, and you can ask "
+        "for it to be deleted instead."
+    )
+    st.info(
+        "Once you claim it, sessions are shared by default: your lap times would appear on that track's "
+        "leaderboard under your driver name, and other drivers could compare their laps against yours. "
+        "You can switch any session back to private with one toggle, at any time."
     )
 
     signed_in = current_user_id()
@@ -2623,8 +2698,8 @@ def render_auth_gate(accounts: AccountLibrary, provider) -> None:
         return
 
     st.caption(
-        "Sign in to analyze your telemetry. Your sessions are private by default -- nothing is shared, "
-        "or appears on a leaderboard, unless you explicitly choose to share it."
+        "Sign in to analyze your telemetry. Uploaded sessions are shared with other drivers by default, so "
+        "everyone has laps to compare against -- you can switch any session to private with one toggle."
     )
     sign_in_tab, register_tab, forgot_tab = st.tabs(["Sign in", "Create account", "Forgot password"])
 
@@ -2761,8 +2836,14 @@ if "consent" in st.query_params:
         st.subheader(f"Permission for {_consent_user['display_name'] or _consent_user['email']}")
         st.write(
             "This account belongs to a driver under 16 and stays inactive until you approve it. It stores lap "
-            "timing data from their kart's logger. Sessions are private by default and are only shared if they "
-            "explicitly choose to share them."
+            "timing data from their kart's logger -- lap times, speed and GPS traces of the track."
+        )
+        st.write(
+            "**What other people can see:** uploaded sessions are shared by default, which means their lap "
+            "times appear on that track's leaderboard under their driver name, and other drivers can compare "
+            "their own laps against them. No contact details are ever shown. Either of you can switch any "
+            "session back to private at any time from 'My sessions & sharing', and it comes off those "
+            "leaderboards immediately."
         )
         approve_col, decline_col, _ = st.columns([1, 1, 3])
         if approve_col.button("Approve", type="primary"):

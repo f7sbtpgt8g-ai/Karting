@@ -231,13 +231,46 @@ def test_rejected_attribution_detaches_session_and_leaves_it_with_uploader(libs,
 # ------------------------------------------------------------- visibility
 
 
-def test_session_defaults_to_private(libs, session1):
+def test_session_defaults_to_shared_for_a_claimed_driver(libs, session1):
     sessions_lib, accounts = libs
     user_id, profile_id = accounts.register_user_with_profile("me@example.com")
     sid = _save(sessions_lib, session1)
     accounts.attribute_session(sid, profile_id, uploaded_by_user_id=user_id)
 
+    assert accounts.session_is_publicly_visible(sid) is True
+
+
+def test_driver_can_unshare_a_session(libs, session1):
+    sessions_lib, accounts = libs
+    user_id, profile_id = accounts.register_user_with_profile("me@example.com")
+    sid = _save(sessions_lib, session1, track_name="Ring")
+    accounts.attribute_session(sid, profile_id, uploaded_by_user_id=user_id)
+    assert accounts.session_is_publicly_visible(sid) is True
+
+    accounts.set_session_visibility(sid, VISIBILITY_PRIVATE)
     assert accounts.session_is_publicly_visible(sid) is False
+    assert accounts.leaderboard("Ring").empty
+    assert accounts.shareable_reference_sessions().empty
+
+
+def test_upload_can_opt_out_of_sharing_at_save_time(libs, session1):
+    sessions_lib, accounts = libs
+    user_id, profile_id = accounts.register_user_with_profile("me@example.com")
+    sid = _save(sessions_lib, session1, visibility=VISIBILITY_PRIVATE)
+    accounts.attribute_session(sid, profile_id, uploaded_by_user_id=user_id)
+
+    assert accounts.session_is_publicly_visible(sid) is False
+
+
+def test_unowned_session_is_not_public_despite_shared_default(libs, session1):
+    """A session saved with no driver attached (an older row, or a
+    scripted ingest) takes the shared default but must still be invisible:
+    the gate needs a *claimed owner*, not just the flag."""
+    sessions_lib, accounts = libs
+    sid = _save(sessions_lib, session1, track_name="Ring")
+
+    assert accounts.session_is_publicly_visible(sid) is False
+    assert accounts.leaderboard("Ring").empty
 
 
 def test_shared_session_of_claimed_profile_is_public(libs, session1):
@@ -329,11 +362,14 @@ def test_visible_sessions_for_user_scopes_correctly(libs, session1, session2):
     b_sid = _save(sessions_lib, session2)
     accounts.attribute_session(b_sid, bob_profile, uploaded_by_user_id=bob)
 
-    # Bob's stays private -> Alice can't see it.
-    assert set(accounts.visible_sessions_for_user(alice)["id"]) == {a_sid}
-
-    accounts.set_session_visibility(b_sid, VISIBILITY_SHARED)
+    # Shared by default, so Alice can see Bob's too.
     assert set(accounts.visible_sessions_for_user(alice)["id"]) == {a_sid, b_sid}
+
+    # Once Bob unshares it, it drops out of her view.
+    accounts.set_session_visibility(b_sid, VISIBILITY_PRIVATE)
+    assert set(accounts.visible_sessions_for_user(alice)["id"]) == {a_sid}
+    # ...but Bob still has his own.
+    assert set(accounts.visible_sessions_for_user(bob)["id"]) == {a_sid, b_sid}
 
 
 # ----------------------------------------------------------- leaderboards
@@ -383,12 +419,64 @@ def test_leaderboard_excludes_private_sessions(libs, session1, session2):
     private_user, private_profile = accounts.register_user_with_profile("private@example.com", display_name="Private")
     p_sid = sessions_lib.save_session(session2, track_name="Ring")
     accounts.attribute_session(p_sid, private_profile, uploaded_by_user_id=private_user)
+    accounts.set_session_visibility(p_sid, VISIBILITY_PRIVATE)  # this driver opted out
     with accounts._connect() as conn:
         conn.execute("UPDATE sessions SET best_lap_s = ? WHERE id = ?", (25.0, p_sid))  # would be P1
         conn.commit()
 
     board = accounts.leaderboard("Ring")
     assert list(board["driver_display_name"]) == ["Shares"]
+
+
+def test_community_stats_and_contribution_counts(libs, session1, session2):
+    sessions_lib, accounts = libs
+    me, my_profile = accounts.register_user_with_profile("me@example.com", display_name="Me")
+    mine = _save(sessions_lib, session1, track_name="Ring")
+    accounts.attribute_session(mine, my_profile, uploaded_by_user_id=me)
+
+    _shared_session(
+        sessions_lib, accounts, session2, "them@example.com", "Them", best_lap=30.0, track_name="Ring",
+    )
+
+    stats = accounts.community_stats()
+    assert stats["shared_sessions"] == 2
+    assert stats["drivers"] == 2
+    assert stats["tracks"] == 1
+
+    contribution = accounts.driver_contribution(my_profile)
+    assert contribution == {"shared": 1, "private": 0, "available_from_others": 1}
+
+    # Unsharing moves the needle in both directions.
+    accounts.set_session_visibility(mine, VISIBILITY_PRIVATE)
+    assert accounts.driver_contribution(my_profile) == {"shared": 0, "private": 1, "available_from_others": 1}
+    assert accounts.community_stats()["shared_sessions"] == 1
+
+
+def test_driver_rankings_reports_placing_per_track(libs, session1, session2):
+    sessions_lib, accounts = libs
+    _, fast_profile, _ = _shared_session(
+        sessions_lib, accounts, session1, "fast@example.com", "Fast", best_lap=29.0, track_name="Ring",
+    )
+    _, slow_profile, _ = _shared_session(
+        sessions_lib, accounts, session2, "slow@example.com", "Slow", best_lap=31.0, track_name="Ring",
+    )
+
+    fast_rankings = accounts.driver_rankings(fast_profile)
+    assert len(fast_rankings) == 1
+    assert fast_rankings.iloc[0]["rank"] == 1
+    assert fast_rankings.iloc[0]["field_size"] == 2
+
+    assert accounts.driver_rankings(slow_profile).iloc[0]["rank"] == 2
+
+
+def test_driver_rankings_empty_when_nothing_shared(libs, session1):
+    sessions_lib, accounts = libs
+    user_id, profile_id = accounts.register_user_with_profile("quiet@example.com")
+    sid = _save(sessions_lib, session1, track_name="Ring")
+    accounts.attribute_session(sid, profile_id, uploaded_by_user_id=user_id)
+    accounts.set_session_visibility(sid, VISIBILITY_PRIVATE)
+
+    assert accounts.driver_rankings(profile_id).empty
 
 
 def test_shareable_reference_sessions_excludes_own_and_filters(libs, session1, session2):

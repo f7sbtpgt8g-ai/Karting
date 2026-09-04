@@ -302,19 +302,33 @@ attribution" escape hatch as the safety valve.
 
 ### Privacy rules
 
-Sessions are **private by default**, whoever uploaded them. A session is
-only visible to others when all of these hold, checked by one shared
-predicate (`PUBLIC_VISIBILITY_SQL` in `accounts.py`) that every query uses:
+Sessions are **shared by default** -- the leaderboards and lap-comparison
+pool are only useful if there's something in them, and a private-by-default
+world leaves every new driver looking at an empty board. Sharing is a
+single toggle per session, reversible any time, from "My Sessions &
+Sharing." The Settings upload screen and every consent/invite email say
+this plainly before anyone commits to it, and the review screen offers a
+"keep this upload private for now" checkbox for anyone who wants to opt an
+upload out up front.
 
-1. the driver explicitly shared that session;
+A session is only actually visible to others when all of these hold,
+checked by one shared predicate (`PUBLIC_VISIBILITY_SQL` in `accounts.py`)
+that every query uses:
+
+1. the driver has it set to shared (the default, unless they -- or the
+   uploader, at upload time -- turned it off);
 2. its attribution is settled (not pending, not rejected);
 3. the owning profile is genuinely **claimed** by a real account.
 
-Point 3 is a hard gate, not a default. An uploader marking an unclaimed
+Point 3 is a hard gate, not a default, and it's the one place the "shared
+by default" choice does *not* apply. An uploader marking an unclaimed
 driver's session as shared has *no effect* -- that driver has never had the
 chance to set their own preference, so their data cannot reach a
 leaderboard or be selected as anyone's comparison reference until they
-claim the profile and choose for themselves.
+claim the profile and choose for themselves. The asymmetry is deliberate:
+defaulting a *claimed* driver into sharing is reversible because they're
+present to reverse it; there's nobody who can do that on an unclaimed
+profile's behalf, so it stays gated instead.
 
 ### Auth and email configuration
 

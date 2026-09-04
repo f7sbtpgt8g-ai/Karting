@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
+from .accounts import VISIBILITY_DEFAULT
 from .laps import flag_outlier_laps, lap_table, summarize_laps
 from .parser import Session
 
@@ -48,11 +49,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     conditions_source TEXT,
     -- Ownership/visibility -- see accounts.py. `driver_profile_id` is whose
     -- data this is, `uploaded_by_user_id` is who uploaded it; they are not
-    -- the same question. Everything is private and unowned until something
-    -- explicitly says otherwise.
+    -- the same question. New sessions are shared by default (see
+    -- accounts.py's VISIBILITY_DEFAULT); an unowned session is still
+    -- invisible to everyone, because the visibility gate additionally
+    -- requires a claimed owning profile.
     driver_profile_id INTEGER,
     uploaded_by_user_id INTEGER,
-    visibility TEXT NOT NULL DEFAULT 'private',
+    visibility TEXT NOT NULL DEFAULT 'shared',
     attribution_status TEXT NOT NULL DEFAULT 'confirmed',
     kart_class TEXT
 );
@@ -177,12 +180,14 @@ class SessionLibrary:
         # deliberately separate, since a shared team logger's file is
         # uploaded by one person on several drivers' behalf.
         #
-        # Both default-safe for pre-existing rows: an un-migrated session
-        # has no owner and stays `private`, so nothing that was on disk
-        # before this feature can leak into a leaderboard by default.
+        # Safe for pre-existing rows despite the `shared` default: a
+        # session that predates ownership has no `driver_profile_id`, and
+        # the visibility gate requires a *claimed owning profile* as well
+        # as `shared`, so nothing already on disk becomes visible to anyone
+        # just by being migrated.
         "driver_profile_id": "INTEGER",
         "uploaded_by_user_id": "INTEGER",
-        "visibility": "TEXT NOT NULL DEFAULT 'private'",
+        "visibility": "TEXT NOT NULL DEFAULT 'shared'",
         "attribution_status": "TEXT NOT NULL DEFAULT 'confirmed'",
         # Denormalized from the session's KartSetup so leaderboards can
         # filter by class without unpacking every setup's JSON per query.
@@ -249,6 +254,7 @@ class SessionLibrary:
         driver_profile_id: int | None = None,
         uploaded_by_user_id: int | None = None,
         kart_class: str | None = None,
+        visibility: str = VISIBILITY_DEFAULT,
     ) -> int:
         """Persist a parsed session: lap summary rows to SQLite, full raw
         dataframe to a pickle cache. Returns the new session's DB id.
@@ -275,8 +281,8 @@ class SessionLibrary:
                     start_date, start_time, ingested_at, best_lap_s, average_lap_s,
                     std_dev_s, n_laps, cache_path, track_condition, temperature_c,
                     humidity_pct, pressure_hpa, altitude_m, conditions_source,
-                    driver_profile_id, uploaded_by_user_id, kart_class)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    driver_profile_id, uploaded_by_user_id, kart_class, visibility)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     session.source_file,
                     session.session_id,
@@ -300,6 +306,7 @@ class SessionLibrary:
                     driver_profile_id,
                     uploaded_by_user_id,
                     kart_class,
+                    visibility,
                 ),
             )
             session_db_id = cur.lastrowid
