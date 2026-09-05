@@ -485,6 +485,149 @@ def render_linked_speed_delta(
     components.html(html, height=height + 20, scrolling=False)
 
 
+def render_mobile_linked_chart(
+    chart_fig: go.Figure, map_fig: go.Figure, dist: list, lat: list, lon: list,
+    chart_height: int = 420, map_height: int = 170,
+) -> None:
+    """Mobile-optimized counterpart to `render_linked_speed_delta`: one
+    full-width chart at a time (the caller already picked the metric)
+    stacked below a compact track map, in a single `components.html` block
+    so the same hover/tap-to-mark-position wiring works with no server
+    round-trip.
+
+    Built around touch interaction specifically, which the desktop
+    component (side-by-side layout, hover-only, mouse-oriented rubber-band
+    zoom box) is not:
+    - `dragmode: "pan"` + `scrollZoom: true`, so a one-finger drag scrolls
+      across the lap -- the literal "scroll across" ask -- and a pinch
+      zooms in for detail, instead of a drag drawing a box-zoom selection
+      that doesn't correspond to any natural touch gesture.
+    - The map marker updates on *tap* (`plotly_click`) as well as hover,
+      since touch devices don't reliably fire hover from a tap the way a
+      mouse fires it from a pointer move.
+    - The y-axis re-fits to whatever's actually visible after a pan/zoom
+      (recomputed client-side from each trace's own data on every
+      `plotly_relayout`), so zooming into one corner doesn't leave the
+      y-axis stretched to the whole lap's range with the detail you zoomed
+      in for squashed flat.
+    - No sticky-scroll tracking hack: unlike the desktop page's stack of
+      2-5 subplots, one chart at a time is short enough that the whole
+      component fits without internal scrolling, so the map can just sit
+      in normal document flow above the chart rather than needing to track
+      the page's scroll position.
+    """
+    chart_spec = chart_fig.to_json()
+    map_spec = map_fig.to_json()
+    marker_trace_index = len(map_fig.data) - 1
+
+    html = f"""
+<div style="width:100%; font-family:inherit;">
+  <div id="mapDiv" style="width:100%; height:{map_height}px;"></div>
+  <div id="chartDiv" style="width:100%; height:{chart_height}px; margin-top:6px;"></div>
+  <div style="text-align:right; margin-top:4px;">
+    <button id="resetZoomBtn" type="button"
+      style="font-size:12px; padding:4px 12px; border-radius:6px; border:1px solid #999; background:#f5f5f5; color:#333; cursor:pointer;">
+      ↺ Reset zoom
+    </button>
+  </div>
+</div>
+{plotlyjs_script_tag()}
+<script>
+(function() {{
+  var chartSpec = {chart_spec};
+  var mapSpec = {map_spec};
+  var dist = {json.dumps(dist)};
+  var lat = {json.dumps(lat)};
+  var lon = {json.dumps(lon)};
+  var markerTraceIndex = {marker_trace_index};
+
+  var chartDiv = document.getElementById("chartDiv");
+  var mapDiv = document.getElementById("mapDiv");
+  chartSpec.layout.height = {chart_height};
+  chartSpec.layout.dragmode = "pan";
+  mapSpec.layout.height = {map_height};
+
+  var chartConfig = {{displayModeBar: false, scrollZoom: true, doubleClick: "reset+autosize", responsive: true}};
+  Plotly.newPlot(chartDiv, chartSpec.data, chartSpec.layout, chartConfig);
+  Plotly.newPlot(mapDiv, mapSpec.data, mapSpec.layout, {{displayModeBar: false, responsive: true}});
+
+  function interpAt(x) {{
+    if (!dist.length) return null;
+    if (x <= dist[0]) return {{lat: lat[0], lon: lon[0]}};
+    if (x >= dist[dist.length - 1]) return {{lat: lat[lat.length - 1], lon: lon[lon.length - 1]}};
+    var lo = 0, hi = dist.length - 1;
+    while (hi - lo > 1) {{
+      var mid = (lo + hi) >> 1;
+      if (dist[mid] <= x) {{ lo = mid; }} else {{ hi = mid; }}
+    }}
+    var span = dist[hi] - dist[lo];
+    var t = span ? (x - dist[lo]) / span : 0;
+    return {{lat: lat[lo] + t * (lat[hi] - lat[lo]), lon: lon[lo] + t * (lon[hi] - lon[lo])}};
+  }}
+
+  function markAt(x) {{
+    var p = interpAt(x);
+    if (p && p.lat != null && p.lon != null) {{
+      Plotly.restyle(mapDiv, {{x: [[p.lon]], y: [[p.lat]]}}, [markerTraceIndex]);
+    }}
+    Plotly.relayout(chartDiv, {{
+      shapes: [{{type: "line", xref: "x", yref: "paper", x0: x, x1: x, y0: 0, y1: 1,
+                 line: {{color: "rgba(90,90,90,0.6)", width: 1, dash: "dot"}}}}]
+    }});
+  }}
+
+  chartDiv.on("plotly_hover", function(evt) {{
+    if (evt.points && evt.points.length) markAt(evt.points[0].x);
+  }});
+  chartDiv.on("plotly_click", function(evt) {{
+    if (evt.points && evt.points.length) markAt(evt.points[0].x);
+  }});
+
+  // Re-fit the y-axis to whatever's actually visible after a pan/zoom --
+  // otherwise zooming into one corner leaves the y-axis stretched to the
+  // whole lap's range and the detail you zoomed in for looks flat.
+  function visibleYRange(x0, x1) {{
+    var lo = Infinity, hi = -Infinity;
+    chartDiv.data.forEach(function(trace) {{
+      if (!trace.x || !trace.y) return;
+      for (var i = 0; i < trace.x.length; i++) {{
+        var xv = trace.x[i];
+        if (xv >= x0 && xv <= x1) {{
+          var yv = trace.y[i];
+          if (yv === null || yv === undefined) continue;
+          if (yv < lo) lo = yv;
+          if (yv > hi) hi = yv;
+        }}
+      }}
+    }});
+    if (!isFinite(lo) || !isFinite(hi)) return null;
+    if (lo === hi) {{ lo -= 1; hi += 1; }}
+    var pad = (hi - lo) * 0.08;
+    return [lo - pad, hi + pad];
+  }}
+
+  chartDiv.on("plotly_relayout", function(evt) {{
+    if (evt["xaxis.autorange"]) {{
+      Plotly.relayout(chartDiv, {{"yaxis.autorange": true}});
+      return;
+    }}
+    var x0 = evt["xaxis.range[0]"], x1 = evt["xaxis.range[1]"];
+    if (x0 === undefined || x1 === undefined) return;
+    var yr = visibleYRange(x0, x1);
+    if (yr) {{
+      Plotly.relayout(chartDiv, {{"yaxis.range": yr, "yaxis.autorange": false}});
+    }}
+  }});
+
+  document.getElementById("resetZoomBtn").addEventListener("click", function() {{
+    Plotly.relayout(chartDiv, {{"xaxis.autorange": true, "yaxis.autorange": true, shapes: []}});
+  }});
+}})();
+</script>
+"""
+    components.html(html, height=chart_height + map_height + 70, scrolling=False)
+
+
 # ---------------------------------------------------------------------------
 # Kart setup form (shared between the upfront onboarding gate and the
 # revisit-later "Kart Setup" tab)
@@ -909,33 +1052,37 @@ def _default_data_analysis_rows(all_sessions: list[tuple[str, Session]]) -> list
     return rows
 
 
-def page_data_analysis() -> None:
-    if not _require_data():
-        return
-    st.subheader("Data analysis")
-    st.caption(
-        "A deeper look across speed, RPM, G-forces and delta -- pick any laps from any loaded sessions below. "
-        "Each row's color matches its line in the charts, and the fastest lap among your picks is always used "
-        "as the delta reference and as the map's tracked position."
-    )
+MAX_COMPARE_LAPS = 8
 
-    MAX_COMPARE_LAPS = 8
 
-    if "da_row_ids" not in st.session_state:
+def _render_lap_picker(key_prefix: str, max_laps: int = MAX_COMPARE_LAPS) -> list[dict]:
+    """The "Laps to compare" row picker: add/remove rows, each an
+    independent (session, lap) pick, color-matched to its line in whatever
+    chart is drawn from the result.
+
+    Shared by the desktop and mobile Data Analysis pages under the same
+    `key_prefix` ("da") -- they read and write the exact same
+    `session_state` keys, so picking laps on one view and switching to the
+    other keeps the same selection instead of starting over. This is the
+    literal sense in which the mobile page "keeps the same data": the
+    underlying (session, lap, color) rows are identical, only the chart
+    rendering differs.
+    """
+    if f"{key_prefix}_row_ids" not in st.session_state:
         default_rows = _default_data_analysis_rows(all_sessions)
-        st.session_state["da_row_ids"] = list(range(len(default_rows)))
-        st.session_state["da_next_row_id"] = len(default_rows)
+        st.session_state[f"{key_prefix}_row_ids"] = list(range(len(default_rows)))
+        st.session_state[f"{key_prefix}_next_row_id"] = len(default_rows)
         for i, (sess_label, lap_no) in enumerate(default_rows):
-            st.session_state[f"da_session_{i}"] = sess_label
-            st.session_state[f"da_lap_{i}"] = lap_no
+            st.session_state[f"{key_prefix}_session_{i}"] = sess_label
+            st.session_state[f"{key_prefix}_lap_{i}"] = lap_no
 
     compare_entries = []
     css_rules = []
     with st.expander("Laps to compare", expanded=True):
-        for idx, row_id in enumerate(list(st.session_state["da_row_ids"])):
+        for idx, row_id in enumerate(list(st.session_state[f"{key_prefix}_row_ids"])):
             row_color = LAP_COLORS[idx % len(LAP_COLORS)]
             text_color = _readable_text_color(row_color)
-            session_key, lap_key = f"da_session_{row_id}", f"da_lap_{row_id}"
+            session_key, lap_key = f"{key_prefix}_session_{row_id}", f"{key_prefix}_lap_{row_id}"
             # Scoped via Streamlit's auto-generated `st-key-<key>` class on
             # this specific widget's own wrapper -- recolors just this row's
             # Lap dropdown to match its line color in the charts below,
@@ -955,8 +1102,8 @@ def page_data_analysis() -> None:
             row_lap_numbers, row_lap_times = _session_clean_laps(row_session)
             if not row_lap_numbers:
                 rc2.caption("No clean laps in this session.")
-                if rc3.button("✕", key=f"da_remove_{row_id}", help="Remove this row"):
-                    st.session_state["da_row_ids"].remove(row_id)
+                if rc3.button("✕", key=f"{key_prefix}_remove_{row_id}", help="Remove this row"):
+                    st.session_state[f"{key_prefix}_row_ids"].remove(row_id)
                     st.rerun()
                 continue
             _ensure_valid_widget_state(lap_key, row_lap_numbers, row_lap_numbers[0])
@@ -964,8 +1111,8 @@ def page_data_analysis() -> None:
                 "Lap", row_lap_numbers, key=lap_key, format_func=lambda n, _t=row_lap_times: _lap_label(n, _t),
                 label_visibility=label_visibility,
             )
-            if rc3.button("✕", key=f"da_remove_{row_id}", help="Remove this row"):
-                st.session_state["da_row_ids"].remove(row_id)
+            if rc3.button("✕", key=f"{key_prefix}_remove_{row_id}", help="Remove this row"):
+                st.session_state[f"{key_prefix}_row_ids"].remove(row_id)
                 st.rerun()
             compare_entries.append({
                 "row_id": row_id, "session_label": row_session_label, "session": row_session, "lap_number": row_lap,
@@ -976,13 +1123,28 @@ def page_data_analysis() -> None:
         if css_rules:
             st.markdown(f"<style>{''.join(css_rules)}</style>", unsafe_allow_html=True)
 
-        if len(st.session_state["da_row_ids"]) >= MAX_COMPARE_LAPS:
-            st.caption(f"Maximum {MAX_COMPARE_LAPS} laps at once.")
-        elif st.button("+ Add lap to compare", key="da_add_row"):
-            new_id = st.session_state["da_next_row_id"]
-            st.session_state["da_row_ids"].append(new_id)
-            st.session_state["da_next_row_id"] = new_id + 1
+        if len(st.session_state[f"{key_prefix}_row_ids"]) >= max_laps:
+            st.caption(f"Maximum {max_laps} laps at once.")
+        elif st.button("+ Add lap to compare", key=f"{key_prefix}_add_row"):
+            new_id = st.session_state[f"{key_prefix}_next_row_id"]
+            st.session_state[f"{key_prefix}_row_ids"].append(new_id)
+            st.session_state[f"{key_prefix}_next_row_id"] = new_id + 1
             st.rerun()
+    return compare_entries
+
+
+def page_data_analysis() -> None:
+    if not _require_data():
+        return
+    st.subheader("Data analysis")
+    st.caption(
+        "A deeper look across speed, RPM, G-forces and delta -- pick any laps from any loaded sessions below. "
+        "Each row's color matches its line in the charts, and the fastest lap among your picks is always used "
+        "as the delta reference and as the map's tracked position. On a phone, try the "
+        "**Data Analysis (Mobile)** page instead -- same laps, one full-width chart at a time."
+    )
+
+    compare_entries = _render_lap_picker("da", MAX_COMPARE_LAPS)
 
     if not compare_entries:
         st.info("Add at least one lap to compare.")
@@ -1126,6 +1288,169 @@ def page_data_analysis() -> None:
         fig, map_fig,
         primary_trace["lap_distance_m"].tolist(), primary_trace["Latitude"].tolist(), primary_trace["Longitude"].tolist(),
         height=fig_height, map_height=per_row_height, chart_row_y_domains=row_y_domains,
+    )
+    render_footer()
+
+
+DATA_ANALYSIS_CHART_SHORT_LABELS = {
+    "speed": "Speed", "rpm": "RPM", "lat_g": "Lat G", "lon_g": "Lon G", "delta": "Delta",
+}
+
+
+def _mobile_track_map_figure(
+    primary_trace: pd.DataFrame, corner_midpoints: pd.DataFrame, line_color: str,
+    marker_size: int = 16, label_font_size: int = 10,
+) -> go.Figure:
+    """Track outline + corner labels + a movable position marker (last
+    trace), axes hidden -- lat/lon numbers tell a driver nothing, this is
+    purely "where on the track is this," which the outline shape and corner
+    numbers answer on their own. Shared by the compact inline map and the
+    bigger expanded-dialog one, just at different sizes.
+    """
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scattergl(
+            x=primary_trace["Longitude"], y=primary_trace["Latitude"], mode="lines",
+            line=dict(color=line_color, width=2), hoverinfo="skip", showlegend=False,
+        )
+    )
+    if not corner_midpoints.empty:
+        labels = corner_midpoints["segment_label"].str.replace("Corner ", "C", regex=False)
+        fig.add_trace(
+            go.Scatter(
+                x=corner_midpoints["mid_lon"], y=corner_midpoints["mid_lat"], mode="markers+text",
+                text=labels, textposition="top center", textfont=dict(size=label_font_size, color="#666"),
+                marker=dict(size=6, color="#999"), hoverinfo="skip", showlegend=False,
+            )
+        )
+    if not primary_trace.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=[primary_trace["Longitude"].iloc[0]], y=[primary_trace["Latitude"].iloc[0]],
+                mode="markers", marker=dict(size=marker_size, color="red", line=dict(width=2, color="white")),
+                showlegend=False,
+            )
+        )
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=0, b=0), showlegend=False,
+        xaxis=dict(visible=False), yaxis=dict(visible=False, scaleanchor="x"),
+    )
+    return fig
+
+
+@st.dialog("Track map", width="large")
+def _show_expanded_map_dialog(primary_trace: pd.DataFrame, corner_midpoints: pd.DataFrame, tag: str, color: str) -> None:
+    st.caption(f"{tag} -- full track outline with corner numbers, for orientation only (no live marker in here).")
+    big_fig = _mobile_track_map_figure(primary_trace, corner_midpoints, color, marker_size=0, label_font_size=13)
+    big_fig.update_layout(height=520)
+    st.plotly_chart(big_fig, width="stretch", config={"displayModeBar": False})
+
+
+def page_data_analysis_mobile() -> None:
+    if not _require_data():
+        return
+    st.subheader("Data analysis (mobile)")
+    st.caption(
+        "The same laps as Data Analysis, redrawn one chart at a time for a small screen. Drag the chart to scroll "
+        "across the lap, pinch (or scroll) to zoom into any part of it in detail, and tap anywhere on it to move "
+        "the map marker to that point."
+    )
+
+    compare_entries = _render_lap_picker("da", MAX_COMPARE_LAPS)
+    if not compare_entries:
+        st.info("Add at least one lap to compare.")
+        render_footer()
+        return
+
+    fastest_entry = min(compare_entries, key=lambda e: e["lap_time"] if e["lap_time"] is not None else float("inf"))
+
+    metric_key = st.segmented_control(
+        "Chart", DATA_ANALYSIS_CHART_KEYS, default="speed", key="da_mobile_metric",
+        format_func=lambda k: DATA_ANALYSIS_CHART_SHORT_LABELS[k],
+    ) or "speed"
+
+    lap_traces: dict[int, pd.DataFrame] = {}
+    fig = go.Figure()
+    channel_by_key = {
+        "speed": "GPS Speed", "rpm": "RPM", "lat_g": "GPS Lateral Acceleration", "lon_g": "GPS Longitudinal Acceleration",
+    }
+    unit_by_key = {"speed": " km/h", "rpm": " RPM", "lat_g": "g", "lon_g": "g"}
+    fmt_by_key = {"speed": ".1f", "rpm": ".0f", "lat_g": ".2f", "lon_g": ".2f"}
+
+    for entry in compare_entries:
+        trace = lap_metric_trace(entry["session"], entry["lap_number"])
+        lap_traces[entry["row_id"]] = trace
+        color, tag = entry["color"], entry["tag"]
+        if metric_key in channel_by_key:
+            fig.add_trace(
+                go.Scatter(
+                    x=trace["lap_distance_m"], y=trace[channel_by_key[metric_key]], mode="lines", name=tag,
+                    line=dict(color=color), hovertemplate=f"{tag}: %{{y:{fmt_by_key[metric_key]}}}{unit_by_key[metric_key]}<extra></extra>",
+                )
+            )
+        elif metric_key == "delta" and entry is not fastest_entry:
+            dt = cross_session_delta_trace(
+                entry["session"], entry["lap_number"], fastest_entry["session"], fastest_entry["lap_number"], n_points=800,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=dt["distance_m"], y=dt["delta_s"], mode="lines", name=tag, line=dict(color=color),
+                    hovertemplate=f"{tag}: %{{y:.4f}}s<extra></extra>",
+                )
+            )
+
+    if metric_key == "delta":
+        fig.add_hline(y=0, line_dash="dash", line_color="gray")
+        if len(compare_entries) == 1:
+            st.info("Delta needs at least one more lap to compare against -- add another row above.")
+    if metric_key == "rpm":
+        fig.add_hrect(y0=setup.peak_power_rpm_low, y1=setup.peak_power_rpm_high, fillcolor="green", opacity=0.1, line_width=0)
+
+    fig.update_layout(
+        xaxis_title="Distance (m)", yaxis_title=DATA_ANALYSIS_CHART_LABELS[metric_key],
+        margin=dict(l=48, r=12, t=8, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font=dict(size=11)),
+        hovermode="closest", font=dict(size=12),
+    )
+    fig.update_xaxes(showspikes=False)
+
+    if metric_key == "rpm":
+        band_bits = []
+        for entry in compare_entries:
+            band = time_in_rpm_band(entry["session"], entry["lap_number"], (setup.peak_power_rpm_low, setup.peak_power_rpm_high))
+            pct = f"{band['fraction_in_band'] * 100:.0f}%" if band.get("lap_duration_s", 0) > 0 else "n/a"
+            band_bits.append(f"{entry['tag']}: {pct}")
+        st.caption(
+            f"Shaded = the {setup.peak_power_rpm_low}-{setup.peak_power_rpm_high} RPM power band. "
+            f"% of lap spent in it -- {' · '.join(band_bits)}"
+        )
+
+    # The map always shows the fastest pick's own lap -- from that lap's
+    # OWN session, which isn't necessarily the sidebar's active session
+    # since compare rows can pull from any loaded session.
+    primary_trace = lap_traces[fastest_entry["row_id"]].dropna(subset=["lap_distance_m", "Latitude", "Longitude"]).sort_values("lap_distance_m")
+    primary_session = fastest_entry["session"]
+    primary_clean_numbers, primary_times = _session_clean_laps(primary_session)
+    primary_best_lap = min(primary_clean_numbers, key=lambda n: primary_times[n]) if primary_clean_numbers else fastest_entry["lap_number"]
+    _primary_segments, primary_midpoints = build_segments_and_midpoints_cached(
+        primary_session, session_cache_key(primary_session), primary_best_lap
+    )
+    corner_midpoints = (
+        primary_midpoints[primary_midpoints["segment_kind"] == "corner"] if not primary_midpoints.empty else primary_midpoints
+    )
+
+    map_col, expand_col = st.columns([5, 1])
+    map_col.caption(
+        f"Map tracks {fastest_entry['tag']} ({fastest_entry['lap_time']:.2f}s) -- tap the chart to move the marker."
+    )
+    if expand_col.button("🔍 Expand", key="da_mobile_expand_map"):
+        _show_expanded_map_dialog(primary_trace, corner_midpoints, fastest_entry["tag"], fastest_entry["color"])
+
+    map_fig = _mobile_track_map_figure(primary_trace, corner_midpoints, fastest_entry["color"])
+    render_mobile_linked_chart(
+        fig, map_fig,
+        primary_trace["lap_distance_m"].tolist(), primary_trace["Latitude"].tolist(), primary_trace["Longitude"].tolist(),
+        chart_height=420, map_height=170,
     )
     render_footer()
 
@@ -2886,6 +3211,7 @@ page_leaderboards_obj = st.Page(page_leaderboards, title="Leaderboards", icon="�
 page_find_profile_obj = st.Page(page_find_profile, title="Find My Profile", icon="🔍")
 page_lap_times_obj = st.Page(page_lap_times, title="Lap Times", icon="⏱️")
 page_data_analysis_obj = st.Page(page_data_analysis, title="Data Analysis", icon="📈")
+page_data_analysis_mobile_obj = st.Page(page_data_analysis_mobile, title="Data Analysis (Mobile)", icon="📱")
 page_track_map_obj = st.Page(page_track_map, title="Track Map", icon="🗺️")
 page_braking_rpm_obj = st.Page(page_braking_rpm, title="Braking / RPM", icon="🛞")
 page_corner_comparison_obj = st.Page(page_corner_comparison, title="Corner Comparison", icon="📐")
@@ -2901,7 +3227,7 @@ page_settings_obj = st.Page(page_settings, title="Settings", icon="⚙️")
 nav = st.navigation(
     {
         "Analysis": [
-            page_overview_obj, page_lap_times_obj, page_data_analysis_obj, page_track_map_obj,
+            page_overview_obj, page_lap_times_obj, page_data_analysis_obj, page_data_analysis_mobile_obj, page_track_map_obj,
             page_braking_rpm_obj, page_corner_comparison_obj, page_lap_comparison_obj, page_recurring_patterns_obj,
             page_gearing_simulation_obj, page_consistency_obj, page_progression_obj, page_kart_setup_obj, page_history_obj,
         ],

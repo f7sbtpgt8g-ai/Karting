@@ -484,7 +484,33 @@ just "gear up/down" to avoid ambiguity.
   a small script that reads the component's own position in the page on
   every animation frame (`window.frameElement.getBoundingClientRect()`)
   and translates the map to match, clamped so it never drifts past the
-  bottom of the chart column.
+  bottom of the chart column. This desktop layout doesn't work at phone
+  widths -- see **Data Analysis (Mobile)** below for the same laps redrawn
+  for a small screen.
+- **Data Analysis (Mobile)**: the same "Laps to compare" picker (literally
+  the same `session_state`, via a shared `_render_lap_picker` helper --
+  pick laps here or on desktop Data Analysis and the other view has the
+  same rows already selected), redrawn around touch instead of a mouse.
+  The desktop page's side-by-side 62%/38% chart+map split is unusable at
+  phone width -- squeezed into a few hundred pixels, five stacked
+  subplots -- so this page shows **one full-width chart at a time**
+  (Speed/RPM/Lat G/Lon G/Delta, picked via a segmented control) at a
+  comfortable reading height, with a compact track map above it rather
+  than beside it (no need for the desktop version's cross-iframe sticky
+  hack, either -- one chart at a time is short enough that the whole
+  component fits on screen without internal scrolling).
+  Interaction is built around touch, not adapted from the mouse-oriented
+  desktop version: dragging the chart pans across the lap (the "scroll
+  across" a phone view needs), pinching zooms into any stretch of it for
+  detail, and the y-axis re-fits to whatever's actually visible after a
+  pan/zoom so a zoomed-in corner doesn't look flattened against the whole
+  lap's range. A tap (not just hover, which touchscreens don't reliably
+  fire) moves the map marker to that point, so "which part of the track is
+  this" stays answerable without needing to hover a mouse that isn't
+  there. The compact map carries corner-number labels for orientation at a
+  glance; a "🔍 Expand" button opens it larger in an `st.dialog` popup for
+  a clearer look at the track shape and corner layout when the inline
+  thumbnail isn't enough.
 - **Braking zones / RPM trace / per-corner entry-apex-exit table**: labeled
   as *inferred* where relevant -- there's no direct brake or throttle
   channel, so braking zones come from deceleration patterns. The RPM trace
