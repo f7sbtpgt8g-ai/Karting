@@ -218,30 +218,90 @@ reverse-engineering effort (or the firmware/format spec, which isn't
 available) -- diminishing returns for a single sitting of blind byte
 analysis.
 
+### Prior art found: an independent open-source project already cracked part of this
+
+A web search turned up
+[OpenLap](https://github.com/LaurensVR3/OpenLap) (`unipro_data.py`), a
+telemetry-overlay tool that already reverse-engineers `.uni` files
+independently of Analyser. Its own documentation is refreshingly candid
+about what it did and didn't crack, and **its outer chunk-parsing code
+(`_iter_chunks`) is byte-for-byte identical in logic to what we derived
+independently above** -- magic `UUni`, 8-byte tag, 1-byte version, 3-byte
+big-endian length, `0xFFFFFF` sentinel meaning "read to end of file." Two
+independent reverse-engineering efforts landing on the same structure is
+strong confirmation that part is solid.
+
+**What OpenLap did NOT crack (confirmed, not just claimed -- see next
+section):** the per-channel event framing inside `RECRDATA`/`DATA`. They
+never solved the record header/framing problem either -- the same wall we
+hit. Their workaround: instead of parsing records, they **scan the raw
+bytes for a specific recognizable *pattern of plausible values*** -- 4
+consecutive big-endian `int32` fields (altitude, speed, then looking
+backward for latitude, longitude) that all simultaneously fall in
+physically sane ranges (lat -90..90, lon -180..180, alt -500..9000m,
+speed 0..400 km/h) -- rather than understanding the record structure that
+contains them. Scale factors: `lat = raw/1e7`, `lon = raw/1e7`,
+`alt = raw/1000`, `speed = raw/100`. **RPM, gear, gyro, and exhaust temp
+are explicitly *not* recovered by this technique** -- those channels stay
+completely unrecovered in OpenLap, same as here.
+
+**This was independently re-verified against our own file+TSV pair**
+(not just taken on faith): running the same value-plausibility scan
+against `260829_1441_Barmosen GPS_AUSTIN.uni`'s `DATA` payload finds
+**16,999 raw candidate hits**, of which **exactly 7,382 fall inside the
+real track's lat/lon bounding box** (55.049-55.052 / 11.907-11.914) --
+which matches, to the exact integer, the 7,382-occurrence "GPS fix" group
+found independently in the TSV cross-reference above. The decoded values
+for those 7,382 are directly plausible against the TSV ground truth: lat/
+lon track a sensible closed loop starting and ending near
+`55.0508, 11.9124`, speed ranges `0-89.06 km/h` (a kart's real range),
+altitude sits near sea level (consistent with a Danish track). **This is
+now empirically confirmed, not just borrowed from someone else's
+README.**
+
+**One thing OpenLap's own approach gets wrong on this file, worth fixing
+in Part 2's implementation:** false-positive hits actually *outnumber*
+real ones here -- **9,617 spurious matches vs. 7,382 real ones** (a >50%
+false-positive rate on raw hits), clustered at implausible-but-in-range
+coordinates like `lat≈0.05` / `lat≈-26.0` with widely scattered
+longitudes -- almost certainly other channels' raw bytes coincidentally
+forming a plausible-looking lat/lon/alt/speed quadruple. OpenLap's own
+median-position-based filter (`_reject_far_from_track`) would fail badly
+here, since it assumes genuine hits are the *majority* and computes the
+median accordingly -- on this file the median lands inside the spurious
+cluster, not the real one. **A tighter, more reliable filter is needed for
+Part 2**: e.g. requiring several consecutive candidate hits to be
+mutually close in both position *and* byte-offset spacing (a real GPS
+track can't teleport between fixes 16-100 bytes apart), rather than
+filtering against a single global median.
+
 ### Recommended path for Part 2's conversion step
 
-Given the above, two real options exist for Part 2, and this is a genuine
-decision point rather than a purely technical one:
+Given the explicit decision to not depend on Analyser, the path forward
+is:
 
-1. **Continue reverse-engineering `DATA`'s internal byte layout.** Now
-   backed by real ground truth (this TSV) and a promising structural lead
-   (the 9 firing-groups matching `CHNL`'s width groupings), this is
-   plausibly crackable with more focused effort -- but it's open-ended,
-   and any subtle mistake (wrong scale factor, wrong signedness) would
-   silently produce wrong lap times/speeds rather than an obvious error.
-2. **Automate the official Unipro Analyser desktop software** (the
-   fallback "Plan B" from the original project plan) to do the `.uni` ->
-   TSV conversion for us, since it's now proven to correctly export this
-   exact device's files. This trades "no dependency on Analyser being
-   installed" for "zero risk of a hand-decoded value being subtly wrong,"
-   since Analyser's own conversion logic is used verbatim.
-
-Given the format resisted a first serious reverse-engineering attempt and
-correctness (not just "some path to TSV") matters for lap-time analysis,
-**Plan B is the more defensible default for Part 2** unless further
-reverse-engineering effort is explicitly wanted. This is a call for
-whoever's driving Part 2, not something to decide silently -- flagged
-here for that conversation.
+1. **Ship what's independently decodable today: GPS position, altitude,
+   and speed**, via the value-plausibility scan above (with a better
+   rejection filter than OpenLap's, per the false-positive analysis).
+   This alone is enough for a track map, speed trace, and (via the same
+   RECRGLOS timing-beacon coordinates OpenLap uses) real lap timing --
+   without Analyser and without needing the full record framing solved.
+2. **RPM, steering angle, real accelerometer G-forces, and exhaust
+   temperature are NOT currently recoverable independently** -- confirmed
+   by two separate reverse-engineering efforts hitting the same wall on
+   `RECRDATA`'s per-channel framing. `telemetry/parser.py`'s downstream
+   analysis (corner-causal detection, setup suggestions, throttle/braking
+   inference) leans heavily on exactly these channels, so **a
+   no-Analyser sync tool today would feed the pipeline meaningfully less
+   than a `.tsv` export would** -- this is a real fidelity trade-off, not
+   a detail, and needs to be a conscious decision rather than something
+   this document quietly assumes away.
+3. Cracking the full `RECRDATA` framing (to recover RPM/steering/real-G/
+   temp too) remains open -- genuinely unsolved by anyone found so far,
+   not just by this project. Worth revisiting with more focused effort
+   (e.g. the bitmask-style framing idea from the section above, now with
+   the confirmed GPS-quadruple layout as a fixed anchor to align other
+   fields against) if full fidelity is required later.
 
 ## Open questions
 
@@ -264,6 +324,13 @@ here for that conversation.
   one TSV column, `Corner Radius`, isn't a raw channel at all -- it's
   computed from `Inverse Corner Radius` by Analyser, so not every TSV
   column has a 1:1 channel).
+- Full `RECRDATA` per-channel record framing, beyond the GPS-quadruple
+  pattern-match -- unsolved by both this project and OpenLap
+  (github.com/LaurensVR3/OpenLap). This is what blocks recovering RPM,
+  steering angle, real accelerometer G, and exhaust temperature
+  independently of Analyser. A better false-positive rejection filter for
+  the GPS scan itself (see above) is a smaller, more tractable version of
+  the same open problem.
 - Whether `LOCS`'s embedded "previous session filename" is a chain link
   across all files (would need to check a second file to confirm).
 - The `.un0` file extension seen once in the file list (vs. the usual
