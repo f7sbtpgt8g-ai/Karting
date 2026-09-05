@@ -108,3 +108,42 @@ def test_device_unreachable_propagates_cleanly():
         config = _tmp_config(tmp)
         with pytest.raises(DeviceUnreachable):
             run_sync(config, client=FailingListClient())
+
+
+def test_period_cutoff_skips_old_sessions_without_downloading():
+    from datetime import datetime
+
+    with tempfile.TemporaryDirectory() as tmp:
+        config = _tmp_config(tmp)
+        client = FakeClient({
+            "260828_0900_Barmosen_AUSTIN.uni": _valid_uni_bytes(),  # before cutoff
+            "260829_1000_Barmosen_AUSTIN.uni": _valid_uni_bytes(),  # on/after cutoff
+        })
+        result = run_sync(config, client=client, period_cutoff=datetime(2026, 8, 29))
+
+        assert result.new_synced == ["260829_1000_Barmosen_AUSTIN.uni"]
+        assert result.skipped_out_of_period == ["260828_0900_Barmosen_AUSTIN.uni"]
+        # the out-of-period session was never even downloaded
+        assert client.download_calls == ["260829_1000_Barmosen_AUSTIN.uni"]
+
+
+def test_period_cutoff_none_syncs_everything():
+    with tempfile.TemporaryDirectory() as tmp:
+        config = _tmp_config(tmp)
+        client = FakeClient({"a.uni": _valid_uni_bytes(), "b.uni": _valid_uni_bytes()})
+        result = run_sync(config, client=client, period_cutoff=None)
+
+        assert sorted(result.new_synced) == ["a.uni", "b.uni"]
+        assert result.skipped_out_of_period == []
+
+
+def test_out_of_period_session_is_not_recorded_in_sync_state():
+    from datetime import datetime
+
+    with tempfile.TemporaryDirectory() as tmp:
+        config = _tmp_config(tmp)
+        client = FakeClient({"260101_0000_old.uni": _valid_uni_bytes()})
+        run_sync(config, client=client, period_cutoff=datetime(2026, 8, 29))
+
+        with SyncState(config.sync_state_db) as state:
+            assert state.list_all() == []

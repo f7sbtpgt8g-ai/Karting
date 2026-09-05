@@ -9,9 +9,11 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from .config import SyncConfig
 from .device_client import DeviceClient, DeviceError
+from .period import session_in_period
 from .sync_state import SyncState
 from .tsv_writer import write_tsv
 from .uni_format import UniFormatError, decode_uni_bytes
@@ -30,6 +32,9 @@ class SyncResult:
     already_synced: list[str] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)  # (name, error)
     paths: dict[str, str] = field(default_factory=dict)  # session name -> written TSV path
+    # Present on the device but outside the requested sync period -- never
+    # downloaded, so this is cheap to report even when it's a large number.
+    skipped_out_of_period: list[str] = field(default_factory=list)
 
     @property
     def total_seen(self) -> int:
@@ -61,11 +66,23 @@ def configure_logging(config: SyncConfig) -> None:
     root.addHandler(console_handler)
 
 
-def run_sync(config: SyncConfig, client: DeviceClient | None = None, state: SyncState | None = None) -> SyncResult:
+def run_sync(
+    config: SyncConfig,
+    client: DeviceClient | None = None,
+    state: SyncState | None = None,
+    period_cutoff: datetime | None = None,
+) -> SyncResult:
     """Run one full sync pass. Safe to call repeatedly (e.g. from a
     background watcher) -- already-synced sessions are skipped cheaply
     via `SyncState`, and a failure on one session is logged and recorded
-    without aborting the rest of the run."""
+    without aborting the rest of the run.
+
+    `period_cutoff` (from `core.period.cutoff_for`) excludes sessions
+    recorded before it *before* downloading anything -- see `core/period.py`
+    for why filtering on the filename's embedded date is safe and why an
+    unparseable name is kept rather than skipped. None means no filtering
+    (sync everything the device has).
+    """
     own_state = state is None
     client = client or DeviceClient(config)
     state = state or SyncState(config.sync_state_db)
@@ -83,6 +100,9 @@ def run_sync(config: SyncConfig, client: DeviceClient | None = None, state: Sync
 
         for entry in sessions:
             name, size = entry["name"], entry["size"]
+            if not session_in_period(name, period_cutoff):
+                result.skipped_out_of_period.append(name)
+                continue
             if state.is_synced(name, size):
                 result.already_synced.append(name)
                 continue

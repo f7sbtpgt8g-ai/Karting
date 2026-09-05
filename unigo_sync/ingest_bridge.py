@@ -20,11 +20,40 @@ from __future__ import annotations
 import logging
 
 from telemetry.parser import load_sessions
-from telemetry.storage import SessionLibrary
+from telemetry.storage import SessionLibrary, SupabaseSessionLibrary, session_library_from_env
 
 from .core.sync_engine import SyncResult
 
 logger = logging.getLogger("unigo_sync.ingest_bridge")
+
+
+def ingest_one(
+    library: SessionLibrary | SupabaseSessionLibrary,
+    path: str,
+    driver: str | None = None,
+    track: str | None = None,
+    session_type: str | None = None,
+    driver_profile_id: int | None = None,
+    uploaded_by_user_id: int | None = None,
+) -> int:
+    """Load one already-converted TSV and save each session in it into
+    `library`. Returns how many sessions were ingested (a TSV can contain
+    more than one, per `telemetry.parser.load_sessions`). Raises on a
+    parse/save failure -- unlike `ingest_new_sessions`'s loop, a single
+    call here doesn't know whether the caller wants failures skipped
+    (a live sync pass) or retried later (the pending-upload queue,
+    `core.pending_uploads`), so that decision is left to the caller.
+    """
+    sessions = load_sessions(path)
+    ingested = 0
+    for session in sessions:
+        db_id = library.save_session(
+            session, driver=driver, track_name=track, session_type=session_type,
+            driver_profile_id=driver_profile_id, uploaded_by_user_id=uploaded_by_user_id,
+        )
+        logger.info("ingested %s session %s -> library id %s", path, session.session_id, db_id)
+        ingested += 1
+    return ingested
 
 
 def ingest_new_sessions(
@@ -33,6 +62,8 @@ def ingest_new_sessions(
     driver: str | None = None,
     track: str | None = None,
     session_type: str | None = None,
+    driver_profile_id: int | None = None,
+    uploaded_by_user_id: int | None = None,
 ) -> int:
     """Load every newly-synced TSV from this sync pass into the session
     library. Returns how many were ingested. A parse/save failure on one
@@ -42,7 +73,13 @@ def ingest_new_sessions(
     if not result.new_synced:
         return 0
 
-    library = SessionLibrary(db_path)
+    # Postgres/Supabase-backed when SUPABASE_DB_URL/DATABASE_URL is
+    # configured, the local SQLite file at `db_path` otherwise -- same
+    # choice `scripts/ingest.py` makes, so a sync pass lands sessions in
+    # the same database the Streamlit app and every other ingestion path
+    # read from, rather than a local-only file that silently diverges
+    # from a deployed Supabase project.
+    library = session_library_from_env(db_path)
     ingested = 0
     try:
         for name in result.new_synced:
@@ -50,14 +87,12 @@ def ingest_new_sessions(
             if path is None:
                 continue
             try:
-                sessions = load_sessions(path)
+                ingested += ingest_one(
+                    library, path, driver=driver, track=track, session_type=session_type,
+                    driver_profile_id=driver_profile_id, uploaded_by_user_id=uploaded_by_user_id,
+                )
             except Exception as exc:  # noqa: BLE001 - report and continue, matching scripts/ingest.py
-                logger.warning("failed to parse converted TSV %s: %s", path, exc)
-                continue
-            for session in sessions:
-                db_id = library.save_session(session, driver=driver, track_name=track, session_type=session_type)
-                logger.info("ingested %s session %s -> library id %s", path, session.session_id, db_id)
-                ingested += 1
+                logger.warning("failed to ingest converted TSV %s: %s", path, exc)
     finally:
         library.close()
     return ingested
