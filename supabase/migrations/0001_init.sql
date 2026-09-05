@@ -351,8 +351,19 @@ ALTER TABLE pattern_instances ENABLE ROW LEVEL SECURITY;
 ALTER TABLE teams ENABLE ROW LEVEL SECURITY;
 ALTER TABLE team_memberships ENABLE ROW LEVEL SECURITY;
 
+-- Every CREATE POLICY below is preceded by DROP POLICY IF EXISTS for the
+-- same name, so this whole file stays safely re-runnable end to end as the
+-- schema evolves -- e.g. when the Teams feature added `team_memberships`
+-- and widened `sessions_select`'s definition, a project that had already
+-- applied an earlier version of this file had no way to pick up the
+-- change short of hand-editing policies in the Supabase dashboard.
+-- Re-running this file (via `supabase db push` or pasting it into the SQL
+-- editor again) is now the supported way to bring a project's schema up
+-- to date after a pull.
+
 -- A user may read their own account row; nothing else about `users` (email,
 -- password_hash) should be readable by anyone else.
+DROP POLICY IF EXISTS users_select_self ON users;
 CREATE POLICY users_select_self ON users
     FOR SELECT USING (id = current_app_user_id());
 
@@ -361,6 +372,7 @@ CREATE POLICY users_select_self ON users
 -- registered drivers to attribute a session to" and leaderboard display
 -- names) -- unclaimed/invited profiles are visible only to their creator,
 -- mirroring that an unclaimed profile is not yet public in any way.
+DROP POLICY IF EXISTS driver_profiles_select ON driver_profiles;
 CREATE POLICY driver_profiles_select ON driver_profiles
     FOR SELECT USING (
         claim_status = 'claimed'
@@ -372,6 +384,7 @@ CREATE POLICY driver_profiles_select ON driver_profiles
 -- with "it's mine" (owning driver profile, or I uploaded it), OR'd with
 -- `accounts.team_visibility_sql` -- a fellow active member of the same
 -- team as the owning driver, for a session marked 'team' or 'shared'.
+DROP POLICY IF EXISTS sessions_select ON sessions;
 CREATE POLICY sessions_select ON sessions
     FOR SELECT USING (
         EXISTS (
@@ -400,6 +413,7 @@ CREATE POLICY sessions_select ON sessions
 
 -- Teams: names aren't sensitive, and search-to-join needs every team
 -- discoverable, so any authenticated user can read the list.
+DROP POLICY IF EXISTS teams_select ON teams;
 CREATE POLICY teams_select ON teams
     FOR SELECT USING (true);
 
@@ -407,6 +421,7 @@ CREATE POLICY teams_select ON teams
 -- (needed to render the roster and, for a manager/admin, pending join
 -- requests) -- not just their own row. A profile with no active
 -- membership anywhere sees only its own (pending/rejected/left) rows.
+DROP POLICY IF EXISTS team_memberships_select ON team_memberships;
 CREATE POLICY team_memberships_select ON team_memberships
     FOR SELECT USING (
         EXISTS (
@@ -418,15 +433,19 @@ CREATE POLICY team_memberships_select ON team_memberships
 
 -- Laps / cached dataframe / corner metrics / pattern instances all inherit
 -- their session's own visibility rather than repeating the predicate.
+DROP POLICY IF EXISTS laps_select ON laps;
 CREATE POLICY laps_select ON laps
     FOR SELECT USING (EXISTS (SELECT 1 FROM sessions s WHERE s.id = laps.session_db_id));
 
+DROP POLICY IF EXISTS session_cache_select ON session_cache;
 CREATE POLICY session_cache_select ON session_cache
     FOR SELECT USING (EXISTS (SELECT 1 FROM sessions s WHERE s.id = session_cache.session_db_id));
 
+DROP POLICY IF EXISTS corner_metrics_select ON corner_metrics;
 CREATE POLICY corner_metrics_select ON corner_metrics
     FOR SELECT USING (EXISTS (SELECT 1 FROM sessions s WHERE s.id = corner_metrics.session_db_id));
 
+DROP POLICY IF EXISTS pattern_instances_select ON pattern_instances;
 CREATE POLICY pattern_instances_select ON pattern_instances
     FOR SELECT USING (EXISTS (SELECT 1 FROM sessions s WHERE s.id = pattern_instances.session_db_id));
 
@@ -435,5 +454,6 @@ CREATE POLICY pattern_instances_select ON pattern_instances
 -- there's no session row to join against here. Restrict to the uploading
 -- driver's own setups for now; revisit if setups need to be shared the way
 -- sessions are.
+DROP POLICY IF EXISTS kart_setups_select ON kart_setups;
 CREATE POLICY kart_setups_select ON kart_setups
     FOR SELECT USING (driver = (SELECT display_name FROM driver_profiles WHERE user_id = current_app_user_id()));
