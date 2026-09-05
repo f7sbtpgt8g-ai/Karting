@@ -1,0 +1,68 @@
+name: Build UniGo Sync Windows installer
+
+# Builds UniGoSync.exe (PyInstaller, bundles the Python runtime) and
+# wraps it in a single UniGoSyncSetup.exe (Inno Setup) that an end user
+# can run on Windows with no admin rights and nothing else installed.
+# See unigo_sync/README.md's "Deploying to an end user" section.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Installer version (AppVersion shown in Add/Remove Programs)"
+        required: false
+        default: "0.1.0"
+  push:
+    branches: ["**"]
+    paths:
+      - "unigo_sync/**"
+      - ".github/workflows/build-windows-installer.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r unigo_sync/requirements.txt -r unigo_sync/requirements-windows.txt
+
+      - name: Generate app icon
+        run: python unigo_sync/packaging/make_icon.py unigo_sync/packaging/icon.ico
+
+      - name: Build UniGoSync.exe with PyInstaller
+        run: pyinstaller --distpath dist --workpath build --noconfirm unigo_sync/packaging/UniGoSync.spec
+
+      - name: Verify the frozen exe exists
+        run: |
+          if (-not (Test-Path "dist\UniGoSync.exe")) {
+            throw "PyInstaller did not produce dist\UniGoSync.exe"
+          }
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer with Inno Setup
+        env:
+          INSTALLER_VERSION: ${{ github.event.inputs.version || '0.1.0' }}
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            "/DMyAppVersion=$env:INSTALLER_VERSION" `
+            unigo_sync\packaging\installer.iss
+
+      - name: Verify the installer exists
+        run: |
+          if (-not (Test-Path "unigo_sync\packaging\Output\UniGoSyncSetup.exe")) {
+            throw "Inno Setup did not produce UniGoSyncSetup.exe"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UniGoSyncSetup
+          path: unigo_sync/packaging/Output/UniGoSyncSetup.exe
+          if-no-files-found: error

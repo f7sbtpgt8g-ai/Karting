@@ -7,11 +7,26 @@ one-line config edit, not a code change.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 
 import yaml
 
-_DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
+
+def _default_config_path() -> str:
+    """Where to look for config.yaml when no path is given.
+
+    In a normal source checkout this is next to the package (../config.yaml
+    relative to this file). In a PyInstaller-frozen build, __file__ points
+    into the onefile bundle's ephemeral extraction directory rather than
+    anywhere the installed app's config.yaml actually lives -- the
+    installer places config.yaml next to the .exe instead, so look there
+    (`sys.executable`'s directory) when frozen. See `sys.frozen`, the
+    standard PyInstaller marker for this.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), "config.yaml")
+    return os.path.join(os.path.dirname(__file__), "..", "config.yaml")
 
 
 @dataclass
@@ -56,7 +71,7 @@ class SyncConfig:
 def load_config(path: str | None = None) -> SyncConfig:
     """Load config from YAML, falling back to defaults for anything not
     present in the file (including a missing file entirely)."""
-    path = path or _DEFAULT_CONFIG_PATH
+    path = path or _default_config_path()
     data = {}
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
