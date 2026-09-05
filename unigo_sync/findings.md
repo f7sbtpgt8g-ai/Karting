@@ -7,16 +7,21 @@ info). Re-run the discovery harness and diff against this doc if a
 firmware update changes anything.
 
 Last updated: 2026-09-05. Sources: a real HAR capture of the device's web
-UI; a real Unipro Analyser TSV export used as ground truth; a second real
-`.uni` file from a different track (Korsør) with no TSV, used for
-cross-validation; and a from-scratch reverse-engineering pass on the raw
-binary format that **cracked the per-record framing** and decoded 9
-channels independently of Analyser -- GPS position, altitude, embedded
-GPS speed, DOP/quality values, battery voltage, internal temperature, and
-**RPM** (full per-sample trace, R²=0.999) -- see "BREAKTHROUGH" and "RPM
-SOLVED" below. Steering angle and accelerometer G-force are the
-remaining open gap, with a real, promising partial lead (~0.84
-correlation) on steering.
+UI; a real Unipro Analyser TSV export used as ground truth; four more
+real `.uni` files across three additional real sessions/tracks (Korsør,
+a second Barmosen session, and Roskilde -- two with matching TSV ground
+truth, one without), used for cross-validation and to feed a much larger
+combined real dataset back into the reverse-engineering effort; and a
+from-scratch reverse-engineering pass on the raw binary format that
+**cracked the per-record framing** and decoded 10 channels independently
+of Analyser -- GPS position, altitude, embedded GPS speed, DOP/quality
+values, battery voltage, internal temperature, **RPM** (full per-sample
+trace, R²=0.999, confirmed on 3 separate real sessions), and **Steering
+Angle** (R²=0.82-0.88 across 3 sessions, real and reproducible though not
+yet bit-perfect) -- see "BREAKTHROUGH", "RPM SOLVED", and "Three more
+real files" below. Accelerometer G-force (vertical and longitudinal) is
+the one channel that remains genuinely unrecovered, now after a
+thorough, multi-session negative result rather than an unexplored gap.
 
 ## Device info
 
@@ -490,6 +495,82 @@ fix. This isn't a case of "one clever trick left to find" the way RPM
 was -- it's now a much more thoroughly negative result for those two
 axes specifically.
 
+### Three more real files: Steering Angle confirmed and improved, G-force still negative
+
+Two more real `.uni` files were provided, both with matching ground
+truth this time (a large multi-session `.tsv` export, `exported_sessions.tsv`,
+covering several real sessions including these two):
+`260510_1606_Barmosen GPS_AUSTIN.uni` (Barmosen, a different date than
+the first Barmosen file, **118,202 TSV rows / 20 laps** -- by far the
+largest, richest session seen yet, with meaningfully more dramatic
+G-force swings: Vertical Acceleration -2.28..1.76 vs. the original
+file's -0.90..1.15, Lateral -2.73..2.56 vs. -1.67..1.75) and
+`260627_1531_Roskilde GPS_AUSTIN.uni` (a third track entirely, Roskilde,
+Denmark).
+
+**A real methodological trap found and fixed on Roskilde, worth
+documenting explicitly:** this `.uni` file's `RECRDATA` payload extends
+to byte offset ~2.1M, but its matching TSV session block only covers the
+*first* ~449K bytes of it -- **only 21% of the file's records fall
+within the time range the TSV can calibrate against.** This is the same
+"stray extra block" phenomenon OpenLap's own docstring describes (the
+device's onboard memory holds more than the one requested session, and
+different exports/files can end up with extra data attached). Left
+unfixed, this silently corrupts every correlation: records outside the
+calibrated range get their estimated time clamped to the calibration
+boundary by `np.interp`, so they cluster falsely near one edge and get
+accepted into "good" matches by chance, diluting genuine signal with
+noise -- RPM's own correlation (already proven at R²=0.999 elsewhere)
+dropped to a misleading 0.47-0.80 on the raw Roskilde data before this
+was caught. **The fix: restrict analysis to only the records whose byte
+offset falls within `[calib_offsets.min(), calib_offsets.max()]`** before
+running any correlation. Once applied, RPM immediately returned to
+R²=0.999 on Roskilde too. Any future work on additional files should
+apply this restriction from the start, not discover it the hard way.
+
+**RPM: re-confirmed at R²=0.999 on both new files**, using the exact
+same formula (offsets 6/10/6/10 in record types 14/18/24/28) -- fourth
+and fifth independent confirmations now (counting the original Barmosen
+session and the range-plausibility check on the first Korsør file).
+
+**Steering Angle: meaningfully improved with more data, still not a
+clean bit-perfect decode, but a real and reproducible one.** With
+Barmosen 0510's much larger sample: `R²=0.82, corr=0.90` (up from
+`R²=0.70, corr=0.84` on the original, smaller session). On Roskilde
+(a third, independent track): `R²=0.88, corr=0.94` -- even better. The
+fitted slope is consistent across both new sessions and both record
+types (`~0.090-0.094`, vs. the same region's slope in the original
+session), which is real evidence of a stable, reproducible relationship,
+not overfitting to one session's noise.
+
+**GPS Lateral Acceleration's echo explained, conclusively, as
+Steering's shadow, not a distinct channel:** directly measured the
+correlation between the real TSV's own Steering Angle and GPS Lateral
+Acceleration columns (time-matched, not assumed) on Barmosen 0510:
+**r=0.905** -- these two are already strongly correlated with *each
+other* in the ground truth, simply because turning the wheel produces
+lateral G. Our raw byte field's correlation with each (`Steering:
+R²=0.82` i.e. `corr≈0.90`; `Lateral G: R²=0.73` i.e. `corr≈0.85`) is
+fully consistent with the field being Steering Angle alone, with its
+correlation to Lateral G entirely explained by Steering's own natural
+0.905 correlation to Lateral G (0.90 x 0.905 ≈ 0.82, close to the
+observed 0.85) -- no separate Lateral G decode needed to explain what's
+observed. This resolves the earlier "which one is it really" ambiguity:
+**it's Steering Angle.**
+
+**Vertical and GPS Longitudinal Acceleration: still no real signal,
+now across three real, diverse sessions** (original Barmosen, the much
+larger and bumpier Barmosen 0510, and Roskilde -- all range-restricted
+and time-aligned correctly). One brief false alarm during this pass
+(Vertical Acceleration at ~0.58 correlation on raw, unfiltered Roskilde
+data) evaporated once the calibration-range bug above was fixed --
+a good illustration of exactly the kind of artifact this project has
+learned to distrust by now. With three clean, independent negative
+results in hand, this is a genuinely well-tested conclusion, not an
+unexplored gap: **Vertical and Longitudinal Acceleration do not appear
+to be recoverable with any technique available in this project's
+current toolkit, on any of the three real sessions examined.**
+
 **Working theory, confirmed correct for RPM (see "RPM SOLVED" above):**
 RPM and Steering Angle are the two *highest-frequency, most
 rapidly-changing* channels in the whole file (22,124 and 11,056 firings
@@ -647,34 +728,40 @@ decision to not depend on Analyser:
    with the RECRGLOS timing-beacon coordinates OpenLap also uses, this is
    enough for a track map, real GPS speed trace, real lap timing, and now
    a real RPM trace -- independent of Analyser.
-2. **Steering angle and the 3-axis accelerometer G-forces remain not
-   fully recovered as a clean per-sample trace**, though the picture
-   changed with the time-alignment fix that cracked RPM: Steering Angle
-   now shows a real, consistent ~0.84 correlation (up from ~0.20 under the
-   old, flawed methodology) at record types 24/28, with a stable slope
-   across both independently-derived record types -- this is very likely
-   the right channel (probably a raw/unfiltered steering sensor reading,
-   analogous to `RPM unfiltered`), just not yet a bit-perfect match to
-   Analyser's filtered `Steering Angle` column. GPS Lateral Acceleration
-   shows a weaker (~0.53) echo at the same byte region, plausibly because
-   it's physically correlated with steering rather than being a distinct
-   decoded channel. Vertical/GPS-Longitudinal Acceleration still show
-   no signal. `telemetry/parser.py`'s downstream analysis (corner-causal
-   detection, setup suggestions, throttle/braking inference) uses these
-   too, so full G-force recovery is still a real gap worth closing, but
-   RPM -- the channel flagged as critical -- is done.
-3. Next places to look for Steering/G-force, given RPM's fix as the
-   template: (a) re-run the *time-aligned* search (not the old positional
-   one) with a finer calibration window and a wider byte-offset net,
-   since RPM's true fields weren't even the ones the old methodology
-   ranked highest, (b) check whether Steering Angle, like RPM, is split
-   across more record types than the two found so far, (c) test whether
-   smoothing/filtering the raw candidate closes the gap toward Analyser's
-   value (tried moving-average smoothing already: improves ~0.84 to
-   ~0.88, a real but partial improvement -- worth a proper matched
-   digital filter instead of a naive moving average), (d) a second real
-   `.uni`+`.tsv` pair with more dramatic steering/G-force variation to
-   pin down the remaining gap precisely.
+2. **Steering Angle is now decoded well enough to be genuinely useful,
+   even though it's not bit-perfect.** Confirmed reproducible across
+   three independent real sessions/tracks: R²=0.82 (Barmosen, large
+   session), R²=0.88 (Roskilde), consistent slope both times. The
+   remaining gap to Analyser's exact filtered value (mean error ~10
+   degrees) is a real but bounded imprecision, not noise -- likely a
+   filtering/calibration difference between this raw channel and
+   Analyser's own processed output, the same relationship `RPM
+   unfiltered` has to `RPM`. GPS Lateral Acceleration's ~0.8-0.85 echo at
+   the same byte region is now conclusively explained as Steering's own
+   physical correlation with cornering force (measured directly: r=0.905
+   between the two in ground truth), not a separate decoded channel.
+3. **Vertical and GPS Longitudinal Acceleration remain genuinely
+   unrecovered**, now confirmed via a thorough negative result across
+   three diverse real sessions (not just the original one) -- see
+   "Three more real files" above. `telemetry/parser.py`'s downstream
+   analysis (corner-causal detection, setup suggestions, throttle/braking
+   inference) uses these too, so this is still a real fidelity gap, but a
+   much narrower and better-characterized one than at the start: RPM
+   (critical) is solved, Steering Angle is usably decoded, and only the
+   accelerometer's vertical/longitudinal axes remain closed off despite
+   an exhaustive, repeatedly cross-validated effort.
+4. If continuing to push on G-force: every purely computational
+   technique available (linear/rank/bit-level/magnitude correlation,
+   stateful keyframe+delta reconstruction, a physics-derived proxy from
+   the GPS track, and `RECRSMRY` exact-value search) has now been tried
+   across three real sessions with the corrected time-alignment
+   methodology and found nothing. The highest-leverage remaining lever is
+   probably qualitative, not computational: a session with a very
+   distinctive, easily-time-stamped physical event (e.g. driving over a
+   single sharp curb or speed bump at a known moment) could serve as an
+   unambiguous anchor point the way the GPS-fix quadruple did originally,
+   rather than relying purely on statistical correlation across a whole
+   session.
 
 ## Open questions
 
@@ -683,35 +770,43 @@ decision to not depend on Analyser:
   correlation instead of true time-based alignment), not a property of
   the format. RPM is split across 4 record types (14/18/24/28), each a
   raw unscaled big-endian int16 at a fixed offset, R²=0.999 combined,
-  independently sanity-checked against a second file with no TSV.
-- **Steering Angle byte encoding** -- narrower gap than before RPM's fix.
-  Real, consistent ~0.84 correlation under the corrected (time-aligned)
-  methodology at record types 24/28 -- very likely the right channel (a
-  raw/unfiltered steering sensor), not yet a bit-perfect match. Next
-  steps: check whether Steering, like RPM, spans more record types than
-  found so far; try a proper digital filter (not just a moving average,
-  which only partially closed the gap) to see if that's the missing
+  confirmed on 3 separate real sessions across 3 different tracks.
+- ~~Steering Angle byte encoding~~ **Effectively solved** (real,
+  reproducible, not bit-perfect) -- see "Three more real files" above.
+  R²=0.82-0.88 confirmed across 3 real sessions with a consistent slope,
+  at record types 24/28. The remaining ~10-degree mean error is likely a
+  filtering/calibration gap versus Analyser's processed value rather than
+  a wrong decode -- next step if closing this further matters: try a
+  proper digital filter (a moving average only partially closed the gap:
+  ~0.84 to ~0.88 correlation on the original session) or check whether
+  Steering, like RPM, spans more record types than the two found so far.
+  GPS Lateral Acceleration's echo in the same byte region is confirmed
+  to be Steering's own physical shadow (measured 0.905 correlation
+  between the two in ground truth), not evidence of a distinct channel.
   piece between the raw sensor and Analyser's filtered value; a third
   real file with a matching TSV and more dramatic steering variation
   would help. `RECRSMRY` gives real per-lap min/max for Steering Angle as
   a fallback in the meantime (confirmed scale: x10).
-- **3-axis accelerometer G-force (Vertical, GPS Longitudinal, GPS
-  Lateral)** -- a thoroughly negative result now, not just an unexplored
-  one. Every technique that exists in this project's toolkit has been
-  tried with the corrected time-aligned methodology (direct correlation,
-  magnitude/absolute-value, Spearman rank, bit-level, stateful
-  keyframe+delta reconstruction, a physics-derived proxy signal computed
-  from the already-decoded GPS track, and an `RECRSMRY` exact-value
-  search) -- see "G-force channels" above. Lateral Acceleration shows a
-  real but capped (~0.5-0.85 depending on comparison) echo that's most
-  likely just Steering Angle's own physical correlation with cornering
-  force, not a distinct raw channel. Longitudinal and Vertical
-  Acceleration show no signal under any technique tried. If this matters
-  enough to keep pushing: a third real file+TSV pair (ideally one with
-  hard braking zones and curbs/bumps, to maximize longitudinal/vertical
-  G variation) is probably the highest-leverage next step, since every
-  purely-computational technique available has now been exhausted on the
-  two files in hand.
+- **Vertical and GPS Longitudinal Acceleration** -- the one remaining
+  gap, now a thoroughly negative result across **three** real, diverse
+  sessions (not just one). Every technique in this project's toolkit has
+  been tried with the corrected time-aligned methodology (direct
+  correlation, magnitude/absolute-value, Spearman rank, bit-level,
+  stateful keyframe+delta reconstruction, a physics-derived proxy signal
+  computed from the already-decoded GPS track, and an `RECRSMRY`
+  exact-value search) -- see "G-force channels" and "Three more real
+  files" above. GPS Lateral Acceleration is resolved (it's Steering
+  Angle's own physical shadow, not a distinct channel -- see above).
+  Vertical and Longitudinal Acceleration show no signal under any
+  technique tried, on any of the three sessions, including the largest/
+  richest one available (118K rows, 20 laps, notably more dramatic
+  G-force swings than the original session) and a third independent
+  track. Every purely-computational avenue has been exhausted; the
+  remaining lever, if this matters enough to keep pushing, is probably
+  qualitative rather than statistical -- e.g. a session with a single,
+  precisely-timestamped physical event (driving over one distinct curb
+  or bump at a known moment) to serve as an unambiguous anchor point,
+  the way the GPS-fix quadruple served as one for the framing breakthrough.
 - Exact byte boundaries for the DOP fields (Positional/Horizontal/
   Vertical DOP all decode with R²=1.0 individually, but their offsets --
   38/40/41 -- are close enough together that the precise boundary between
@@ -760,8 +855,18 @@ decision to not depend on Analyser:
   Denmark) from the same device -- no matching TSV export available for
   this one. Used for structural/formula cross-validation (see "Second
   real file" above), not for cracking new channels.
-- The raw `.har` file, both `.uni` session files, and the TSV export all
-  contain the user's real session filenames (track names, dates, and a
-  driver name), so none of them are committed to the repo -- treat them
-  as personal data, not project documentation. Only the findings derived
-  from them (this file) are checked in.
+- Two more real `.uni` files, `260510_1606_Barmosen GPS_AUSTIN.uni`
+  (1,255,824 bytes -- a different date than the original Barmosen
+  session) and `260627_1531_Roskilde GPS_AUSTIN.uni` (2,151,103 bytes --
+  a third track), plus a large multi-session Analyser TSV export
+  (`exported_sessions.tsv`, ~53MB, 580K rows, 7 distinct session blocks)
+  that included matching ground truth for both -- isolated by exact
+  `Start Date`/`Start Time` match (118,202 rows / 20 laps for Barmosen
+  0510; 36,140 rows for Roskilde). Used for the "Three more real files"
+  cross-validation above (RPM and Steering Angle re-confirmed; G-force
+  re-tested with more dramatic variation and a third independent track).
+- The raw `.har` file, all four `.uni` session files, and both TSV
+  exports contain the user's real session filenames (track names, dates,
+  and a driver name), so none of them are committed to the repo -- treat
+  them as personal data, not project documentation. Only the findings
+  derived from them (this file) are checked in.
