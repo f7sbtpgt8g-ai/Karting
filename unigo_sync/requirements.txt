@@ -1,0 +1,10 @@
+# Dependencies for unigo_sync's portable core (core/) and CLI (cli.py) --
+# works on any OS. pandas/pyyaml are already in the repo's root
+# requirements.txt; requests is the one new dependency this adds.
+requests>=2.31
+pyyaml>=6.0
+pandas>=2.0
+numpy>=1.24
+
+# Windows platform layer (platform_windows/) needs more -- see
+# requirements-windows.txt, not needed for core/cli use on any OS.

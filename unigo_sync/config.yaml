@@ -1,0 +1,27 @@
+# unigo_sync configuration -- see core/config.py for defaults/schema.
+#
+# All values here are confirmed against a real device on firmware
+# 1.20.002 (see findings.md). If a firmware update changes an endpoint,
+# re-run the discovery harness (discovery/) against the updated device
+# and edit the relevant value below -- no code changes should be needed.
+
+base_url: "http://192.168.4.1"
+filelist_path: "/file?filelist"
+download_path_template: "/file?filename={name}"
+
+request_timeout_s: 15
+download_timeout_s: 60
+max_retries: 3
+retry_backoff_s: 2
+
+output_dir: "data/unigo_sync/incoming"
+sync_state_db: "data/unigo_sync/sync_state.db"
+log_path: "data/unigo_sync/sync.log"
+
+# How often the optional background watcher polls for new sessions while
+# connected to the device's WiFi. The device's own UI polls its listing
+# endpoint roughly every 6-20s without apparent issue, but keep this
+# conservative -- it's a small embedded system, not a server.
+poll_interval_s: 30
+
+wifi_ssid_prefix: "unigo-"

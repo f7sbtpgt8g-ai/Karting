@@ -1,0 +1,6 @@
+# Extra dependencies for the Windows platform layer (platform_windows/)
+# only -- not needed to use unigo_sync's portable core (core/) or CLI
+# (cli.py) on any OS. Install these in addition to requirements.txt.
+pystray>=0.19
+Pillow>=10.0
+pyinstaller>=6.0
