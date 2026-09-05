@@ -130,7 +130,7 @@ telemetry/            Parsing + analysis core (independently testable, no UI cod
   corner_engine.py                   Orchestrates the two above + complex/noise handling
   narrative.py                        Plain-language phrasing (templated or Anthropic-assisted)
   weather.py                            Track-conditions auto-detect (Open-Meteo, keyless/free)
-  accounts.py                            Driver profiles, attribution, claiming, visibility gate
+  accounts.py                            Driver profiles, attribution, claiming, visibility gate, teams
   auth.py                                 Registration/login/reset (Supabase or local provider)
   mailer.py                                Email templates + pluggable delivery
   storage.py                     Session library (history + corner/pattern trend logging) -- SQLite locally, Postgres/Supabase when configured
@@ -306,15 +306,18 @@ attribution" escape hatch as the safety valve.
 Sessions are **shared by default** -- the leaderboards and lap-comparison
 pool are only useful if there's something in them, and a private-by-default
 world leaves every new driver looking at an empty board. Sharing is a
-single toggle per session, reversible any time, from "My Sessions &
-Sharing." The Settings upload screen and every consent/invite email say
-this plainly before anyone commits to it, and the review screen offers a
-"keep this upload private for now" checkbox for anyone who wants to opt an
-upload out up front.
+single per-session setting, reversible any time, from "My Sessions &
+Sharing," with three tiers: **private** (only you and whoever uploaded
+it), **team** (also visible to fellow active members of your team -- see
+"Teams" below), and **shared** (also visible to everyone, the default).
+The Settings upload screen and every consent/invite email say this plainly
+before anyone commits to it, and the review screen offers a "keep this
+upload private for now" checkbox for anyone who wants to opt an upload out
+up front.
 
 A session is only actually visible to others when all of these hold,
 checked by one shared predicate (`PUBLIC_VISIBILITY_SQL` in `accounts.py`)
-that every query uses:
+that every leaderboard/shared-laps query uses:
 
 1. the driver has it set to shared (the default, unless they -- or the
    uploader, at upload time -- turned it off);
@@ -329,7 +332,48 @@ leaderboard or be selected as anyone's comparison reference until they
 claim the profile and choose for themselves. The asymmetry is deliberate:
 defaulting a *claimed* driver into sharing is reversible because they're
 present to reverse it; there's nobody who can do that on an unclaimed
-profile's behalf, so it stays gated instead.
+profile's behalf, so it stays gated instead. The same hard gate applies to
+team visibility too -- an unclaimed profile's data is never visible to a
+team, however a session was marked (`team_visibility_sql` in
+`accounts.py` carries the identical claimed-profile check).
+
+## Teams
+
+A team is a second, narrower sharing circle alongside the shared/private
+toggle above: a driver on a team can mark a session **'Team'** visibility
+so only fellow active members see it, without putting it on any public
+leaderboard or the shared-laps browser. It exists for a real team (a race
+team, a club, a group of training partners) that wants to compare telemetry
+internally without also broadcasting it.
+
+- A team has exactly one **manager** (who created it, unless ownership was
+  transferred) and any number of **admins**; everyone else is a plain
+  **member**. Only the manager can promote/demote roles or transfer the
+  manager role to someone else; a manager/admin can accept or reject join
+  requests and remove a plain member, but only the manager can remove or
+  demote an admin (so admins can't act on each other).
+- **Creating a team** (from the Team page) makes you its manager
+  immediately -- there's no one else yet to ask. A driver can only be
+  active on one team at a time.
+- **Joining a team is never instant.** A driver searches for a team and
+  requests to join, after explicitly confirming they understand that any
+  session they mark 'Team' or 'Shared' becomes visible to the team's other
+  members once accepted; a manager or admin then accepts or rejects the
+  request (`request_to_join_team`/`resolve_join_request` in
+  `accounts.py`) -- the same two-sided care (an explicit ask, then a
+  human accept) the cross-account attribution flow on the Settings page
+  already takes for a similar reason.
+- **The Team page** is the hub: roster, pending join requests and
+  role/removal controls for a manager/admin, and a per-track table of
+  each team member's best lap with a "use as reference lap" button into
+  Lap Comparison -- reusing the same comparison tools every other page
+  already has, rather than a separate one, since a team member's
+  'Team'/'Shared' sessions are already selectable everywhere else in the
+  app once `visible_sessions_for_user` includes them.
+- **Leaderboards** gained a "Teams" tab (each team's fastest member per
+  track, counting a session at 'Team' visibility even though it never
+  reaches the individual public board) and a "Team" column on the
+  individual board.
 
 ### Auth and email configuration
 
@@ -701,8 +745,9 @@ python scripts/ingest.py session1.tsv session2.tsv \
 ## Migrating the database layer to Supabase
 
 Every table this app uses (`sessions`, `laps`, `kart_setups`,
-`corner_metrics`, `pattern_instances`, `users`, `driver_profiles`,
-attribution/claim tables, `auth_tokens`/`auth_sessions`, `email_outbox`) has
+`corner_metrics`, `pattern_instances`, `users`, `driver_profiles`, `teams`,
+`team_memberships`, attribution/claim tables, `auth_tokens`/`auth_sessions`,
+`email_outbox`) has
 a Postgres-backed sibling implementation (`Supabase*` classes in
 `telemetry/storage.py`, `accounts.py`, `auth.py`, `mailer.py`), selected
 automatically over the local SQLite classes whenever `SUPABASE_DB_URL` (or

@@ -32,9 +32,16 @@ from telemetry.accounts import (
     CLAIM_CLAIMED,
     CLAIM_UNCLAIMED,
     CONSENT_GRANTED,
+    TEAM_MEMBERSHIP_ACTIVE,
+    TEAM_MEMBERSHIP_PENDING,
+    TEAM_ROLE_ADMIN,
+    TEAM_ROLE_MANAGER,
+    TEAM_ROLE_MEMBER,
+    VISIBILITY_CHOICES,
     VISIBILITY_DEFAULT,
     VISIBILITY_PRIVATE,
     VISIBILITY_SHARED,
+    VISIBILITY_TEAM,
     AccountLibrary,
     account_library_from_env,
     is_minor,
@@ -747,6 +754,10 @@ COLUMN_LABELS = {
     "saved_at": "Saved At",
     "rank": "Rank",
     "driver_display_name": "Driver",
+    "team_name": "Team",
+    "fastest_driver_name": "Fastest Driver",
+    "member_count": "Members",
+    "role": "Role",
     "qualifying_sessions": "Sessions",
     "track_condition": "Conditions",
     "kart_class": "Class",
@@ -2620,8 +2631,8 @@ def page_my_sessions() -> None:
     st.caption(
         "Everything filed under your driver profile. Sessions are shared by default -- a shared session is "
         "selectable as a comparison reference by other drivers and eligible for that track's leaderboard. "
-        "Switch any of them to private below; nothing else changes and it comes off the leaderboards straight "
-        "away."
+        "'Team' is a narrower middle ground, if you're on one: visible to your teammates only, off every "
+        "public leaderboard and the shared-laps browser. Change any of them below; it takes effect immediately."
     )
 
     contribution = accounts_lib.driver_contribution(int(current_profile["id"]))
@@ -2672,9 +2683,18 @@ def page_my_sessions() -> None:
         render_footer()
         return
 
+    # 'Team' is only offered as an option when there's an actual team to
+    # share with -- picking it with no team would be a silent no-op
+    # (identical to private, since no one else could ever match the
+    # team-visibility join), which is more confusing than just not
+    # offering it.
+    on_a_team = accounts_lib.get_active_membership_for_profile(int(current_profile["id"])) is not None
+    visibility_options = list(VISIBILITY_CHOICES) if on_a_team else [VISIBILITY_PRIVATE, VISIBILITY_SHARED]
+    visibility_labels = {VISIBILITY_PRIVATE: "Private", VISIBILITY_TEAM: "Team", VISIBILITY_SHARED: "Shared"}
+
     for _, row in owned.iterrows():
         with st.container(border=True):
-            info_col, toggle_col = st.columns([4, 1])
+            info_col, select_col = st.columns([3, 2])
             info_col.write(
                 f"**{row['track_name'] or 'Unknown track'}** — {row['start_date'] or '?'} {row['start_time'] or ''}"
             )
@@ -2682,12 +2702,13 @@ def page_my_sessions() -> None:
                 f"{int(row['n_laps'] or 0)} laps · best {row['best_lap_s']:.2f}s"
                 if pd.notna(row["best_lap_s"]) else f"{int(row['n_laps'] or 0)} laps"
             )
-            shared = row["visibility"] == VISIBILITY_SHARED
-            new_value = toggle_col.toggle("Shared", value=shared, key=f"share_{row['id']}")
-            if new_value != shared:
-                accounts_lib.set_session_visibility(
-                    int(row["id"]), VISIBILITY_SHARED if new_value else VISIBILITY_PRIVATE
-                )
+            current_visibility = row["visibility"] if row["visibility"] in visibility_options else VISIBILITY_PRIVATE
+            new_visibility = select_col.selectbox(
+                "Visibility", visibility_options, index=visibility_options.index(current_visibility),
+                format_func=lambda v: visibility_labels[v], key=f"share_{row['id']}", label_visibility="collapsed",
+            )
+            if new_visibility != row["visibility"]:
+                accounts_lib.set_session_visibility(int(row["id"]), new_visibility)
                 st.rerun()
     render_footer()
 
@@ -2799,12 +2820,186 @@ def page_shared_laps() -> None:
     render_footer()
 
 
+def page_team() -> None:
+    """Team hub: not on a team yet (browse/request-to-join, or create one
+    and become its manager), a pending request, or an active member's
+    roster + manager/admin tools + a per-track team comparison table.
+
+    A team is a second, narrower sharing circle alongside the existing
+    public shared/private toggle (see VISIBILITY_TEAM in accounts.py) --
+    joining one makes a driver's 'team'/'shared' sessions visible to
+    everyone else active on it, which is exactly why joining isn't instant:
+    it needs the driver's own explicit confirmation *and* a manager/admin's
+    acceptance, the same two-sided care the cross-account attribution flow
+    on the Settings page already takes.
+    """
+    profile_id = int(current_profile["id"])
+    membership = accounts_lib.get_membership_for_profile(profile_id)
+
+    if membership is None or membership["status"] not in (TEAM_MEMBERSHIP_PENDING, TEAM_MEMBERSHIP_ACTIVE):
+        _render_no_team_state(profile_id)
+        return
+
+    team = accounts_lib.get_team(int(membership["team_id"]))
+    if team is None:
+        _render_no_team_state(profile_id)
+        return
+
+    if membership["status"] == TEAM_MEMBERSHIP_PENDING:
+        st.subheader(f"👥 {team['name']}")
+        st.info("Your request to join is waiting for a manager or admin to accept it.")
+        if st.button("Withdraw request"):
+            accounts_lib.resolve_join_request(int(membership["id"]), accept=False, decided_by_user_id=current_user["id"])
+            st.rerun()
+        render_footer()
+        return
+
+    role = membership["role"]
+    st.subheader(f"👥 {team['name']}")
+    st.caption(f"You're this team's **{role}**.")
+
+    roster = accounts_lib.team_roster(int(team["id"]))
+    st.markdown("**Roster**")
+    st.dataframe(
+        prettify_columns(roster[["driver_display_name", "role"]]).rename(columns={"Driver": "Member"}),
+        width="stretch", hide_index=True,
+    )
+
+    if role in (TEAM_ROLE_MANAGER, TEAM_ROLE_ADMIN):
+        _render_team_management(team, roster, role, profile_id)
+
+    st.divider()
+    st.markdown("**Compare drivers on your team**")
+    st.caption(
+        "Best lap per driver per track, from sessions team members have set to 'Team' or 'Shared' visibility "
+        "(see 'My Sessions & Sharing'). Team members' sessions are also already selectable in every comparison "
+        "page's own session picker -- this table is just a quick per-track summary."
+    )
+    best_times = accounts_lib.team_track_best_times(int(team["id"]))
+    if best_times.empty:
+        st.info("No team-visible sessions yet -- once a member sets a session to 'Team' or 'Shared', it'll show up here.")
+    else:
+        track_options = sorted(best_times["track_name"].dropna().unique())
+        track_pick = st.selectbox("Track", track_options, key="team_track_pick")
+        subset = best_times[best_times["track_name"] == track_pick].sort_values("best_lap_s").reset_index(drop=True)
+        display = subset[["driver_display_name", "best_lap_s", "qualifying_sessions"]].copy()
+        display["best_lap_s"] = display["best_lap_s"].round(3)
+        st.dataframe(prettify_columns(display), width="stretch", hide_index=True)
+
+        picked = st.selectbox(
+            "Use as comparison reference", subset["session_db_id"],
+            format_func=lambda i, _s=subset: _s.set_index("session_db_id").loc[i, "driver_display_name"],
+            key="team_compare_pick",
+        )
+        if st.button("Set as reference lap", key="team_compare_set"):
+            st.session_state["lc_reference_session_db_id"] = int(picked)
+            st.success("Set. Open the Lap Comparison page to compare against it.")
+
+    if role == TEAM_ROLE_MEMBER:
+        st.divider()
+        if st.button("Leave team"):
+            accounts_lib.leave_team(profile_id)
+            st.rerun()
+    render_footer()
+
+
+def _render_no_team_state(profile_id: int) -> None:
+    st.subheader("👥 Team")
+    st.caption(
+        "Teams are a second, narrower way to share telemetry -- set a session to 'Team' visibility (from "
+        "'My Sessions & Sharing') and only your teammates see it, not the public leaderboard or shared-laps "
+        "browser. Joining needs both your own confirmation and a manager or admin's acceptance."
+    )
+    tab_join, tab_create = st.tabs(["Join a team", "Create a team"])
+
+    with tab_join:
+        query = st.text_input("Search teams by name", key="team_search")
+        teams = accounts_lib.list_teams(name_query=query.strip() or None)
+        if teams.empty:
+            st.caption("No teams match that search." if query.strip() else "No teams exist yet -- create one instead.")
+        else:
+            for _, row in teams.iterrows():
+                with st.container(border=True):
+                    st.write(f"**{row['name']}** — {int(row['member_count'])} member(s)")
+                    confirm_key = f"team_confirm_{row['id']}"
+                    confirmed = st.checkbox(
+                        "I understand that once accepted, any session I mark 'Team' or 'Shared' visibility "
+                        "becomes visible to every other active member of this team.",
+                        key=confirm_key,
+                    )
+                    if st.button("Request to join", key=f"team_join_{row['id']}", disabled=not confirmed, type="primary"):
+                        try:
+                            accounts_lib.request_to_join_team(int(row["id"]), profile_id)
+                        except ValueError as exc:
+                            st.error(str(exc))
+                        else:
+                            st.success("Request sent -- waiting for a manager or admin to accept it.")
+                            st.rerun()
+
+    with tab_create:
+        st.caption("You'll become this team's manager immediately -- there's no one else yet to ask.")
+        name = st.text_input("Team name", key="team_create_name")
+        if st.button("Create team", type="primary", disabled=not name.strip()):
+            try:
+                accounts_lib.create_team(name.strip(), current_user["id"])
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                st.success(f"Created '{name.strip()}'.")
+                st.rerun()
+    render_footer()
+
+
+def _render_team_management(team: dict, roster: pd.DataFrame, role: str, profile_id: int) -> None:
+    """Manager/admin tools: accept/reject pending join requests, and manage
+    other members. Promoting/demoting/removing an admin and transferring
+    the manager role are manager-only -- an admin can still remove a plain
+    member and decide join requests, but can't act on a fellow admin, to
+    keep "N admins" from being able to unilaterally out-vote each other."""
+    st.divider()
+    st.markdown("**Manage team**")
+
+    pending = accounts_lib.pending_join_requests_for_team(int(team["id"]))
+    if not pending.empty:
+        st.markdown("*Pending join requests*")
+        for _, req in pending.iterrows():
+            with st.container(border=True):
+                st.write(f"**{req['driver_display_name']}**")
+                accept_col, reject_col, _ = st.columns([1, 1, 4])
+                if accept_col.button("Accept", key=f"team_accept_{req['id']}", type="primary"):
+                    accounts_lib.resolve_join_request(int(req["id"]), accept=True, decided_by_user_id=current_user["id"])
+                    st.rerun()
+                if reject_col.button("Reject", key=f"team_reject_{req['id']}"):
+                    accounts_lib.resolve_join_request(int(req["id"]), accept=False, decided_by_user_id=current_user["id"])
+                    st.rerun()
+
+    others = roster[roster["driver_profile_id"] != profile_id]
+    if others.empty:
+        return
+    st.markdown("*Members*")
+    for _, member in others.iterrows():
+        with st.container(border=True):
+            c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+            c1.write(f"{member['driver_display_name']} — {member['role']}")
+            member_role = member["role"]
+            if role == TEAM_ROLE_MANAGER:
+                if member_role == TEAM_ROLE_MEMBER and c2.button("Make admin", key=f"team_promote_{member['id']}"):
+                    accounts_lib.set_member_role(int(member["id"]), TEAM_ROLE_ADMIN)
+                    st.rerun()
+                if member_role == TEAM_ROLE_ADMIN and c2.button("Make member", key=f"team_demote_{member['id']}"):
+                    accounts_lib.set_member_role(int(member["id"]), TEAM_ROLE_MEMBER)
+                    st.rerun()
+                if c4.button("Transfer manager here", key=f"team_transfer_{member['id']}"):
+                    accounts_lib.transfer_team_manager(int(team["id"]), int(member["id"]))
+                    st.rerun()
+            can_remove = member_role == TEAM_ROLE_MEMBER or role == TEAM_ROLE_MANAGER
+            if can_remove and c3.button("Remove", key=f"team_remove_{member['id']}"):
+                accounts_lib.remove_team_member(int(member["id"]), current_user["id"])
+                st.rerun()
+
+
 def page_leaderboards() -> None:
     st.subheader("Leaderboards")
-    st.caption(
-        "Best lap per driver at each track, from sessions drivers are sharing. Sessions anyone has switched to "
-        "private never appear, and neither does data belonging to a profile nobody has claimed yet."
-    )
 
     stats = accounts_lib.community_stats()
     if stats["shared_sessions"]:
@@ -2813,40 +3008,75 @@ def page_leaderboards() -> None:
         sc2.metric("Shared sessions", stats["shared_sessions"])
         sc3.metric("Tracks", stats["tracks"])
 
-    tracks = accounts_lib.leaderboard_tracks()
-    if not tracks:
-        st.info(
-            "No shared sessions yet, so there's nothing to rank. Upload a session -- they're shared by "
-            "default -- and this is where you'll see how you stack up."
+    tab_individual, tab_teams = st.tabs(["Individual", "Teams"])
+
+    with tab_individual:
+        st.caption(
+            "Best lap per driver at each track, from sessions drivers are sharing. Sessions anyone has switched "
+            "to private (or team-only) never appear here, and neither does data belonging to a profile nobody "
+            "has claimed yet."
         )
-        render_footer()
-        return
+        tracks = accounts_lib.leaderboard_tracks()
+        if not tracks:
+            st.info(
+                "No shared sessions yet, so there's nothing to rank. Upload a session -- they're shared by "
+                "default -- and this is where you'll see how you stack up."
+            )
+        else:
+            fc1, fc2, fc3 = st.columns(3)
+            track = fc1.selectbox("Track", tracks, key="lb_track")
+            condition = fc2.selectbox("Conditions", ["Overall"] + CONDITION_OPTIONS, key="lb_conditions")
+            classes = sorted(
+                {c for c in accounts_lib.shareable_reference_sessions(track_name=track)["kart_class"].dropna().unique()}
+            )
+            kart_class = fc3.selectbox("Class", ["All classes"] + classes, key="lb_class")
 
-    fc1, fc2, fc3 = st.columns(3)
-    track = fc1.selectbox("Track", tracks, key="lb_track")
-    condition = fc2.selectbox("Conditions", ["Overall"] + CONDITION_OPTIONS, key="lb_conditions")
-    classes = sorted(
-        {
-            c for c in accounts_lib.shareable_reference_sessions(track_name=track)["kart_class"].dropna().unique()
-        }
-    )
-    kart_class = fc3.selectbox("Class", ["All classes"] + classes, key="lb_class")
+            board = accounts_lib.leaderboard(
+                track,
+                track_condition=None if condition == "Overall" else condition,
+                kart_class=None if kart_class == "All classes" else kart_class,
+            )
+            if board.empty:
+                st.info("Nothing on this board with those filters yet.")
+            else:
+                display = board[["rank", "driver_display_name", "team_name", "best_lap_s", "qualifying_sessions"]].copy()
+                display["team_name"] = display["team_name"].fillna("—")
+                display["best_lap_s"] = display["best_lap_s"].round(3)
+                st.dataframe(prettify_columns(display), width="stretch", hide_index=True)
+                if condition == "Overall":
+                    st.caption("'Overall' pools every condition and ranks on time alone -- wet and dry laps compete directly.")
 
-    board = accounts_lib.leaderboard(
-        track,
-        track_condition=None if condition == "Overall" else condition,
-        kart_class=None if kart_class == "All classes" else kart_class,
-    )
-    if board.empty:
-        st.info("Nothing on this board with those filters yet.")
-        render_footer()
-        return
+    with tab_teams:
+        st.caption(
+            "Each team's fastest member at each track. Unlike the individual board, a session only needs to be "
+            "'Team' or 'Shared' visibility to count here -- not necessarily on the public board too."
+        )
+        team_tracks = accounts_lib.team_leaderboard_tracks()
+        if not team_tracks:
+            st.info("No team-visible sessions yet -- see the Team page to create or join a team.")
+            render_footer()
+            return
 
-    display = board[["rank", "driver_display_name", "best_lap_s", "qualifying_sessions"]].copy()
-    display["best_lap_s"] = display["best_lap_s"].round(3)
-    st.dataframe(prettify_columns(display), width="stretch", hide_index=True)
-    if condition == "Overall":
-        st.caption("'Overall' pools every condition and ranks on time alone -- wet and dry laps compete directly.")
+        tfc1, tfc2, tfc3 = st.columns(3)
+        t_track = tfc1.selectbox("Track", team_tracks, key="team_lb_track")
+        t_condition = tfc2.selectbox("Conditions", ["Overall"] + CONDITION_OPTIONS, key="team_lb_conditions")
+        t_classes = sorted(
+            {c for c in accounts_lib.shareable_reference_sessions(track_name=t_track)["kart_class"].dropna().unique()}
+        )
+        t_kart_class = tfc3.selectbox("Class", ["All classes"] + t_classes, key="team_lb_class")
+
+        team_board = accounts_lib.team_leaderboard(
+            t_track,
+            track_condition=None if t_condition == "Overall" else t_condition,
+            kart_class=None if t_kart_class == "All classes" else t_kart_class,
+        )
+        if team_board.empty:
+            st.info("Nothing on this board with those filters yet.")
+        else:
+            t_display = team_board[["rank", "team_name", "fastest_driver_name", "best_lap_s", "qualifying_sessions"]].copy()
+            t_display["best_lap_s"] = t_display["best_lap_s"].round(3)
+            st.dataframe(prettify_columns(t_display), width="stretch", hide_index=True)
+
     render_footer()
 
 
@@ -3219,6 +3449,7 @@ st.sidebar.title("🏎️ Karting Telemetry")
 page_overview_obj = st.Page(page_overview, title="Top 3 Focus Areas", icon="🎯", default=True)
 page_my_sessions_obj = st.Page(page_my_sessions, title="My Sessions & Sharing", icon="🔒")
 page_shared_laps_obj = st.Page(page_shared_laps, title="Shared Laps", icon="🤝")
+page_team_obj = st.Page(page_team, title="Team", icon="👥")
 page_leaderboards_obj = st.Page(page_leaderboards, title="Leaderboards", icon="🏆")
 page_find_profile_obj = st.Page(page_find_profile, title="Find My Profile", icon="🔍")
 page_lap_times_obj = st.Page(page_lap_times, title="Lap Times", icon="⏱️")
@@ -3243,13 +3474,18 @@ nav = st.navigation(
             page_braking_rpm_obj, page_corner_comparison_obj, page_lap_comparison_obj, page_recurring_patterns_obj,
             page_gearing_simulation_obj, page_consistency_obj, page_progression_obj, page_kart_setup_obj, page_history_obj,
         ],
-        "Community": [page_shared_laps_obj, page_leaderboards_obj],
+        "Community": [page_shared_laps_obj, page_team_obj, page_leaderboards_obj],
         "Account": [page_my_sessions_obj, page_find_profile_obj, page_settings_obj],
     }
 )
 
 st.sidebar.divider()
 st.sidebar.caption(f"Signed in as **{current_profile['display_name']}**")
+_active_team_membership = accounts_lib.get_active_membership_for_profile(int(current_profile["id"]))
+if _active_team_membership is not None:
+    _active_team = accounts_lib.get_team(int(_active_team_membership["team_id"]))
+    if _active_team is not None:
+        st.sidebar.caption(f"Team: **{_active_team['name']}** ({_active_team_membership['role']})")
 if st.sidebar.button("Sign out"):
     sign_out()
     st.rerun()

@@ -65,7 +65,12 @@ CLAIM_INVITED = "invited"
 CLAIM_CLAIMED = "claimed"
 
 VISIBILITY_PRIVATE = "private"
+# Visible to fellow active members of the owning driver's team (see
+# `TEAM_VISIBILITY_SQL` below), but not on any public leaderboard or the
+# shared-laps browser -- the middle tier between "just me" and "everyone."
+VISIBILITY_TEAM = "team"
 VISIBILITY_SHARED = "shared"
+VISIBILITY_CHOICES = (VISIBILITY_PRIVATE, VISIBILITY_TEAM, VISIBILITY_SHARED)
 
 # New sessions are shared by default: the comparison and leaderboard
 # features are only worth anything if there is something in the pool to
@@ -75,6 +80,27 @@ VISIBILITY_SHARED = "shared"
 # driver who has no account yet cannot be opted in by anyone else, since
 # "you can always unshare" is meaningless for someone with no way to.
 VISIBILITY_DEFAULT = VISIBILITY_SHARED
+
+# A team has exactly one manager at a time (ownership moves via
+# `transfer_team_manager`, never by having two) and any number of admins;
+# everyone else is a plain member. Only meaningful on a row with status
+# TEAM_MEMBERSHIP_ACTIVE.
+TEAM_ROLE_MANAGER = "manager"
+TEAM_ROLE_ADMIN = "admin"
+TEAM_ROLE_MEMBER = "member"
+
+# A driver requesting to join lands here first -- joining is never
+# instant, mirroring the cross-account attribution flow above, because
+# active membership makes a driver's team-visible sessions visible to
+# everyone else already on the team. A manager/admin decides accept vs.
+# reject; TEAM_MEMBERSHIP_LEFT/REMOVED distinguish "they left on their own"
+# from "a manager/admin removed them" without deleting the row, so past
+# membership stays answerable.
+TEAM_MEMBERSHIP_PENDING = "pending"
+TEAM_MEMBERSHIP_ACTIVE = "active"
+TEAM_MEMBERSHIP_REJECTED = "rejected"
+TEAM_MEMBERSHIP_LEFT = "left"
+TEAM_MEMBERSHIP_REMOVED = "removed"
 
 ATTRIBUTION_CONFIRMED = "confirmed"
 ATTRIBUTION_PENDING = "pending_confirmation"
@@ -169,6 +195,36 @@ CREATE TABLE IF NOT EXISTS attribution_reports (
     status TEXT NOT NULL DEFAULT 'open',
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS teams (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    created_by_user_id INTEGER,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (created_by_user_id) REFERENCES users (id)
+);
+
+-- One row per (team, driver_profile) join attempt/membership. A given
+-- profile should have at most one row with status 'pending' or 'active'
+-- at a time -- enforced in Python (see `request_to_join_team`), not a DB
+-- constraint, since "at most one of several statuses" doesn't express
+-- portably as a partial unique index across both SQLite and Postgres.
+-- Historical rows (rejected/left/removed) are kept rather than deleted, so
+-- "who used to be on this team" stays answerable, the same reasoning
+-- `attribution_requests` above already applies.
+CREATE TABLE IF NOT EXISTS team_memberships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER NOT NULL,
+    driver_profile_id INTEGER NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member',
+    status TEXT NOT NULL DEFAULT 'pending',
+    requested_at TEXT NOT NULL,
+    decided_at TEXT,
+    decided_by_user_id INTEGER,
+    FOREIGN KEY (team_id) REFERENCES teams (id),
+    FOREIGN KEY (driver_profile_id) REFERENCES driver_profiles (id),
+    FOREIGN KEY (decided_by_user_id) REFERENCES users (id)
+);
 """
 
 # The one and only definition of "this session may be seen by someone other
@@ -190,6 +246,55 @@ PUBLIC_VISIBILITY_SQL = (
     "AND p.claim_status = 'claimed' "
     "AND p.user_id IS NOT NULL"
 )
+
+
+def team_visibility_sql(viewer_user_id_placeholder: str) -> str:
+    """"This session is visible to a specific viewer because they're an
+    active member of the same team as the session's owning driver" --
+    the team analogue of `PUBLIC_VISIBILITY_SQL`, but parameterized on the
+    *viewer* (there's no single team-scoped fragment, since visibility here
+    depends on who's asking) so it takes the query's own placeholder style
+    (`?` for SQLite, `%s` for Postgres) rather than a bound value.
+
+    Requires `sessions s` JOINed to `driver_profiles p` on p.id =
+    s.driver_profile_id, same as `PUBLIC_VISIBILITY_SQL`. A session with
+    visibility 'shared' already satisfies this too (any team member is
+    also "everyone"), but that's harmless duplication where both fragments
+    are OR'd together, not a bug.
+    """
+    return (
+        "EXISTS ("
+        "  SELECT 1 FROM team_memberships tm_owner "
+        "  JOIN team_memberships tm_viewer ON tm_viewer.team_id = tm_owner.team_id "
+        "  JOIN driver_profiles viewer_p ON viewer_p.id = tm_viewer.driver_profile_id "
+        "  WHERE tm_owner.driver_profile_id = s.driver_profile_id "
+        "    AND tm_owner.status = 'active' AND tm_viewer.status = 'active' "
+        f"    AND viewer_p.user_id = {viewer_user_id_placeholder}"
+        ") "
+        "AND s.visibility IN ('team', 'shared') "
+        "AND s.attribution_status = 'confirmed' "
+        "AND p.claim_status = 'claimed' "
+        "AND p.user_id IS NOT NULL"
+    )
+
+
+def team_pool_visibility_sql(team_id_placeholder: str) -> str:
+    """"This session belongs to an active member of team X and that
+    member has made it at least team-visible" -- used for team-scoped
+    queries (the team leaderboard, a team's per-track best times) where
+    there's no individual viewer, just a team. Same JOIN requirement as
+    `PUBLIC_VISIBILITY_SQL`."""
+    return (
+        "EXISTS ("
+        "  SELECT 1 FROM team_memberships tm "
+        "  WHERE tm.driver_profile_id = s.driver_profile_id AND tm.status = 'active' "
+        f"    AND tm.team_id = {team_id_placeholder}"
+        ") "
+        "AND s.visibility IN ('team', 'shared') "
+        "AND s.attribution_status = 'confirmed' "
+        "AND p.claim_status = 'claimed' "
+        "AND p.user_id IS NOT NULL"
+    )
 
 
 def _now() -> str:
@@ -596,7 +701,7 @@ class AccountLibrary:
     # ---------------------------------------------------------- visibility
 
     def set_session_visibility(self, session_db_id: int, visibility: str) -> None:
-        if visibility not in (VISIBILITY_PRIVATE, VISIBILITY_SHARED):
+        if visibility not in VISIBILITY_CHOICES:
             raise ValueError(f"Unknown visibility {visibility!r}")
         with self._connect() as conn:
             conn.execute("UPDATE sessions SET visibility = ? WHERE id = ?", (visibility, session_db_id))
@@ -619,8 +724,9 @@ class AccountLibrary:
         """Every session a given account may open: their own driver
         profile's confirmed sessions, anything they uploaded themselves
         (including placeholders they created and attributions still awaiting
-        someone else's confirmation), plus everything publicly shared by
-        other claimed drivers."""
+        someone else's confirmation), everything publicly shared by other
+        claimed drivers, and anything a fellow active team member has made
+        at least team-visible (see `team_visibility_sql`)."""
         with self._connect() as conn:
             return pd.read_sql_query(
                 f"""SELECT s.*, p.display_name AS driver_display_name, p.claim_status
@@ -629,8 +735,9 @@ class AccountLibrary:
                     WHERE (p.user_id IS NOT NULL AND p.user_id = ? AND s.attribution_status = 'confirmed')
                        OR s.uploaded_by_user_id = ?
                        OR ({PUBLIC_VISIBILITY_SQL})
+                       OR ({team_visibility_sql('?')})
                     ORDER BY s.start_date, s.start_time""",
-                conn, params=(user_id, user_id),
+                conn, params=(user_id, user_id, user_id),
             )
 
     def sessions_for_profile(self, driver_profile_id: int, include_pending: bool = False) -> pd.DataFrame:
@@ -703,7 +810,9 @@ class AccountLibrary:
         query = f"""
             SELECT p.id AS driver_profile_id, p.display_name AS driver_display_name,
                    MIN(s.best_lap_s) AS best_lap_s, s.track_name,
-                   COUNT(*) AS qualifying_sessions
+                   COUNT(*) AS qualifying_sessions,
+                   (SELECT t.name FROM team_memberships tm JOIN teams t ON t.id = tm.team_id
+                    WHERE tm.driver_profile_id = p.id AND tm.status = 'active' LIMIT 1) AS team_name
             FROM sessions s
             JOIN driver_profiles p ON p.id = s.driver_profile_id
             WHERE {PUBLIC_VISIBILITY_SQL}
@@ -799,6 +908,286 @@ class AccountLibrary:
                     ORDER BY s.track_name"""
             ).fetchall()
         return [r[0] for r in rows]
+
+    def team_leaderboard_tracks(self) -> list[str]:
+        """Tracks with at least one team-leaderboard-eligible session --
+        a different set from `leaderboard_tracks()`, since a session only
+        needs to be team-visible (not necessarily publicly 'shared') to
+        count on a team leaderboard, as long as its owner is an active
+        member of *some* team."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT DISTINCT s.track_name FROM sessions s
+                   JOIN driver_profiles p ON p.id = s.driver_profile_id
+                   JOIN team_memberships tm ON tm.driver_profile_id = p.id AND tm.status = 'active'
+                   WHERE s.visibility IN ('team', 'shared') AND s.attribution_status = 'confirmed'
+                     AND p.claim_status = 'claimed' AND p.user_id IS NOT NULL AND s.track_name IS NOT NULL
+                   ORDER BY s.track_name"""
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    # ---------------------------------------------------------------- teams
+
+    def create_team(self, name: str, created_by_user_id: int) -> int:
+        """Create a team and make the creating account its manager,
+        immediately and without a request step -- there's no one else yet
+        to ask. `created_by_user_id` must have a driver profile (every
+        registered account does)."""
+        creator_profile = self.get_profile_for_user(created_by_user_id)
+        if creator_profile is None:
+            raise ValueError("Only a registered driver with a profile can create a team.")
+        existing = self.get_active_membership_for_profile(int(creator_profile["id"]))
+        if existing is not None:
+            raise ValueError("You're already on a team -- leave it first (or transfer ownership) before creating a new one.")
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO teams (name, created_by_user_id, created_at) VALUES (?, ?, ?)",
+                (name, created_by_user_id, _now()),
+            )
+            team_id = int(cur.lastrowid)
+            conn.execute(
+                """INSERT INTO team_memberships
+                   (team_id, driver_profile_id, role, status, requested_at, decided_at, decided_by_user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (team_id, int(creator_profile["id"]), TEAM_ROLE_MANAGER, TEAM_MEMBERSHIP_ACTIVE, _now(), _now(), created_by_user_id),
+            )
+            conn.commit()
+        return team_id
+
+    def get_team(self, team_id: int) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM teams WHERE id = ?", (team_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_teams(self, name_query: str | None = None) -> pd.DataFrame:
+        """Every team, with its current member count -- the browse/search
+        list for "find a team to join". Includes teams with zero members
+        (shouldn't normally happen, since creating one adds the manager,
+        but a team the manager later left without transferring shouldn't
+        just vanish from search)."""
+        query = """
+            SELECT t.*, COUNT(tm.id) AS member_count
+            FROM teams t
+            LEFT JOIN team_memberships tm ON tm.team_id = t.id AND tm.status = 'active'
+            WHERE 1=1
+        """
+        params: tuple = ()
+        if name_query:
+            query += " AND LOWER(t.name) LIKE ?"
+            params += (f"%{name_query.strip().lower()}%",)
+        query += " GROUP BY t.id ORDER BY t.name"
+        with self._connect() as conn:
+            return pd.read_sql_query(query, conn, params=params)
+
+    def get_membership_for_profile(self, driver_profile_id: int) -> dict | None:
+        """The most recent membership row for this profile, whatever its
+        status -- used to show "your pending request" or "you left team X"
+        state, not just active membership."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM team_memberships WHERE driver_profile_id = ? ORDER BY requested_at DESC LIMIT 1",
+                (driver_profile_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_active_membership_for_profile(self, driver_profile_id: int) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM team_memberships WHERE driver_profile_id = ? AND status = ?",
+                (driver_profile_id, TEAM_MEMBERSHIP_ACTIVE),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def request_to_join_team(self, team_id: int, driver_profile_id: int) -> int:
+        """File a join request as pending -- never instant, since an
+        active membership makes this driver's team-visible sessions
+        visible to everyone else already on the team, so a manager/admin
+        gets to say yes first (see `resolve_join_request`)."""
+        if self.get_team(team_id) is None:
+            raise KeyError(f"No team {team_id}")
+        existing = self.get_membership_for_profile(driver_profile_id)
+        if existing is not None and existing["status"] in (TEAM_MEMBERSHIP_PENDING, TEAM_MEMBERSHIP_ACTIVE):
+            if int(existing["team_id"]) == team_id:
+                raise ValueError("You already have a request or membership for this team.")
+            raise ValueError("You're already on (or waiting on) another team -- leave it first.")
+        with self._connect() as conn:
+            cur = conn.execute(
+                """INSERT INTO team_memberships (team_id, driver_profile_id, role, status, requested_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (team_id, driver_profile_id, TEAM_ROLE_MEMBER, TEAM_MEMBERSHIP_PENDING, _now()),
+            )
+            conn.commit()
+            return int(cur.lastrowid)
+
+    def pending_join_requests_for_team(self, team_id: int) -> pd.DataFrame:
+        with self._connect() as conn:
+            return pd.read_sql_query(
+                """SELECT tm.*, p.display_name AS driver_display_name
+                   FROM team_memberships tm
+                   JOIN driver_profiles p ON p.id = tm.driver_profile_id
+                   WHERE tm.team_id = ? AND tm.status = ?
+                   ORDER BY tm.requested_at""",
+                conn, params=(team_id, TEAM_MEMBERSHIP_PENDING),
+            )
+
+    def resolve_join_request(self, membership_id: int, accept: bool, decided_by_user_id: int) -> None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM team_memberships WHERE id = ?", (membership_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"No team membership request {membership_id}")
+            if row["status"] != TEAM_MEMBERSHIP_PENDING:
+                raise ValueError("That request has already been decided.")
+            conn.execute(
+                "UPDATE team_memberships SET status = ?, decided_at = ?, decided_by_user_id = ? WHERE id = ?",
+                (TEAM_MEMBERSHIP_ACTIVE if accept else TEAM_MEMBERSHIP_REJECTED, _now(), decided_by_user_id, membership_id),
+            )
+            conn.commit()
+
+    def team_roster(self, team_id: int) -> pd.DataFrame:
+        """Active members of a team, manager first, then admins, then
+        members, alphabetically within each role."""
+        with self._connect() as conn:
+            return pd.read_sql_query(
+                """SELECT tm.*, p.display_name AS driver_display_name
+                   FROM team_memberships tm
+                   JOIN driver_profiles p ON p.id = tm.driver_profile_id
+                   WHERE tm.team_id = ? AND tm.status = 'active'
+                   ORDER BY CASE tm.role WHEN 'manager' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, p.display_name""",
+                conn, params=(team_id,),
+            )
+
+    def set_member_role(self, membership_id: int, new_role: str) -> None:
+        """Promote/demote between admin and plain member. Manager status
+        moves only through `transfer_team_manager` -- never set here,
+        since a team having two managers (or none) is exactly the
+        invariant that method exists to protect."""
+        if new_role not in (TEAM_ROLE_ADMIN, TEAM_ROLE_MEMBER):
+            raise ValueError(f"Use transfer_team_manager to change the manager, not set_member_role({new_role!r}).")
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM team_memberships WHERE id = ?", (membership_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"No team membership {membership_id}")
+            if row["status"] != TEAM_MEMBERSHIP_ACTIVE:
+                raise ValueError("Only an active member's role can be changed.")
+            if row["role"] == TEAM_ROLE_MANAGER:
+                raise ValueError("The manager's role can't be changed directly -- transfer ownership first.")
+            conn.execute("UPDATE team_memberships SET role = ? WHERE id = ?", (new_role, membership_id))
+            conn.commit()
+
+    def transfer_team_manager(self, team_id: int, new_manager_membership_id: int) -> None:
+        """Move the manager role to a different active member of the same
+        team, demoting the outgoing manager to admin (not plain member --
+        they're presumably still a trusted senior member of the team)."""
+        with self._connect() as conn:
+            new_manager = conn.execute(
+                "SELECT * FROM team_memberships WHERE id = ?", (new_manager_membership_id,)
+            ).fetchone()
+            if new_manager is None or int(new_manager["team_id"]) != team_id or new_manager["status"] != TEAM_MEMBERSHIP_ACTIVE:
+                raise ValueError("That's not an active member of this team.")
+            conn.execute(
+                "UPDATE team_memberships SET role = ? WHERE team_id = ? AND role = ? AND status = ?",
+                (TEAM_ROLE_ADMIN, team_id, TEAM_ROLE_MANAGER, TEAM_MEMBERSHIP_ACTIVE),
+            )
+            conn.execute(
+                "UPDATE team_memberships SET role = ? WHERE id = ?", (TEAM_ROLE_MANAGER, new_manager_membership_id)
+            )
+            conn.commit()
+
+    def remove_team_member(self, membership_id: int, removed_by_user_id: int) -> None:
+        """A manager/admin removing someone else -- as opposed to
+        `leave_team`, which is the member's own choice. The manager can't
+        be removed this way (transfer ownership first), same guard as
+        `leave_team`."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM team_memberships WHERE id = ?", (membership_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"No team membership {membership_id}")
+            if row["status"] != TEAM_MEMBERSHIP_ACTIVE:
+                raise ValueError("That member is no longer active.")
+            if row["role"] == TEAM_ROLE_MANAGER:
+                raise ValueError("The manager can't be removed -- transfer ownership first.")
+            conn.execute(
+                "UPDATE team_memberships SET status = ?, decided_at = ?, decided_by_user_id = ? WHERE id = ?",
+                (TEAM_MEMBERSHIP_REMOVED, _now(), removed_by_user_id, membership_id),
+            )
+            conn.commit()
+
+    def leave_team(self, driver_profile_id: int) -> None:
+        membership = self.get_active_membership_for_profile(driver_profile_id)
+        if membership is None:
+            raise KeyError("Not an active member of any team.")
+        if membership["role"] == TEAM_ROLE_MANAGER:
+            raise ValueError("The manager can't leave directly -- transfer ownership to someone else first.")
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE team_memberships SET status = ?, decided_at = ? WHERE id = ?",
+                (TEAM_MEMBERSHIP_LEFT, _now(), int(membership["id"])),
+            )
+            conn.commit()
+
+    def team_track_best_times(self, team_id: int, track_name: str | None = None) -> pd.DataFrame:
+        """Each active team member's best lap per track (their own
+        qualifying sessions only, at least team-visible) -- the table the
+        Team page's "compare drivers" view is built on, including the
+        `session_db_id` of that best lap so the caller can offer it as a
+        comparison reference the same way the Shared Laps page does.
+        Filter to one track, or leave it open to see the whole team's
+        spread across every track they've driven."""
+        query = f"""
+            SELECT * FROM (
+                SELECT p.id AS driver_profile_id, p.display_name AS driver_display_name,
+                       s.track_name, s.best_lap_s, s.id AS session_db_id,
+                       ROW_NUMBER() OVER (PARTITION BY p.id, s.track_name ORDER BY s.best_lap_s) AS rn,
+                       COUNT(*) OVER (PARTITION BY p.id, s.track_name) AS qualifying_sessions
+                FROM sessions s
+                JOIN driver_profiles p ON p.id = s.driver_profile_id
+                WHERE {team_pool_visibility_sql('?')} AND s.best_lap_s IS NOT NULL
+        """
+        params: tuple = (team_id,)
+        if track_name:
+            query += " AND s.track_name = ?"
+            params += (track_name,)
+        query += " ) ranked WHERE rn = 1 ORDER BY track_name, best_lap_s"
+        with self._connect() as conn:
+            board = pd.read_sql_query(query, conn, params=params)
+        return board.drop(columns=["rn"]) if not board.empty else board
+
+    def team_leaderboard(
+        self, track_name: str, track_condition: str | None = None, kart_class: str | None = None, limit: int = 50,
+    ) -> pd.DataFrame:
+        """Best lap per *team* at one track -- each team's fastest member
+        and their time, ranked fastest-first. Same eligibility rule as the
+        per-driver leaderboard, except a session only needs to be
+        team-visible (not necessarily publicly 'shared') to count here."""
+        query = f"""
+            SELECT * FROM (
+                SELECT tm.team_id, t.name AS team_name, p.display_name AS fastest_driver_name,
+                       s.best_lap_s, s.track_name,
+                       ROW_NUMBER() OVER (PARTITION BY tm.team_id ORDER BY s.best_lap_s) AS rn,
+                       COUNT(*) OVER (PARTITION BY tm.team_id) AS qualifying_sessions
+                FROM sessions s
+                JOIN driver_profiles p ON p.id = s.driver_profile_id
+                JOIN team_memberships tm ON tm.driver_profile_id = p.id AND tm.status = 'active'
+                JOIN teams t ON t.id = tm.team_id
+                WHERE s.visibility IN ('team', 'shared') AND s.attribution_status = 'confirmed'
+                  AND p.claim_status = 'claimed' AND p.user_id IS NOT NULL
+                  AND s.track_name = ? AND s.best_lap_s IS NOT NULL
+        """
+        params: tuple = (track_name,)
+        if track_condition:
+            query += " AND s.track_condition = ?"
+            params += (track_condition,)
+        if kart_class:
+            query += " AND s.kart_class = ?"
+            params += (kart_class,)
+        query += " ) ranked WHERE rn = 1 ORDER BY best_lap_s LIMIT ?"
+        params += (limit,)
+        with self._connect() as conn:
+            board = pd.read_sql_query(query, conn, params=params)
+        if not board.empty:
+            board = board.drop(columns=["rn"])
+            board.insert(0, "rank", range(1, len(board) + 1))
+        return board
 
 
 class SupabaseAccountLibrary:
@@ -1133,7 +1522,7 @@ class SupabaseAccountLibrary:
     # ---------------------------------------------------------- visibility
 
     def set_session_visibility(self, session_db_id: int, visibility: str) -> None:
-        if visibility not in (VISIBILITY_PRIVATE, VISIBILITY_SHARED):
+        if visibility not in VISIBILITY_CHOICES:
             raise ValueError(f"Unknown visibility {visibility!r}")
         with pgdb.connect() as conn:
             cur = conn.cursor()
@@ -1162,8 +1551,9 @@ class SupabaseAccountLibrary:
                     WHERE (p.user_id IS NOT NULL AND p.user_id = %s AND s.attribution_status = 'confirmed')
                        OR s.uploaded_by_user_id = %s
                        OR ({PUBLIC_VISIBILITY_SQL})
+                       OR ({team_visibility_sql('%s')})
                     ORDER BY s.start_date, s.start_time""",
-                (user_id, user_id),
+                (user_id, user_id, user_id),
             )
 
     def sessions_for_profile(self, driver_profile_id: int, include_pending: bool = False) -> pd.DataFrame:
@@ -1221,7 +1611,9 @@ class SupabaseAccountLibrary:
         query = f"""
             SELECT p.id AS driver_profile_id, p.display_name AS driver_display_name,
                    MIN(s.best_lap_s) AS best_lap_s, s.track_name,
-                   COUNT(*) AS qualifying_sessions
+                   COUNT(*) AS qualifying_sessions,
+                   (SELECT t.name FROM team_memberships tm JOIN teams t ON t.id = tm.team_id
+                    WHERE tm.driver_profile_id = p.id AND tm.status = 'active' LIMIT 1) AS team_name
             FROM sessions s
             JOIN driver_profiles p ON p.id = s.driver_profile_id
             WHERE {PUBLIC_VISIBILITY_SQL}
@@ -1312,6 +1704,261 @@ class SupabaseAccountLibrary:
             )
             rows = cur.fetchall()
         return [r["track_name"] for r in rows]
+
+    def team_leaderboard_tracks(self) -> list[str]:
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """SELECT DISTINCT s.track_name FROM sessions s
+                   JOIN driver_profiles p ON p.id = s.driver_profile_id
+                   JOIN team_memberships tm ON tm.driver_profile_id = p.id AND tm.status = 'active'
+                   WHERE s.visibility IN ('team', 'shared') AND s.attribution_status = 'confirmed'
+                     AND p.claim_status = 'claimed' AND p.user_id IS NOT NULL AND s.track_name IS NOT NULL
+                   ORDER BY s.track_name"""
+            )
+            rows = cur.fetchall()
+        return [r["track_name"] for r in rows]
+
+    # ---------------------------------------------------------------- teams
+
+    def create_team(self, name: str, created_by_user_id: int) -> int:
+        creator_profile = self.get_profile_for_user(created_by_user_id)
+        if creator_profile is None:
+            raise ValueError("Only a registered driver with a profile can create a team.")
+        existing = self.get_active_membership_for_profile(int(creator_profile["id"]))
+        if existing is not None:
+            raise ValueError("You're already on a team -- leave it first (or transfer ownership) before creating a new one.")
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO teams (name, created_by_user_id, created_at) VALUES (%s, %s, %s) RETURNING id",
+                (name, created_by_user_id, _now()),
+            )
+            team_id = int(cur.fetchone()["id"])
+            cur.execute(
+                """INSERT INTO team_memberships
+                   (team_id, driver_profile_id, role, status, requested_at, decided_at, decided_by_user_id)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                (team_id, int(creator_profile["id"]), TEAM_ROLE_MANAGER, TEAM_MEMBERSHIP_ACTIVE, _now(), _now(), created_by_user_id),
+            )
+            conn.commit()
+        return team_id
+
+    def get_team(self, team_id: int) -> dict | None:
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM teams WHERE id = %s", (team_id,))
+            row = cur.fetchone()
+        return dict(row) if row else None
+
+    def list_teams(self, name_query: str | None = None) -> pd.DataFrame:
+        query = """
+            SELECT t.*, COUNT(tm.id) AS member_count
+            FROM teams t
+            LEFT JOIN team_memberships tm ON tm.team_id = t.id AND tm.status = 'active'
+            WHERE 1=1
+        """
+        params: tuple = ()
+        if name_query:
+            query += " AND LOWER(t.name) LIKE %s"
+            params += (f"%{name_query.strip().lower()}%",)
+        query += " GROUP BY t.id ORDER BY t.name"
+        with pgdb.connect() as conn:
+            return pgdb.read_sql(conn, query, params)
+
+    def get_membership_for_profile(self, driver_profile_id: int) -> dict | None:
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT * FROM team_memberships WHERE driver_profile_id = %s ORDER BY requested_at DESC LIMIT 1",
+                (driver_profile_id,),
+            )
+            row = cur.fetchone()
+        return dict(row) if row else None
+
+    def get_active_membership_for_profile(self, driver_profile_id: int) -> dict | None:
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT * FROM team_memberships WHERE driver_profile_id = %s AND status = %s",
+                (driver_profile_id, TEAM_MEMBERSHIP_ACTIVE),
+            )
+            row = cur.fetchone()
+        return dict(row) if row else None
+
+    def request_to_join_team(self, team_id: int, driver_profile_id: int) -> int:
+        if self.get_team(team_id) is None:
+            raise KeyError(f"No team {team_id}")
+        existing = self.get_membership_for_profile(driver_profile_id)
+        if existing is not None and existing["status"] in (TEAM_MEMBERSHIP_PENDING, TEAM_MEMBERSHIP_ACTIVE):
+            if int(existing["team_id"]) == team_id:
+                raise ValueError("You already have a request or membership for this team.")
+            raise ValueError("You're already on (or waiting on) another team -- leave it first.")
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO team_memberships (team_id, driver_profile_id, role, status, requested_at)
+                   VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+                (team_id, driver_profile_id, TEAM_ROLE_MEMBER, TEAM_MEMBERSHIP_PENDING, _now()),
+            )
+            new_id = int(cur.fetchone()["id"])
+            conn.commit()
+            return new_id
+
+    def pending_join_requests_for_team(self, team_id: int) -> pd.DataFrame:
+        with pgdb.connect() as conn:
+            return pgdb.read_sql(
+                conn,
+                """SELECT tm.*, p.display_name AS driver_display_name
+                   FROM team_memberships tm
+                   JOIN driver_profiles p ON p.id = tm.driver_profile_id
+                   WHERE tm.team_id = %s AND tm.status = %s
+                   ORDER BY tm.requested_at""",
+                (team_id, TEAM_MEMBERSHIP_PENDING),
+            )
+
+    def resolve_join_request(self, membership_id: int, accept: bool, decided_by_user_id: int) -> None:
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM team_memberships WHERE id = %s", (membership_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise KeyError(f"No team membership request {membership_id}")
+            if row["status"] != TEAM_MEMBERSHIP_PENDING:
+                raise ValueError("That request has already been decided.")
+            cur.execute(
+                "UPDATE team_memberships SET status = %s, decided_at = %s, decided_by_user_id = %s WHERE id = %s",
+                (TEAM_MEMBERSHIP_ACTIVE if accept else TEAM_MEMBERSHIP_REJECTED, _now(), decided_by_user_id, membership_id),
+            )
+            conn.commit()
+
+    def team_roster(self, team_id: int) -> pd.DataFrame:
+        with pgdb.connect() as conn:
+            return pgdb.read_sql(
+                conn,
+                """SELECT tm.*, p.display_name AS driver_display_name
+                   FROM team_memberships tm
+                   JOIN driver_profiles p ON p.id = tm.driver_profile_id
+                   WHERE tm.team_id = %s AND tm.status = 'active'
+                   ORDER BY CASE tm.role WHEN 'manager' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, p.display_name""",
+                (team_id,),
+            )
+
+    def set_member_role(self, membership_id: int, new_role: str) -> None:
+        if new_role not in (TEAM_ROLE_ADMIN, TEAM_ROLE_MEMBER):
+            raise ValueError(f"Use transfer_team_manager to change the manager, not set_member_role({new_role!r}).")
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM team_memberships WHERE id = %s", (membership_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise KeyError(f"No team membership {membership_id}")
+            if row["status"] != TEAM_MEMBERSHIP_ACTIVE:
+                raise ValueError("Only an active member's role can be changed.")
+            if row["role"] == TEAM_ROLE_MANAGER:
+                raise ValueError("The manager's role can't be changed directly -- transfer ownership first.")
+            cur.execute("UPDATE team_memberships SET role = %s WHERE id = %s", (new_role, membership_id))
+            conn.commit()
+
+    def transfer_team_manager(self, team_id: int, new_manager_membership_id: int) -> None:
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM team_memberships WHERE id = %s", (new_manager_membership_id,))
+            new_manager = cur.fetchone()
+            if new_manager is None or int(new_manager["team_id"]) != team_id or new_manager["status"] != TEAM_MEMBERSHIP_ACTIVE:
+                raise ValueError("That's not an active member of this team.")
+            cur.execute(
+                "UPDATE team_memberships SET role = %s WHERE team_id = %s AND role = %s AND status = %s",
+                (TEAM_ROLE_ADMIN, team_id, TEAM_ROLE_MANAGER, TEAM_MEMBERSHIP_ACTIVE),
+            )
+            cur.execute(
+                "UPDATE team_memberships SET role = %s WHERE id = %s", (TEAM_ROLE_MANAGER, new_manager_membership_id)
+            )
+            conn.commit()
+
+    def remove_team_member(self, membership_id: int, removed_by_user_id: int) -> None:
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM team_memberships WHERE id = %s", (membership_id,))
+            row = cur.fetchone()
+            if row is None:
+                raise KeyError(f"No team membership {membership_id}")
+            if row["status"] != TEAM_MEMBERSHIP_ACTIVE:
+                raise ValueError("That member is no longer active.")
+            if row["role"] == TEAM_ROLE_MANAGER:
+                raise ValueError("The manager can't be removed -- transfer ownership first.")
+            cur.execute(
+                "UPDATE team_memberships SET status = %s, decided_at = %s, decided_by_user_id = %s WHERE id = %s",
+                (TEAM_MEMBERSHIP_REMOVED, _now(), removed_by_user_id, membership_id),
+            )
+            conn.commit()
+
+    def leave_team(self, driver_profile_id: int) -> None:
+        membership = self.get_active_membership_for_profile(driver_profile_id)
+        if membership is None:
+            raise KeyError("Not an active member of any team.")
+        if membership["role"] == TEAM_ROLE_MANAGER:
+            raise ValueError("The manager can't leave directly -- transfer ownership to someone else first.")
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE team_memberships SET status = %s, decided_at = %s WHERE id = %s",
+                (TEAM_MEMBERSHIP_LEFT, _now(), int(membership["id"])),
+            )
+            conn.commit()
+
+    def team_track_best_times(self, team_id: int, track_name: str | None = None) -> pd.DataFrame:
+        query = f"""
+            SELECT * FROM (
+                SELECT p.id AS driver_profile_id, p.display_name AS driver_display_name,
+                       s.track_name, s.best_lap_s, s.id AS session_db_id,
+                       ROW_NUMBER() OVER (PARTITION BY p.id, s.track_name ORDER BY s.best_lap_s) AS rn,
+                       COUNT(*) OVER (PARTITION BY p.id, s.track_name) AS qualifying_sessions
+                FROM sessions s
+                JOIN driver_profiles p ON p.id = s.driver_profile_id
+                WHERE {team_pool_visibility_sql('%s')} AND s.best_lap_s IS NOT NULL
+        """
+        params: tuple = (team_id,)
+        if track_name:
+            query += " AND s.track_name = %s"
+            params += (track_name,)
+        query += " ) ranked WHERE rn = 1 ORDER BY track_name, best_lap_s"
+        with pgdb.connect() as conn:
+            board = pgdb.read_sql(conn, query, params)
+        return board.drop(columns=["rn"]) if not board.empty else board
+
+    def team_leaderboard(
+        self, track_name: str, track_condition: str | None = None, kart_class: str | None = None, limit: int = 50,
+    ) -> pd.DataFrame:
+        query = f"""
+            SELECT * FROM (
+                SELECT tm.team_id, t.name AS team_name, p.display_name AS fastest_driver_name,
+                       s.best_lap_s, s.track_name,
+                       ROW_NUMBER() OVER (PARTITION BY tm.team_id ORDER BY s.best_lap_s) AS rn,
+                       COUNT(*) OVER (PARTITION BY tm.team_id) AS qualifying_sessions
+                FROM sessions s
+                JOIN driver_profiles p ON p.id = s.driver_profile_id
+                JOIN team_memberships tm ON tm.driver_profile_id = p.id AND tm.status = 'active'
+                JOIN teams t ON t.id = tm.team_id
+                WHERE s.visibility IN ('team', 'shared') AND s.attribution_status = 'confirmed'
+                  AND p.claim_status = 'claimed' AND p.user_id IS NOT NULL
+                  AND s.track_name = %s AND s.best_lap_s IS NOT NULL
+        """
+        params: tuple = (track_name,)
+        if track_condition:
+            query += " AND s.track_condition = %s"
+            params += (track_condition,)
+        if kart_class:
+            query += " AND s.kart_class = %s"
+            params += (kart_class,)
+        query += " ) ranked WHERE rn = 1 ORDER BY best_lap_s LIMIT %s"
+        params += (limit,)
+        with pgdb.connect() as conn:
+            board = pgdb.read_sql(conn, query, params)
+        if not board.empty:
+            board = board.drop(columns=["rn"])
+            board.insert(0, "rank", range(1, len(board) + 1))
+        return board
 
 
 def account_library_from_env(sqlite_path: str) -> AccountLibrary | SupabaseAccountLibrary:
