@@ -218,6 +218,37 @@ CREATE TABLE IF NOT EXISTS attribution_reports (
 );
 
 -- ---------------------------------------------------------------------------
+-- Teams (telemetry/accounts.py, continued) -- a second, narrower sharing
+-- circle alongside the shared/private toggle above: `sessions.visibility`
+-- can also be 'team', visible to fellow active members of the owning
+-- driver's team but not on any public leaderboard.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS teams (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_by_user_id BIGINT REFERENCES users (id),
+    created_at TIMESTAMPTZ NOT NULL
+);
+
+-- One row per (team, driver_profile) join attempt/membership -- see the
+-- SQLite schema's comment in telemetry/accounts.py for why "at most one
+-- pending/active row per profile" is enforced in Python rather than here.
+CREATE TABLE IF NOT EXISTS team_memberships (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    team_id BIGINT NOT NULL REFERENCES teams (id),
+    driver_profile_id BIGINT NOT NULL REFERENCES driver_profiles (id),
+    role TEXT NOT NULL DEFAULT 'member',
+    status TEXT NOT NULL DEFAULT 'pending',
+    requested_at TIMESTAMPTZ NOT NULL,
+    decided_at TIMESTAMPTZ,
+    decided_by_user_id BIGINT REFERENCES users (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_memberships_team ON team_memberships (team_id);
+CREATE INDEX IF NOT EXISTS idx_team_memberships_profile ON team_memberships (driver_profile_id);
+
+-- ---------------------------------------------------------------------------
 -- Auth (telemetry/auth.py) -- only used when the *local* auth backend is
 -- active; when SupabaseAuthProvider is active, Supabase Auth (GoTrue) owns
 -- sessions and these tables stay empty. Kept as real tables (rather than
@@ -273,6 +304,42 @@ AS $$
     SELECT id FROM users WHERE external_auth_id = auth.uid()::text;
 $$;
 
+-- Both team-related policies below need to query `team_memberships`
+-- itself to decide what's visible on `team_memberships` -- a plain
+-- subquery would re-trigger that same policy on every row, recursively
+-- ("infinite recursion detected in policy for relation
+-- team_memberships"). SECURITY DEFINER breaks the cycle the same way
+-- `current_app_user_id()` already does for `users`: the function body
+-- runs as its (table-owning) creator, which bypasses RLS entirely, so the
+-- lookup inside it sees every row rather than re-applying the policy
+-- that's calling it.
+CREATE OR REPLACE FUNCTION is_active_team_member(check_team_id BIGINT) RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER
+AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM team_memberships tm
+        JOIN driver_profiles p ON p.id = tm.driver_profile_id
+        WHERE tm.team_id = check_team_id AND tm.status = 'active' AND p.user_id = current_app_user_id()
+    );
+$$;
+
+-- "Is the current viewer an active member of the same team as this
+-- driver profile" -- the team analogue of `PUBLIC_VISIBILITY_SQL`'s
+-- ownership check, used by `sessions_select` below. Same SECURITY
+-- DEFINER reasoning as `is_active_team_member`.
+CREATE OR REPLACE FUNCTION shares_active_team_with(owner_profile_id BIGINT) RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER
+AS $$
+    SELECT EXISTS (
+        SELECT 1 FROM team_memberships tm_owner
+        JOIN team_memberships tm_viewer ON tm_viewer.team_id = tm_owner.team_id
+        JOIN driver_profiles viewer_p ON viewer_p.id = tm_viewer.driver_profile_id
+        WHERE tm_owner.driver_profile_id = owner_profile_id
+          AND tm_owner.status = 'active' AND tm_viewer.status = 'active'
+          AND viewer_p.user_id = current_app_user_id()
+    );
+$$;
+
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE driver_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
@@ -281,6 +348,8 @@ ALTER TABLE session_cache ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kart_setups ENABLE ROW LEVEL SECURITY;
 ALTER TABLE corner_metrics ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pattern_instances ENABLE ROW LEVEL SECURITY;
+ALTER TABLE teams ENABLE ROW LEVEL SECURITY;
+ALTER TABLE team_memberships ENABLE ROW LEVEL SECURITY;
 
 -- A user may read their own account row; nothing else about `users` (email,
 -- password_hash) should be readable by anyone else.
@@ -300,7 +369,9 @@ CREATE POLICY driver_profiles_select ON driver_profiles
     );
 
 -- Sessions: this is `accounts.PUBLIC_VISIBILITY_SQL`, translated 1:1, OR'd
--- with "it's mine" (owning driver profile, or I uploaded it).
+-- with "it's mine" (owning driver profile, or I uploaded it), OR'd with
+-- `accounts.team_visibility_sql` -- a fellow active member of the same
+-- team as the owning driver, for a session marked 'team' or 'shared'.
 CREATE POLICY sessions_select ON sessions
     FOR SELECT USING (
         EXISTS (
@@ -316,6 +387,33 @@ CREATE POLICY sessions_select ON sessions
             SELECT 1 FROM driver_profiles p
             WHERE p.id = sessions.driver_profile_id AND p.user_id = current_app_user_id()
         )
+        OR (
+            sessions.visibility IN ('team', 'shared')
+            AND sessions.attribution_status = 'confirmed'
+            AND EXISTS (
+                SELECT 1 FROM driver_profiles p
+                WHERE p.id = sessions.driver_profile_id AND p.claim_status = 'claimed' AND p.user_id IS NOT NULL
+            )
+            AND shares_active_team_with(sessions.driver_profile_id)
+        )
+    );
+
+-- Teams: names aren't sensitive, and search-to-join needs every team
+-- discoverable, so any authenticated user can read the list.
+CREATE POLICY teams_select ON teams
+    FOR SELECT USING (true);
+
+-- Team memberships: a member can see every row for their own team
+-- (needed to render the roster and, for a manager/admin, pending join
+-- requests) -- not just their own row. A profile with no active
+-- membership anywhere sees only its own (pending/rejected/left) rows.
+CREATE POLICY team_memberships_select ON team_memberships
+    FOR SELECT USING (
+        EXISTS (
+            SELECT 1 FROM driver_profiles p WHERE p.id = team_memberships.driver_profile_id
+              AND p.user_id = current_app_user_id()
+        )
+        OR is_active_team_member(team_memberships.team_id)
     );
 
 -- Laps / cached dataframe / corner metrics / pattern instances all inherit
