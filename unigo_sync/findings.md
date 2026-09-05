@@ -6,10 +6,15 @@ references" below). Firmware version at capture time: **1.20.002**
 info). Re-run the discovery harness and diff against this doc if a
 firmware update changes anything.
 
-Last updated: 2026-09-05, from a real HAR capture of the device's web UI
-(page load + session list + downloading one session, three times), plus a
+Last updated: 2026-09-05. Sources: a real HAR capture of the device's web
+UI (page load + session list + downloading one session, three times); a
 real Unipro Analyser TSV export of that exact same session used as ground
-truth to attempt decoding the raw binary format.
+truth; and a from-scratch reverse-engineering pass on the raw binary
+format that **cracked the per-record framing** and decoded 8 channels
+(GPS position, altitude, embedded GPS speed, DOP/quality values, battery
+voltage, internal temperature) with verified formulas, independently of
+Analyser -- see "BREAKTHROUGH" below. RPM, steering angle, and
+accelerometer G-force remain the one open gap.
 
 ## Device info
 
@@ -218,6 +223,117 @@ reverse-engineering effort (or the firmware/format spec, which isn't
 available) -- diminishing returns for a single sitting of blind byte
 analysis.
 
+### BREAKTHROUGH: the per-record framing is now solved
+
+Following up per explicit direction to keep pushing on this before
+building anything: **the record framing inside `RECRDATA` is now cracked**,
+independently of the OpenLap prior art below (found afterward, and used
+only to double-check, not to derive this).
+
+**The framing:** every record starts with a 2-byte marker `DA 7A`,
+followed by a 2-byte little-endian sequence field, followed by a
+type-specific fixed-length body. Total record length is fully determined
+by a small set of distinct lengths -- found by scanning for the marker
+and measuring the gap to the next one:
+
+| Record length | Count (this file) | Contents identified |
+|---|---|---|
+| 45 bytes | 7,382 | **GPS fix**: lat, lon, altitude, DOPs, embedded speed |
+| 32 bytes | 738 | **Housekeeping**: battery voltage, internal temperature |
+| 11, 14, 18, 24, 28 bytes | 7,382 / 7,372 / 3,690 / 7,372 / 2,952 | Partially identified -- see gap below |
+| 4, 7 bytes | 1, 29 | Rare -- edge/boundary artifacts, not investigated further |
+
+This was found and confirmed two ways: (1) every one of the 7,382
+confirmed real GPS fixes (via the OpenLap-style plausibility scan) landed
+inside a **45-byte record with latitude starting at byte offset 17 from
+the marker, with zero exceptions** across all 7,382 -- a fully
+deterministic result, not a heuristic; (2) the 2-byte field right after
+the marker is a monotonically non-decreasing sequence number (0 decreases
+across 7,381 transitions, tracking elapsed session time almost exactly
+linearly) -- exactly what a real per-record sequence counter should look
+like, not noise.
+
+**Channels decoded with confirmed, verified formulas** (linear fit
+against the real TSV, R² given -- 1.000000 means the formula is exact to
+float64 precision, not approximate):
+
+| Channel | Record type | Byte offset (from record start) | Width | Encoding | Formula | R² |
+|---|---|---|---|---|---|---|
+| Latitude | 45 | 17 | 4 | int32 BE, signed | `raw / 1e7` | 1.000000 (verified at width=4; a width=2 sub-slice also fits well *only* because this session covers a tiny area -- width=4 is the portable/general formula, matches OpenLap's own scale factor independently) |
+| Longitude | 45 | 21 | 4 | int32 BE, signed | `raw / 1e7` | 1.000000 (same caveat as latitude) |
+| Altitude | 45 | 27 | 2 | int16 BE, signed | `raw / 1000` | 1.000000 |
+| GPS Speed (embedded in the fix) | 45 | 31 | 2 | int16 BE, signed | `raw / 100` (approx) | 0.9978 -- good but not exact; likely Analyser applies its own smoothing on top of this raw channel |
+| Positional DOP | 45 | 38 | 2 | int16 LE, signed | `raw / 100` | 1.000000 |
+| Horizontal DOP | 45 | 40 | 2 | int16 LE, signed | `raw / 100` | 1.000000 |
+| Vertical DOP | 45 | 41 | 2 | int16 LE, signed | `raw / 25600` | 1.000000 |
+| Battery Voltage | 32 | 15 | 2 | int16 LE, signed | `raw * 0.01 - 15.36` (ADC calibration offset, not a truncated field) | 1.000000 |
+| Internal Temperature | 32 | 16 | 2 | int16 LE, unsigned | `raw / 25600 + 17.92` | 1.000000 |
+
+(Byte offsets above are from the very start of the record, i.e. include
+the 4-byte marker+sequence prefix -- add 4 to get the offset from the end
+of that prefix, which is how the raw analysis scripts index into "body".)
+
+Note the DOP field offsets (38/40/41) are close together and were found
+via correlation search rather than a fully independent structural
+derivation -- worth a sanity check against a second real file before
+treating them as bulletproof, though the R²=1.0 fits are strong evidence
+either way.
+
+**GPS Distance and Heading were NOT cracked as raw stored channels** --
+best fits found (R² 0.93-0.9988, large non-zero intercepts) are good but
+clearly not exact, unlike the R²=1.000000 channels above. The likely
+explanation: these are **computed by Analyser from the GPS track itself**
+(heading = bearing between consecutive fixes, distance = integrated speed
+or point-to-point distance) rather than raw stored values -- exactly the
+technique OpenLap independently uses to reconstruct the same two
+quantities (see `_bearing_rad`/`_haversine_km` in their source, discussed
+below). If so, this project's own Part 2 code should compute them the
+same way from decoded lat/lon, rather than keep hunting for a raw channel
+that may not exist.
+
+**RPM, Steering Angle, and the 3-axis accelerometer (Vertical/GPS
+Longitudinal/GPS Lateral Acceleration) remain uncracked**, despite an
+extensive, systematic search across the still-unidentified record types
+(11, 14, 18, 24, 28 bytes) and re-checking every already-identified type
+too:
+- Every byte offset x width (1-4 bytes) x endianness x signedness,
+  correlated against every TSV column -- best result was 0.80 (not
+  usable).
+- The same search repeated with a small time-lag (±5 records) in case of
+  an off-by-a-few alignment issue -- no improvement.
+- IEEE-754 float32 interpretation at every offset/endianness -- zero
+  matches above 0.5 correlation.
+- A delta-encoding/cumulative-sum hypothesis (treating each byte as a
+  small signed increment rather than an absolute value) -- produced
+  several 0.6-0.8 "matches," but literally every byte offset in the
+  32-byte housekeeping record showed similar correlation, which is the
+  classic signature of spurious correlation between two unrelated
+  cumulative-sum ("random walk") sequences, not a real signal.
+- The `RECRELOG` chunk (20,736 bytes) was checked as a possible location
+  for these channels instead of `RECRDATA` -- ruled out, it's a **plain
+  ASCII device boot/diagnostic log** (`/Logs/logfile.2.txt`, firmware
+  version/serial/build-date strings), not telemetry.
+- `RECRSMRY` (25,604 bytes) was not fully explored beyond the earlier
+  int32-min/max sentinel-pattern observation; a real lead worth returning
+  to specifically for these three channels.
+
+**Working theory for why these three resist the same techniques that
+worked for everything else:** RPM and Steering Angle are the two
+*highest-frequency, most rapidly-changing* channels in the whole file
+(22,124 and 11,056 firings respectively -- RPM fires almost 3x more often
+than GPS fixes), and the still-unidentified record types (11/14/18/24/28
+bytes) don't cleanly sum to either of those counts the way 45+32 cleanly
+accounted for the channels above. That, plus zero linear/lagged/float/
+delta signal despite exhaustive search, suggests either (a) they're
+bit-packed at a sub-byte level rather than byte-aligned, (b) they use a
+non-linear encoding (e.g. a lookup table, non-uniform quantization, or a
+proper stateful delta-decoder that needs the *exact* previous value, not
+just a naive cumulative sum), or (c) they're split across record types in
+a way that makes single-type positional correlation the wrong tool
+entirely (would need to reconstruct a merged, correctly-interleaved
+per-channel sequence across multiple record types before correlating,
+which is a bigger undertaking than what's been tried so far).
+
 ### Prior art found: an independent open-source project already cracked part of this
 
 A web search turned up
@@ -231,11 +347,11 @@ big-endian length, `0xFFFFFF` sentinel meaning "read to end of file." Two
 independent reverse-engineering efforts landing on the same structure is
 strong confirmation that part is solid.
 
-**What OpenLap did NOT crack (confirmed, not just claimed -- see next
-section):** the per-channel event framing inside `RECRDATA`/`DATA`. They
-never solved the record header/framing problem either -- the same wall we
-hit. Their workaround: instead of parsing records, they **scan the raw
-bytes for a specific recognizable *pattern of plausible values*** -- 4
+**What OpenLap did NOT crack (confirmed, not just claimed):** the
+per-channel event framing inside `RECRDATA`/`DATA` -- the same wall this
+project hit initially too, before the breakthrough above. Their
+workaround: instead of parsing records, they **scan the raw bytes for a
+specific recognizable *pattern of plausible values*** -- 4
 consecutive big-endian `int32` fields (altitude, speed, then looking
 backward for latitude, longitude) that all simultaneously fall in
 physically sane ranges (lat -90..90, lon -180..180, alt -500..9000m,
@@ -277,60 +393,67 @@ filtering against a single global median.
 
 ### Recommended path for Part 2's conversion step
 
-Given the explicit decision to not depend on Analyser, the path forward
-is:
+**Updated after the framing breakthrough above.** Given the explicit
+decision to not depend on Analyser:
 
-1. **Ship what's independently decodable today: GPS position, altitude,
-   and speed**, via the value-plausibility scan above (with a better
-   rejection filter than OpenLap's, per the false-positive analysis).
-   This alone is enough for a track map, speed trace, and (via the same
-   RECRGLOS timing-beacon coordinates OpenLap uses) real lap timing --
-   without Analyser and without needing the full record framing solved.
-2. **RPM, steering angle, real accelerometer G-forces, and exhaust
-   temperature are NOT currently recoverable independently** -- confirmed
-   by two separate reverse-engineering efforts hitting the same wall on
-   `RECRDATA`'s per-channel framing. `telemetry/parser.py`'s downstream
-   analysis (corner-causal detection, setup suggestions, throttle/braking
-   inference) leans heavily on exactly these channels, so **a
-   no-Analyser sync tool today would feed the pipeline meaningfully less
-   than a `.tsv` export would** -- this is a real fidelity trade-off, not
-   a detail, and needs to be a conscious decision rather than something
-   this document quietly assumes away.
-3. Cracking the full `RECRDATA` framing (to recover RPM/steering/real-G/
-   temp too) remains open -- genuinely unsolved by anyone found so far,
-   not just by this project. Worth revisiting with more focused effort
-   (e.g. the bitmask-style framing idea from the section above, now with
-   the confirmed GPS-quadruple layout as a fixed anchor to align other
-   fields against) if full fidelity is required later.
+1. **Independently decodable today, with verified exact formulas (see
+   the decode table above):** GPS position, altitude, embedded GPS speed,
+   DOP/fix-quality values, battery voltage, and internal temperature --
+   via the real record framing (not a fuzzy value-scan), which also means
+   near-100% recovery within a session rather than OpenLap's ~60%-of-native-
+   rate/50%-false-positive scan. Heading and distance are best computed
+   from the decoded GPS track directly (bearing / integration), matching
+   what OpenLap does, rather than hunted for as raw channels. Combined
+   with the RECRGLOS timing-beacon coordinates OpenLap also uses, this is
+   enough for a track map, real GPS speed trace, and real lap timing --
+   independent of Analyser.
+2. **RPM, steering angle, and the 3-axis accelerometer G-forces remain
+   NOT recovered**, despite the framing being solved and an extensive,
+   systematic search (see above) -- this is a narrower, more specific gap
+   than "the whole format is unsolved," but it's still a real one.
+   `telemetry/parser.py`'s downstream analysis (corner-causal detection,
+   setup suggestions, throttle/braking inference) leans heavily on
+   exactly these three channels, so **a no-Analyser sync tool today would
+   still feed the pipeline meaningfully less than a `.tsv` export would**
+   -- this is a real fidelity trade-off, not a detail, and needs to be a
+   conscious decision rather than something this document quietly assumes
+   away.
+3. Next places to look for RPM/steering/G-force, if continuing: (a)
+   `RECRSMRY` (25,604 bytes, not yet fully explored), (b) a proper
+   stateful delta-decoder (track a running per-channel value and apply
+   small signed deltas cumulatively, rather than the naive global cumsum
+   already tried and shown to be spurious), (c) bit-level (not
+   byte-aligned) packing within the still-partially-understood record
+   types, (d) obtaining a second real `.uni`+`.tsv` pair -- ideally from a
+   session with more dramatic RPM/steering variation -- to cross-validate
+   any future candidate formula the same way the channels above were
+   confirmed.
 
 ## Open questions
 
-- Full byte layout of the `DATA` chunk (sample rate, per-channel
-  encoding/scaling, byte width per channel vs. the `CHNL` table). Tried
-  and ruled out: flat `[channel_id][value]` framing (1 or 2 byte id,
-  either endianness) -- see "DATA chunk reverse-engineering attempt"
-  above. Next things worth trying: bit-packed fields, varint-encoded
-  timestamps/deltas between records, or per-group framed records
-  (matching the 9 firing-groups found in the TSV) instead of per-value
-  tagging.
-- Meaning of `INFO` (4 bytes), `TRIG` (2 bytes), `ELOG` (20736 bytes),
-  `SMRY` (25604 bytes) chunks. `SMRY` shows a repeating int32-max/int32-min
-  sentinel pair pattern consistent with an uninitialized min/max summary
-  table -- worth decoding first since on-device lap summaries could be a
-  shortcut, if confirmed.
+- **RPM, Steering Angle, and 3-axis accelerometer G-force byte encoding**
+  -- the one major remaining gap. The outer record framing is solved (see
+  "BREAKTHROUGH" above) and 8 other channels are decoded with verified,
+  often-exact formulas, but these three resisted linear/lagged/float32/
+  delta-cumsum search across every record type and offset. Next things
+  worth trying: `RECRSMRY` (not yet fully explored), a proper stateful
+  delta-decoder, bit-level (non-byte-aligned) packing, or a second real
+  file pair to cross-validate candidates against.
+- Exact byte boundaries for the DOP fields (Positional/Horizontal/
+  Vertical DOP all decode with R²=1.0 individually, but their offsets --
+  38/40/41 -- are close enough together that the precise boundary between
+  them hasn't been independently re-derived the way lat/lon/altitude
+  were; worth double-checking against a second file).
+- Meaning of `INFO` (4 bytes), `TRIG` (2 bytes) chunks, and full
+  understanding of `SMRY` (25604 bytes, only the sentinel-pattern
+  observation so far) and `ELOG` (confirmed to be a plain-text device log,
+  not telemetry -- no further work needed there).
 - Which of the 27 `CHNL` channel IDs maps to which TSV column name --
-  the 9 observed firing-groups line up with `CHNL`'s width groupings by
-  count, but the ID-to-name mapping itself isn't confirmed (and at least
-  one TSV column, `Corner Radius`, isn't a raw channel at all -- it's
-  computed from `Inverse Corner Radius` by Analyser, so not every TSV
-  column has a 1:1 channel).
-- Full `RECRDATA` per-channel record framing, beyond the GPS-quadruple
-  pattern-match -- unsolved by both this project and OpenLap
-  (github.com/LaurensVR3/OpenLap). This is what blocks recovering RPM,
-  steering angle, real accelerometer G, and exhaust temperature
-  independently of Analyser. A better false-positive rejection filter for
-  the GPS scan itself (see above) is a smaller, more tractable version of
-  the same open problem.
+  now partially answered by the direct byte-offset decode table above for
+  8 channels, but the `CHNL` table's own (channel_id, width) entries
+  haven't been individually matched to those confirmed offsets (and at
+  least one TSV column, `Corner Radius`, isn't a raw channel at all --
+  it's computed from `Inverse Corner Radius` by Analyser).
 - Whether `LOCS`'s embedded "previous session filename" is a chain link
   across all files (would need to check a second file to confirm).
 - The `.un0` file extension seen once in the file list (vs. the usual
