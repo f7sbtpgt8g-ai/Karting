@@ -420,6 +420,18 @@ either the specific type pairings tried aren't the right ones, the
 keyframe/delta roles are reversed from what was assumed, or the scheme
 applies at a finer (bit-level, not byte-level) granularity than tested.
 
+**3. Bit-level search (also no signal).** In case a channel is packed at
+sub-byte granularity (a plausible reason whole-byte search would miss
+it), every individual bit (not byte) of every still-unidentified record
+type was correlated against binarized targets -- steering direction
+(left/right sign), RPM above/below session median, and vertical-
+acceleration sign. Weak, inconclusive results only (best: 0.40, at
+record type 28 byte 16 vs. RPM-above-median -- plausibly just a slowly-
+drifting state value that happens to loosely track a session-long RPM
+trend, the same false-lead pattern seen with Temperature 1 above). No
+bit position showed the kind of clean, strong correlation the confirmed
+8 channels showed at the byte level.
+
 ### Prior art found: an independent open-source project already cracked part of this
 
 A web search turned up
