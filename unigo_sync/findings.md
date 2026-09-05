@@ -7,7 +7,9 @@ info). Re-run the discovery harness and diff against this doc if a
 firmware update changes anything.
 
 Last updated: 2026-09-05, from a real HAR capture of the device's web UI
-(page load + session list + downloading one session, three times).
+(page load + session list + downloading one session, three times), plus a
+real Unipro Analyser TSV export of that exact same session used as ground
+truth to attempt decoding the raw binary format.
 
 ## Device info
 
@@ -153,8 +155,8 @@ and not treating "the UI does it" as license to poll faster than needed.
     | `TRIG` | 2 bytes | Not decoded. |
     | `CHNL` | 112 bytes | **Channel definition table.** First 4 bytes = `27` (big-endian), matching a count; followed by 27 pairs of 2-byte values (`channel_id, type_or_width` -- e.g. `(1,3) (2,2) (3,2) (4,2) (5,2) (6,6) (7,6) (12,6) ... (77,2)`). 27 channels is very close to the 28 known Analyser TSV columns (`telemetry/parser.py::COLUMNS`) -- plausibly a near-1:1 mapping once the channel IDs are matched to column names, though not yet confirmed which ID means which column. |
     | `ELOG` | 20736 bytes | Not decoded -- "event log"? Large enough to be per-lap or per-event records rather than a single value. |
-    | `SMRY` | 25604 bytes | Not decoded -- "summary" -- possibly per-lap summary stats (lap times, etc.) computed on-device, which would be extremely useful if so since it could shortcut needing to decode raw samples for some views. Worth prioritizing next. |
-    | `DATA` | rest of file (866438 bytes here) | The actual telemetry sample stream. Its length field reads as the sentinel `0xFFFFFF` (all-1s in the 3-byte field) rather than a real length -- consistent with an embedded recorder that doesn't know the final size until it's done writing, and just means "read to end of file." **Internal layout not yet decoded** -- this is the real conversion work still to do. |
+    | `SMRY` | 25604 bytes | Partially probed -- contains a recognizable pattern of repeated `7F FF FF FF 80 00 00 00` (int32 max immediately followed by int32 min), which reads like an uninitialized min/max-tracking sentinel pair -- consistent with a per-channel (or per-lap) min/max summary table where most slots are still at their sentinel "no data yet" value. Not decoded further. |
+    | `DATA` | rest of file (866438 bytes here) | The actual telemetry sample stream. Its length field reads as the sentinel `0xFFFFFF` (all-1s in the 3-byte field) rather than a real length -- consistent with an embedded recorder that doesn't know the final size until it's done writing, and just means "read to end of file." **Internal layout not decoded** -- see below, this turned out to be the hard part. |
 
 - **What's confirmed usable right now:** file identity (name/date/driver/
   track), device/firmware info, and the outer container structure. **What
@@ -162,26 +164,106 @@ and not treating "the UI does it" as license to poll faster than needed.
   (sample rate, per-channel scaling/units, how it lines up with the 27
   channels from `CHNL`), and the `INFO`/`TRIG`/`ELOG`/`SMRY` chunks.
 
-### Fastest path to finishing the format reverse-engineering
+### DATA chunk reverse-engineering attempt (using a real TSV as ground truth)
 
-If you have access to the official Unipro Analyser desktop software,
-**exporting this exact same session to TSV and sharing both files (the
-raw `.uni` and the Analyser TSV export side by side)** would let the
-`DATA` chunk be decoded by direct comparison (known lap times / speeds /
-RPM values in the TSV vs. byte patterns in `DATA`) instead of blind
-reverse-engineering. That's almost certainly faster than working from the
-binary alone, and is the single most useful thing that could be provided
-next if it's available -- otherwise it's doable from the raw file alone
-with more effort (guessing sample rate from `DATA` size vs. `SMRY`/lap
-count, trying common numeric encodings, etc.).
+A real Unipro Analyser TSV export of this exact session was obtained and
+used as ground truth (the export actually contained 6 sessions
+concatenated together -- filtered to the one matching `Start Date`/
+`Start Time` = `2026-08-29`/`14:41:20`, which lined up with this file).
+This confirms `telemetry/parser.py`'s existing understanding of the
+format is accurate: every row is a sparse, asynchronous event -- most
+columns blank, only the channel(s) that fired on that row populated.
+
+Grouping the TSV's non-meta columns by which ones fire together on the
+same row (i.e. which channels are reported as one atomic update) produces
+exactly **9 distinct firing groups** for this session, e.g.:
+
+| Group (TSV columns that co-fire) | Occurrences | Column count |
+|---|---|---|
+| `GPS Distance` alone | 35,610 | 1 |
+| `RPM unfiltered`, `RPM` | 11,062 | 2 |
+| `Steering Angle` alone | 11,056 | 1 |
+| `Temperature 1`, `RPM unfiltered`, `RPM` | 10,324 | 3 |
+| `Vertical DOP`, `Heading`, `Longitude`, `Altitude`, `Positional DOP`, `Horizontal DOP`, `Latitude` (GPS fix) | 7,382 | 7 |
+| `GPS Speed` alone | 7,381 | 1 |
+| `Vertical Acceleration`, `GPS Longitudinal Acceleration`, `GPS Lateral Acceleration` | 7,381 | 3 |
+| `Internal Temperature`, `Temperature 1`, `RPM unfiltered`, `RPM`, `Battery Voltage` | 738 | 5 |
+| (no data columns -- boundary/marker rows) | 22 | 0 |
+
+The **group sizes line up suspiciously well with `CHNL`'s per-width
+channel counts** (15 channels of width 6, 3 of width 3, 9 of width 2) --
+e.g. the 7-column GPS fix group matches 7 consecutive width-6 channel IDs
+(`6,7,12,13,14,15,16`) exactly. This is a real, encouraging structural
+confirmation that the `CHNL` table does describe these groups -- but it
+was not enough on its own to crack the byte layout: it was also noted
+that other TSV columns (e.g. `Corner Radius`) don't appear in the
+27-channel `CHNL` table at all, meaning some TSV columns are computed by
+Analyser itself (e.g. `Corner Radius` = `1 / Inverse Corner Radius`) and
+aren't a distinct raw channel, so the mapping isn't a clean 1:1 and needs
+more care than "channel N = column N in file order."
+
+**Framing hypotheses tried and ruled out:** assumed the event stream is a
+flat sequence of `[channel_id][value bytes]` records (channel_id as
+either 1 or 2 bytes, big- or little-endian, at every plausible starting
+offset in the first 64 bytes of `DATA`) and greedily parsed forward,
+checking whether it walks cleanly to the exact end of the 866,438-byte
+payload. **None of these combinations got past 2 records** before hitting
+a byte that isn't a valid channel ID -- so the raw stream is not a simple
+flat `[id][value]` sequence. It's more likely bit-packed, uses
+variable-length (varint-style) timestamps or deltas between records,
+and/or groups multiple channels into one framed record (matching the
+9 firing-groups above) rather than tagging every single value
+individually. Cracking it fully would need more dedicated
+reverse-engineering effort (or the firmware/format spec, which isn't
+available) -- diminishing returns for a single sitting of blind byte
+analysis.
+
+### Recommended path for Part 2's conversion step
+
+Given the above, two real options exist for Part 2, and this is a genuine
+decision point rather than a purely technical one:
+
+1. **Continue reverse-engineering `DATA`'s internal byte layout.** Now
+   backed by real ground truth (this TSV) and a promising structural lead
+   (the 9 firing-groups matching `CHNL`'s width groupings), this is
+   plausibly crackable with more focused effort -- but it's open-ended,
+   and any subtle mistake (wrong scale factor, wrong signedness) would
+   silently produce wrong lap times/speeds rather than an obvious error.
+2. **Automate the official Unipro Analyser desktop software** (the
+   fallback "Plan B" from the original project plan) to do the `.uni` ->
+   TSV conversion for us, since it's now proven to correctly export this
+   exact device's files. This trades "no dependency on Analyser being
+   installed" for "zero risk of a hand-decoded value being subtly wrong,"
+   since Analyser's own conversion logic is used verbatim.
+
+Given the format resisted a first serious reverse-engineering attempt and
+correctness (not just "some path to TSV") matters for lap-time analysis,
+**Plan B is the more defensible default for Part 2** unless further
+reverse-engineering effort is explicitly wanted. This is a call for
+whoever's driving Part 2, not something to decide silently -- flagged
+here for that conversation.
 
 ## Open questions
 
 - Full byte layout of the `DATA` chunk (sample rate, per-channel
-  encoding/scaling, byte width per channel vs. the `CHNL` table).
+  encoding/scaling, byte width per channel vs. the `CHNL` table). Tried
+  and ruled out: flat `[channel_id][value]` framing (1 or 2 byte id,
+  either endianness) -- see "DATA chunk reverse-engineering attempt"
+  above. Next things worth trying: bit-packed fields, varint-encoded
+  timestamps/deltas between records, or per-group framed records
+  (matching the 9 firing-groups found in the TSV) instead of per-value
+  tagging.
 - Meaning of `INFO` (4 bytes), `TRIG` (2 bytes), `ELOG` (20736 bytes),
-  `SMRY` (25604 bytes) chunks -- `SMRY` in particular looks worth
-  decoding first since on-device lap summaries could be a shortcut.
+  `SMRY` (25604 bytes) chunks. `SMRY` shows a repeating int32-max/int32-min
+  sentinel pair pattern consistent with an uninitialized min/max summary
+  table -- worth decoding first since on-device lap summaries could be a
+  shortcut, if confirmed.
+- Which of the 27 `CHNL` channel IDs maps to which TSV column name --
+  the 9 observed firing-groups line up with `CHNL`'s width groupings by
+  count, but the ID-to-name mapping itself isn't confirmed (and at least
+  one TSV column, `Corner Radius`, isn't a raw channel at all -- it's
+  computed from `Inverse Corner Radius` by Analyser, so not every TSV
+  column has a 1:1 channel).
 - Whether `LOCS`'s embedded "previous session filename" is a chain link
   across all files (would need to check a second file to confirm).
 - The `.un0` file extension seen once in the file list (vs. the usual
@@ -206,7 +288,12 @@ count, trying common numeric encodings, etc.).
   calls, three downloads of `260829_1441_Barmosen GPS_AUSTIN.uni`
   (913826 bytes, byte-identical across all three). 11 HTTP requests
   total, 8 flagged interesting by `analyze_har.py`.
-- The raw `.har` file itself contains a full list of the user's real
-  session filenames (track names, dates, and a driver name), so it's
-  being kept out of the repo rather than committed here -- treat it as
-  personal data, not project documentation.
+- A real Unipro Analyser TSV export (`.zip` containing one `.tsv`),
+  2026-09-05, covering 6 sessions from the same device; the one matching
+  `2026-08-29 14:41:20` was isolated and used as ground truth against the
+  `.uni` file from the HAR capture above.
+- The raw `.har` file, the `.uni` session file, and the TSV export all
+  contain the user's real session filenames (track names, dates, and a
+  driver name), so none of them are committed to the repo -- treat them
+  as personal data, not project documentation. Only the findings derived
+  from them (this file) are checked in.
