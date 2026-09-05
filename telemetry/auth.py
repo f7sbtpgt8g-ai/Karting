@@ -45,6 +45,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from . import db as pgdb
 from .accounts import AccountLibrary, is_minor, normalize_email
 
 # OWASP's current floor for PBKDF2-HMAC-SHA256. Deliberately a named
@@ -220,6 +221,107 @@ class AuthStore:
                 (_iso(_now()), user_id),
             )
             conn.commit()
+
+
+def _as_aware_datetime(value) -> datetime:
+    """`auth_tokens.expires_at`/`auth_sessions.expires_at` come back as a
+    real `datetime` from Postgres (TIMESTAMPTZ) but as an ISO-8601 string
+    from SQLite (TEXT) -- normalize either into a tz-aware `datetime` so
+    `AuthStore`'s expiry comparisons work unchanged against both."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return datetime.fromisoformat(value)
+
+
+class SupabaseAuthStore:
+    """Postgres/Supabase-backed sibling of `AuthStore`, same public
+    interface, connecting via `telemetry.db`. See
+    `storage.SupabaseSessionLibrary` for why schema creation isn't done
+    here.
+
+    Only actually used by `LocalAuthProvider` -- when `SupabaseAuthProvider`
+    is the active auth backend, GoTrue owns sessions/tokens directly and
+    this class's tables stay empty either way. Kept as a real Postgres
+    table (see the migration) rather than skipped, so switching auth
+    backends later doesn't require a schema change.
+    """
+
+    def __init__(self, _unused_db_path: str | None = None):
+        pass
+
+    def issue_token(self, user_id: int, kind: str, ttl_hours: int) -> str:
+        token = secrets.token_urlsafe(32)
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO auth_tokens (user_id, kind, token, expires_at, created_at) VALUES (%s,%s,%s,%s,%s)",
+                (user_id, kind, token, _iso(_now() + timedelta(hours=ttl_hours)), _iso(_now())),
+            )
+            conn.commit()
+        return token
+
+    def consume_token(self, token: str, kind: str) -> int | None:
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM auth_tokens WHERE token = %s AND kind = %s", (token, kind))
+            row = cur.fetchone()
+            if row is None or row["used_at"] is not None:
+                return None
+            if _as_aware_datetime(row["expires_at"]) < _now():
+                return None
+            cur.execute("UPDATE auth_tokens SET used_at = %s WHERE id = %s", (_iso(_now()), row["id"]))
+            conn.commit()
+            return int(row["user_id"])
+
+    def start_session(self, user_id: int) -> str:
+        token = secrets.token_urlsafe(32)
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO auth_sessions (user_id, token, created_at, expires_at) VALUES (%s,%s,%s,%s)",
+                (user_id, token, _iso(_now()), _iso(_now() + timedelta(days=LOGIN_SESSION_TTL_DAYS))),
+            )
+            conn.commit()
+        return token
+
+    def user_for_session(self, token: str | None) -> int | None:
+        if not token:
+            return None
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM auth_sessions WHERE token = %s", (token,))
+            row = cur.fetchone()
+        if row is None or row["revoked_at"] is not None:
+            return None
+        if _as_aware_datetime(row["expires_at"]) < _now():
+            return None
+        return int(row["user_id"])
+
+    def revoke_session(self, token: str) -> None:
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE auth_sessions SET revoked_at = %s WHERE token = %s", (_iso(_now()), token))
+            conn.commit()
+
+    def revoke_all_sessions(self, user_id: int) -> None:
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE auth_sessions SET revoked_at = %s WHERE user_id = %s AND revoked_at IS NULL",
+                (_iso(_now()), user_id),
+            )
+            conn.commit()
+
+
+def auth_store_from_env(sqlite_path: str) -> AuthStore | SupabaseAuthStore:
+    """Postgres/Supabase-backed token/session store when
+    `SUPABASE_DB_URL`/`DATABASE_URL` is configured, the local SQLite one
+    otherwise -- see `storage.session_library_from_env`, which makes the
+    same choice for the telemetry/session store this shares a database
+    with."""
+    if pgdb.has_postgres_configured():
+        return SupabaseAuthStore()
+    return AuthStore(sqlite_path)
 
 
 class AuthProvider:
