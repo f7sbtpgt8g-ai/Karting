@@ -369,6 +369,57 @@ entirely (would need to reconstruct a merged, correctly-interleaved
 per-channel sequence across multiple record types before correlating,
 which is a bigger undertaking than what's been tried so far).
 
+### Second real file: format/formula cross-validation + a keyframe/delta test
+
+A second real `.uni` file was provided -- a different session, different
+track (`260823_1555_Korsor GPS_AUSTIN.uni`, Korsør, Denmark, on the
+opposite side of Zealand from Barmosen), same device/firmware
+(`unigo-one`, serial 3625, firmware `1.20.002`). No matching `.tsv` export
+was available for this one, so it can't directly confirm new channels the
+way the first file pair did -- but it's valuable in two ways:
+
+**1. Structural + formula cross-validation (strong positive result).**
+The chunk layout, `CHNL` table (same 27 channel id/width pairs, byte-for-
+byte identical), and `RECRDATA` record-type tag bytes (`90/92 80 80 40`,
+`f0/f2/fe 80 a0 40`, etc.) all match the first file exactly -- confirming
+these are protocol constants, not session-specific data. More importantly,
+**decoding this file's GPS fixes with the exact same formulas derived
+from the first file** (`lat = int32_BE/1e7` at body offset 13, etc., zero
+session-specific tuning) produced `lat 55.3531-55.3548, lon 11.1585-
+11.1611` -- which is genuinely, correctly Korsør's real location on a map,
+with a sensible closed-loop track shape and a plausible `0-104.64 km/h`
+speed range. This is real, independent confirmation the decode formulas
+are general (not overfit to one session/location), found without needing
+a TSV for this file at all.
+
+**2. A "keyframe + delta" hypothesis, tested against the first file's real
+TSV (still no signal for RPM/Steering/G-force).** OpenLap's own module
+docstring describes `RECRDATA` as using "a variable-length keyframe-vs-
+delta scheme" -- worth taking seriously given how the record-type tags
+naturally pair up: a common, smaller type (`14`, `24`) alongside a rarer,
+larger type sharing the same tag prefix (`18`, `28`). Tested directly:
+walk all records in true file order, and on each "keyframe" record
+(18 or 28) *set* a running state from a candidate field, then on each
+"delta" record (14 or 24) *add* a candidate signed field to that running
+state -- across every plausible offset/width/endianness combination for
+both the keyframe-set and the delta-add fields, correlating the
+reconstructed running value against every remaining TSV target. Result:
+**no signal for RPM, Steering Angle, or any of the three acceleration
+channels** (nothing above the 0.6 threshold). The only matches found
+(`Temperature 1`, ~0.935, identical across dozens of different delta
+offset/width choices) are a giveaway that the keyframe resets alone
+explain the correlation and the delta terms are contributing noise, not
+real signal -- i.e. this specific pairing isn't the Temperature 1 channel
+either, it's an artifact of Temperature 1 changing slowly enough that
+almost any slowly-updating anchor loosely tracks it.
+
+**Net effect:** the keyframe/delta idea remains plausible in principle
+(OpenLap's own description, and the natural tag-pairing, both point that
+way) but hasn't been the key that unlocks RPM/Steering/G-force so far --
+either the specific type pairings tried aren't the right ones, the
+keyframe/delta roles are reversed from what was assumed, or the scheme
+applies at a finer (bit-level, not byte-level) granularity than tested.
+
 ### Prior art found: an independent open-source project already cracked part of this
 
 A web search turned up
@@ -478,16 +529,21 @@ decision to not depend on Analyser:
   per-lap min/max for RPM and Steering Angle (confirming their physical
   scale: RPM raw/unscaled, Steering Angle x10). But the full per-sample
   trace for all three resisted linear/lagged/float32/delta-cumsum/rank
-  correlation search across every record type and offset. Next things
-  worth trying: a proper stateful delta-decoder, bit-level (non-byte-
-  aligned) packing, a deeper `RECRSMRY` pass in case it holds more than
-  per-lap extremes, or a second real file pair to cross-validate
-  candidates against.
+  correlation search, AND a stateful keyframe+delta reconstruction search
+  (see "Second real file" above) -- across every record type and offset
+  tried so far. A second real file (Korsør) confirmed the *other* 8
+  channels' formulas generalize correctly, but didn't have a matching TSV
+  so couldn't directly help crack these three. Next things worth trying:
+  bit-level (non-byte-aligned) packing, a deeper `RECRSMRY` pass in case
+  it holds more than per-lap extremes, trying the keyframe+delta idea
+  with the roles/type-pairings reversed, or a third real file that DOES
+  come with a matching TSV and has more dramatic RPM/steering variation
+  than the two sessions seen so far.
 - Exact byte boundaries for the DOP fields (Positional/Horizontal/
   Vertical DOP all decode with R²=1.0 individually, but their offsets --
   38/40/41 -- are close enough together that the precise boundary between
   them hasn't been independently re-derived the way lat/lon/altitude
-  were; worth double-checking against a second file).
+  were; worth double-checking against a file with a matching TSV).
 - Meaning of `INFO` (4 bytes), `TRIG` (2 bytes) chunks, and full
   understanding of `SMRY` (25604 bytes, only the sentinel-pattern
   observation so far) and `ELOG` (confirmed to be a plain-text device log,
@@ -526,7 +582,12 @@ decision to not depend on Analyser:
   2026-09-05, covering 6 sessions from the same device; the one matching
   `2026-08-29 14:41:20` was isolated and used as ground truth against the
   `.uni` file from the HAR capture above.
-- The raw `.har` file, the `.uni` session file, and the TSV export all
+- A second real `.uni` file, `260823_1555_Korsor GPS_AUSTIN.uni`
+  (1,206,009 bytes), a different session at a different track (Korsør,
+  Denmark) from the same device -- no matching TSV export available for
+  this one. Used for structural/formula cross-validation (see "Second
+  real file" above), not for cracking new channels.
+- The raw `.har` file, both `.uni` session files, and the TSV export all
   contain the user's real session filenames (track names, dates, and a
   driver name), so none of them are committed to the repo -- treat them
   as personal data, not project documentation. Only the findings derived
