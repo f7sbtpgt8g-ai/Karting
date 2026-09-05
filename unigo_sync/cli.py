@@ -17,6 +17,7 @@ import sys
 import time
 
 from .core.config import load_config
+from .core.period import DEFAULT_SYNC_PERIOD, SYNC_PERIODS, cutoff_for
 from .core.sync_engine import configure_logging, run_sync
 from .core.sync_state import SyncState
 
@@ -28,12 +29,18 @@ def _add_common_sync_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--driver", default=None)
     p.add_argument("--track", default=None)
     p.add_argument("--session-type", default=None, choices=["practice", "qualifying", "race"])
+    p.add_argument(
+        "--period", default=DEFAULT_SYNC_PERIOD, choices=SYNC_PERIODS,
+        help="Only sync sessions recorded within this window (default: %(default)s). "
+        "Filtered on the device's own filename before downloading, so 'all' is the only "
+        "choice that can be slow on a device with a long history.",
+    )
 
 
 def _do_sync(args) -> int:
     config = load_config(args.config)
     configure_logging(config)
-    result = run_sync(config)
+    result = run_sync(config, period_cutoff=cutoff_for(args.period))
 
     if args.ingest and result.new_synced:
         from .ingest_bridge import ingest_new_sessions
@@ -43,7 +50,8 @@ def _do_sync(args) -> int:
 
     print(
         f"Sync complete: {len(result.new_synced)} new, "
-        f"{len(result.already_synced)} already synced, {len(result.failed)} failed"
+        f"{len(result.already_synced)} already synced, {len(result.failed)} failed, "
+        f"{len(result.skipped_out_of_period)} outside the '{args.period}' window"
     )
     for name, error in result.failed:
         print(f"  FAILED: {name}: {error}", file=sys.stderr)
@@ -56,7 +64,7 @@ def _do_watch(args) -> int:
     print(f"Watching for new sessions every {config.poll_interval_s:.0f}s (Ctrl+C to stop)...")
     try:
         while True:
-            result = run_sync(config)
+            result = run_sync(config, period_cutoff=cutoff_for(args.period))
             if args.ingest and result.new_synced:
                 from .ingest_bridge import ingest_new_sessions
 

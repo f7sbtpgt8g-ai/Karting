@@ -17,6 +17,9 @@ retry_backoff_s: 2
 output_dir: "data/unigo_sync/incoming"
 sync_state_db: "data/unigo_sync/sync_state.db"
 log_path: "data/unigo_sync/sync.log"
+sessions_db: "data/sessions.db"
+auth_cache_path: "data/unigo_sync/auth_cache.json"
+pending_uploads_db: "data/unigo_sync/pending_uploads.db"
 
 # How often the optional background watcher polls for new sessions while
 # connected to the device's WiFi. The device's own UI polls its listing
@@ -25,3 +28,16 @@ log_path: "data/unigo_sync/sync.log"
 poll_interval_s: 30
 
 wifi_ssid_prefix: "unigo-"
+
+# Optional: point the login screen and session uploads at a real
+# Supabase/Postgres deployment instead of the local sessions_db SQLite
+# file above -- the same values a server deployment would set as
+# SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_DB_URL environment
+# variables (see the main README's "Migrating the database layer to
+# Supabase" section), just as plain config here since there's no
+# convenient way to set a Windows env var on a per-user install. Leave
+# these commented out (or absent) to use the local SQLite file instead --
+# fine for testing, not for multiple laptops sharing one driver database.
+# supabase_url: "https://<project>.supabase.co"
+# supabase_anon_key: "<anon key>"
+# supabase_db_url: "postgresql://<connection string from Supabase>"

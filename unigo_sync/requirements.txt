@@ -6,5 +6,17 @@ pyyaml>=6.0
 pandas>=2.0
 numpy>=1.24
 
+# core/auth_session.py and ingest_bridge.py import telemetry.auth /
+# telemetry.accounts / telemetry.storage to check credentials and upload
+# sessions against the *same* database the rest of the app uses. Both are
+# required unconditionally for the same reason the root requirements.txt
+# takes this stance (see its own comment there): telemetry/db.py imports
+# psycopg2 directly and telemetry/storage.py's Supabase-backed session
+# cache round-trips through pyarrow, but only once SUPABASE_DB_URL/
+# DATABASE_URL is actually set -- an optional import here would just move
+# the failure from install time to the first sync at the track.
+psycopg2-binary>=2.9
+pyarrow>=14
+
 # Windows platform layer (platform_windows/) needs more -- see
 # requirements-windows.txt, not needed for core/cli use on any OS.

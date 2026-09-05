@@ -1,0 +1,424 @@
+"""The primary end-user front end for unigo_sync: a login screen, then a
+settings screen (driver + sync period) with a "Connect & Sync" button.
+
+Supersedes bare `tray_app.py` as the Start Menu entry point -- that one
+never signed in or uploaded anywhere (see its docstring), which is fine
+for a purely local staging-folder tool but not for "put this session in
+the database under the right driver's name", which is the actual job
+here. `tray_app.py` is left in place for anyone who wants the older,
+account-free "just decode to a folder" behaviour.
+
+Built on `tkinter` (stdlib -- no new dependency, and PyInstaller bundles
+it automatically on Windows) rather than pulling in a heavier GUI
+toolkit. All the actual login/sync/upload logic lives in `core/` (see
+`core.auth_session`, `core.sync_orchestrator`) and is plain, toolkit-free
+Python; this module is just the widgets and thread plumbing around it.
+
+Threading note: every long-running call (login, sync, upload, the
+connectivity poll) runs on a background thread so the window never
+freezes, and every UI update coming off one of those threads is
+marshalled back onto the Tk main thread via `root.after(...)` -- Tk
+widgets are not thread-safe to touch directly from another thread.
+
+`tkinter` itself is imported lazily in `main()` (module-level `tk`/`ttk`/
+`simpledialog` names, set with `global`) rather than at module import
+time, the same reason `tray_app.py` defers its `pystray`/`PIL` imports
+into `run()`/`_make_icon_image`: it keeps this module importable (for
+tooling, or a future headless smoke test) in an environment without a Tk
+install, even though a real run always needs one.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from datetime import datetime, timezone
+
+from ..core import auth_cache, auth_session
+from ..core.config import SyncConfig, load_config
+from ..core.period import DEFAULT_SYNC_PERIOD, SYNC_PERIOD_LABELS, SYNC_PERIODS, cutoff_for
+from ..core.sync_engine import configure_logging
+from ..core.sync_orchestrator import flush_pending_uploads, sync_and_upload
+from .wifi import is_connected_to_unigo
+
+logger = logging.getLogger("unigo_sync.platform_windows.gui_app")
+
+_ADD_NEW_DRIVER = "+ Add new driver..."
+
+# How often the background thread checks "is the database reachable yet"
+# to flush anything queued while offline, and (if enabled) whether the
+# laptop has joined the device's WiFi to trigger an auto-sync. Independent
+# of `config.poll_interval_s`, which is about how *often the device is
+# asked what's new*, not how often connectivity is rechecked.
+_BACKGROUND_POLL_S = 15.0
+
+
+class App:
+    def __init__(self, config: SyncConfig | None = None):
+        self.config = config or load_config()
+        configure_logging(self.config)
+
+        self.root = tk.Tk()
+        self.root.title("UniGo Sync")
+        self.root.geometry("480x520")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self.user_id: int | None = None
+        self.email: str | None = None
+        self.session_token: str | None = None
+        self.driver_choices: list[auth_session.DriverChoice] = []
+
+        self._stop_event = threading.Event()
+        self._background_thread: threading.Thread | None = None
+
+        self._container = ttk.Frame(self.root, padding=16)
+        self._container.pack(fill="both", expand=True)
+
+        self._login_frame: ttk.Frame | None = None
+        self._settings_frame: ttk.Frame | None = None
+
+        self._try_restore_cached_session()
+
+    # -- thread-safe UI helper ------------------------------------------
+
+    def _ui(self, fn, *args) -> None:
+        self.root.after(0, lambda: fn(*args))
+
+    # -- startup: restore a cached login if there is one -----------------
+
+    def _try_restore_cached_session(self) -> None:
+        cached = auth_cache.load(self.config.auth_cache_path)
+        if cached is None or cached.is_stale():
+            if cached is not None:
+                auth_cache.clear(self.config.auth_cache_path)
+            self._show_login()
+            return
+
+        # Trust the cache outright while offline (that's the whole point --
+        # a laptop joined to the UniGo device's AP has no route to the
+        # database to check against) and only bother re-validating when a
+        # connection is actually available.
+        from ..core.connectivity import is_online
+
+        if is_online():
+            valid_user_id = auth_session.validate_session(cached.session_token, self.config.sessions_db)
+            if valid_user_id is None:
+                auth_cache.clear(self.config.auth_cache_path)
+                self._show_login()
+                return
+
+        self.user_id = cached.user_id
+        self.email = cached.email
+        self.session_token = cached.session_token
+        self._show_settings(
+            preselect_profile_id=cached.driver_profile_id,
+            preselect_period=cached.sync_period,
+        )
+
+    # -- login screen -----------------------------------------------------
+
+    def _show_login(self) -> None:
+        if self._settings_frame is not None:
+            self._settings_frame.destroy()
+            self._settings_frame = None
+        self._login_frame = ttk.Frame(self._container)
+        self._login_frame.pack(fill="both", expand=True)
+
+        ttk.Label(self._login_frame, text="Sign in to UniGo Sync", font=("", 14, "bold")).pack(pady=(0, 16))
+
+        form = ttk.Frame(self._login_frame)
+        form.pack(fill="x")
+        ttk.Label(form, text="Email").grid(row=0, column=0, sticky="w", pady=4)
+        email_entry = ttk.Entry(form, width=32)
+        email_entry.grid(row=0, column=1, pady=4)
+        ttk.Label(form, text="Password").grid(row=1, column=0, sticky="w", pady=4)
+        password_entry = ttk.Entry(form, width=32, show="*")
+        password_entry.grid(row=1, column=1, pady=4)
+
+        error_label = ttk.Label(self._login_frame, text="", foreground="red", wraplength=380)
+        error_label.pack(pady=8)
+
+        sign_in_button = ttk.Button(self._login_frame, text="Sign in")
+        sign_in_button.pack(pady=8)
+
+        offline_note = ttk.Label(
+            self._login_frame,
+            text=(
+                "Sign in once while you have normal internet access, before connecting to the "
+                "UniGo device's WiFi -- your login is remembered for a week, so you can still sync "
+                "and stage sessions while offline at the track."
+            ),
+            wraplength=380, foreground="gray",
+        )
+        offline_note.pack(pady=(16, 0))
+
+        def do_login() -> None:
+            email, password = email_entry.get().strip(), password_entry.get()
+            if not email or not password:
+                error_label.config(text="Enter both an email and a password.")
+                return
+            sign_in_button.config(state="disabled")
+            error_label.config(text="Signing in...")
+            threading.Thread(target=login_worker, args=(email, password), daemon=True).start()
+
+        def login_worker(email: str, password: str) -> None:
+            result = auth_session.login(email, password, self.config.sessions_db)
+            self._ui(self._on_login_result, result)
+
+        sign_in_button.config(command=do_login)
+        password_entry.bind("<Return>", lambda _e: do_login())
+        self._login_error_label = error_label
+        self._login_sign_in_button = sign_in_button
+
+    def _on_login_result(self, result: auth_session.LoginResult) -> None:
+        if not result.ok:
+            self._login_error_label.config(text=result.error or "Sign in failed.")
+            self._login_sign_in_button.config(state="normal")
+            return
+
+        self.user_id, self.email, self.session_token = result.user_id, result.email, result.session_token
+        auth_cache.save(
+            self.config.auth_cache_path,
+            auth_cache.CachedSession(
+                user_id=result.user_id, email=result.email, session_token=result.session_token,
+                cached_at=datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        self._login_frame.destroy()
+        self._login_frame = None
+        self._show_settings()
+
+    # -- settings / sync screen -------------------------------------------
+
+    def _show_settings(self, preselect_profile_id: int | None = None, preselect_period: str | None = None) -> None:
+        self._settings_frame = ttk.Frame(self._container)
+        self._settings_frame.pack(fill="both", expand=True)
+
+        top = ttk.Frame(self._settings_frame)
+        top.pack(fill="x")
+        ttk.Label(top, text=f"Signed in as {self.email}").pack(side="left")
+        ttk.Button(top, text="Sign out", command=self._sign_out).pack(side="right")
+
+        ttk.Separator(self._settings_frame).pack(fill="x", pady=8)
+
+        ttk.Label(self._settings_frame, text="Driver").pack(anchor="w")
+        self.driver_choices = auth_session.list_driver_choices(self.user_id, self.config.sessions_db)
+        self._driver_var = tk.StringVar()
+        self._driver_combo = ttk.Combobox(self._settings_frame, textvariable=self._driver_var, state="readonly", width=40)
+        self._refresh_driver_combo(preselect_profile_id)
+        self._driver_combo.pack(fill="x", pady=(2, 12))
+        self._driver_combo.bind("<<ComboboxSelected>>", self._on_driver_selected)
+
+        ttk.Label(self._settings_frame, text="Sync period").pack(anchor="w")
+        self._period_var = tk.StringVar(value=preselect_period or DEFAULT_SYNC_PERIOD)
+        period_frame = ttk.Frame(self._settings_frame)
+        period_frame.pack(fill="x", pady=(2, 4))
+        for period in SYNC_PERIODS:
+            ttk.Radiobutton(
+                period_frame, text=SYNC_PERIOD_LABELS[period], variable=self._period_var, value=period,
+                command=self._save_settings,
+            ).pack(anchor="w")
+        ttk.Label(
+            self._settings_frame,
+            text="\"Today only\" is fastest -- the device is asked for everything it has, but only "
+            "today's sessions are actually downloaded.",
+            wraplength=420, foreground="gray",
+        ).pack(anchor="w", pady=(0, 12))
+
+        self._auto_sync_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            self._settings_frame, text="Auto-sync whenever this laptop joins the UniGo device's WiFi",
+            variable=self._auto_sync_var, command=self._on_auto_sync_toggled,
+        ).pack(anchor="w", pady=(0, 12))
+
+        self._sync_button = ttk.Button(self._settings_frame, text="Connect & Sync", command=self._start_sync)
+        self._sync_button.pack(fill="x", pady=(0, 8))
+
+        self._pending_label = ttk.Label(self._settings_frame, text="")
+        self._pending_label.pack(anchor="w")
+
+        ttk.Label(self._settings_frame, text="Status").pack(anchor="w", pady=(12, 0))
+        log_frame = ttk.Frame(self._settings_frame)
+        log_frame.pack(fill="both", expand=True)
+        self._log = tk.Text(log_frame, height=10, state="disabled", wrap="word")
+        self._log.pack(fill="both", expand=True, side="left")
+        scrollbar = ttk.Scrollbar(log_frame, command=self._log.yview)
+        scrollbar.pack(side="right", fill="y")
+        self._log.config(yscrollcommand=scrollbar.set)
+
+        self._save_settings()
+        self._refresh_pending_label()
+        self._start_background_thread()
+
+    def _refresh_driver_combo(self, preselect_profile_id: int | None) -> None:
+        labels = [self._driver_label(c) for c in self.driver_choices] + [_ADD_NEW_DRIVER]
+        self._driver_combo["values"] = labels
+        index = 0
+        if preselect_profile_id is not None:
+            for i, choice in enumerate(self.driver_choices):
+                if choice.profile_id == preselect_profile_id:
+                    index = i
+                    break
+        if labels:
+            self._driver_combo.current(index)
+
+    @staticmethod
+    def _driver_label(choice: auth_session.DriverChoice) -> str:
+        return f"{choice.display_name} (me)" if choice.is_own else choice.display_name
+
+    def _selected_driver(self) -> auth_session.DriverChoice | None:
+        selection = self._driver_var.get()
+        for choice in self.driver_choices:
+            if self._driver_label(choice) == selection:
+                return choice
+        return None
+
+    def _on_driver_selected(self, _event=None) -> None:
+        if self._driver_var.get() == _ADD_NEW_DRIVER:
+            name = simpledialog.askstring("Add driver", "Driver name:", parent=self.root)
+            if name and name.strip():
+                new_choice = auth_session.create_driver(name, self.user_id, self.config.sessions_db)
+                self.driver_choices.append(new_choice)
+                self._refresh_driver_combo(new_choice.profile_id)
+            else:
+                self._refresh_driver_combo(None)
+        self._save_settings()
+
+    def _save_settings(self) -> None:
+        selected = self._selected_driver()
+        auth_cache.update_settings(
+            self.config.auth_cache_path,
+            driver_profile_id=selected.profile_id if selected else None,
+            driver_display_name=selected.display_name if selected else None,
+            sync_period=self._period_var.get(),
+        )
+
+    def _on_auto_sync_toggled(self) -> None:
+        self._log_line(
+            "Auto-sync enabled -- will sync automatically when this laptop joins the device's WiFi."
+            if self._auto_sync_var.get() else "Auto-sync disabled."
+        )
+
+    # -- sync ---------------------------------------------------------------
+
+    def _start_sync(self) -> None:
+        selected = self._selected_driver()
+        if selected is None:
+            self._log_line("Choose a driver before syncing.")
+            return
+        self._sync_button.config(state="disabled")
+        self._log_line(f"Connecting to the UniGo device and syncing for {selected.display_name}...")
+        threading.Thread(target=self._sync_worker, args=(selected,), daemon=True).start()
+
+    def _sync_worker(self, selected: auth_session.DriverChoice) -> None:
+        cutoff = cutoff_for(self._period_var.get())
+        try:
+            outcome = sync_and_upload(
+                self.config, cutoff, selected.profile_id, selected.display_name,
+                uploaded_by_user_id=self.user_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - report, don't crash the app
+            logger.exception("sync failed")
+            self._ui(self._on_sync_error, str(exc))
+            return
+        self._ui(self._on_sync_done, outcome)
+
+    def _on_sync_error(self, message: str) -> None:
+        self._sync_button.config(state="normal")
+        self._log_line(f"Sync failed: {message}")
+
+    def _on_sync_done(self, outcome) -> None:
+        self._sync_button.config(state="normal")
+        r = outcome.sync_result
+        self._log_line(
+            f"Sync complete: {len(r.new_synced)} new, {len(r.already_synced)} already synced, "
+            f"{len(r.failed)} failed, {len(r.skipped_out_of_period)} outside the selected period."
+        )
+        if outcome.uploaded:
+            self._log_line(f"Uploaded {len(outcome.uploaded)} session(s) to the database.")
+        if outcome.queued:
+            self._log_line(
+                f"{len(outcome.queued)} session(s) staged locally, pending upload -- "
+                "will upload automatically once the network is back."
+            )
+        for name, error in r.failed:
+            self._log_line(f"  FAILED: {name}: {error}")
+        self._refresh_pending_label()
+
+    # -- background: connectivity flush + optional wifi auto-sync ----------
+
+    def _start_background_thread(self) -> None:
+        if self._background_thread is not None:
+            return
+        self._background_thread = threading.Thread(target=self._background_loop, daemon=True)
+        self._background_thread.start()
+
+    def _background_loop(self) -> None:
+        while not self._stop_event.wait(_BACKGROUND_POLL_S):
+            try:
+                outcome = flush_pending_uploads(self.config)
+                if outcome.uploaded:
+                    self._ui(self._on_flush_done, outcome)
+            except Exception:  # noqa: BLE001 - keep polling even if one attempt errors
+                logger.exception("background upload flush failed")
+
+            if self._auto_sync_var.get() and is_connected_to_unigo(self.config.wifi_ssid_prefix):
+                selected = self._selected_driver()
+                if selected is not None:
+                    self._ui(self._log_line, f"UniGo WiFi detected -- auto-syncing for {selected.display_name}...")
+                    self._sync_worker(selected)
+
+    def _on_flush_done(self, outcome) -> None:
+        self._log_line(f"Network back -- uploaded {len(outcome.uploaded)} queued session(s) automatically.")
+        self._refresh_pending_label()
+
+    def _refresh_pending_label(self) -> None:
+        from ..core.pending_uploads import PendingUploadQueue
+
+        with PendingUploadQueue(self.config.pending_uploads_db) as queue:
+            count = queue.count()
+        self._pending_label.config(
+            text=f"{count} session(s) staged, waiting to upload." if count else "Everything is uploaded."
+        )
+
+    # -- misc ---------------------------------------------------------------
+
+    def _log_line(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self._log.config(state="normal")
+        self._log.insert("end", f"[{timestamp}] {message}\n")
+        self._log.see("end")
+        self._log.config(state="disabled")
+
+    def _sign_out(self) -> None:
+        from ..core.connectivity import is_online
+
+        if self.session_token and is_online():
+            try:
+                auth_session.sign_out(self.session_token, self.config.sessions_db)
+            except Exception:  # noqa: BLE001 - local sign-out still proceeds
+                logger.exception("failed to revoke session server-side")
+        auth_cache.clear(self.config.auth_cache_path)
+        self.user_id = self.email = self.session_token = None
+        self._settings_frame.destroy()
+        self._settings_frame = None
+        self._show_login()
+
+    def _on_close(self) -> None:
+        self._stop_event.set()
+        self.root.destroy()
+
+    def run(self) -> None:
+        self.root.mainloop()
+
+
+def main() -> None:
+    global tk, ttk, simpledialog
+    import tkinter as tk
+    from tkinter import simpledialog, ttk
+
+    App().run()
+
+
+if __name__ == "__main__":
+    main()

@@ -48,6 +48,22 @@ class SyncConfig:
     sync_state_db: str = "data/unigo_sync/sync_state.db"
     log_path: str = "data/unigo_sync/sync.log"
 
+    # Analysis session library this tool ingests into (same file
+    # `scripts/ingest.py --db` and the Streamlit app default to) when no
+    # Postgres/Supabase database is configured via SUPABASE_DB_URL /
+    # DATABASE_URL -- see telemetry.db.has_postgres_configured.
+    sessions_db: str = "data/sessions.db"
+
+    # Cached login (email/session token/chosen driver) for the GUI, so a
+    # sign-in made while there's internet survives into an offline sync
+    # pass at the track -- see core/auth_cache.py.
+    auth_cache_path: str = "data/unigo_sync/auth_cache.json"
+
+    # Sessions downloaded and decoded while offline (or while the
+    # sessions database was otherwise unreachable) but not yet uploaded
+    # into sessions_db -- see core/pending_uploads.py.
+    pending_uploads_db: str = "data/unigo_sync/pending_uploads.db"
+
     # Background watcher (optional, off by default -- manual "sync now"
     # is the default trigger per the original design).
     poll_interval_s: float = 30.0
@@ -68,6 +84,20 @@ class SyncConfig:
         return self.base_url.rstrip("/") + self.download_path_template.format(name=quote(name))
 
 
+# telemetry.auth/accounts/storage's own *_from_env factories all key off
+# these environment variables (see telemetry/db.py's has_postgres_configured
+# and telemetry/auth.py's provider_from_env) to decide between the local
+# SQLite backend and a Supabase/Postgres one. That convention makes sense
+# for a server deployment where env vars are part of the platform config,
+# but there's no comparable place to set one on an end user's Windows
+# laptop -- so config.yaml is also allowed to carry them (as plain,
+# lowercase keys, since they land in `extra`) and `load_config` mirrors
+# whichever of them is present into the process environment, letting the
+# installed config.yaml be the actual place someone points a laptop at a
+# real deployment's database, not a manual Windows env-var edit.
+_ENV_CONFIG_KEYS = ("supabase_url", "supabase_anon_key", "supabase_db_url", "database_url")
+
+
 def load_config(path: str | None = None) -> SyncConfig:
     """Load config from YAML, falling back to defaults for anything not
     present in the file (including a missing file entirely)."""
@@ -80,4 +110,13 @@ def load_config(path: str | None = None) -> SyncConfig:
     known = {k for k in SyncConfig.__dataclass_fields__ if k != "extra"}
     kwargs = {k: v for k, v in data.items() if k in known}
     extra = {k: v for k, v in data.items() if k not in known}
+
+    for key in _ENV_CONFIG_KEYS:
+        value = extra.get(key)
+        # An already-set env var (e.g. a real server deployment) always
+        # wins over config.yaml, so this never overrides a value the
+        # deployment deliberately set another way.
+        if value and not os.environ.get(key.upper()):
+            os.environ[key.upper()] = str(value)
+
     return SyncConfig(extra=extra, **kwargs)
