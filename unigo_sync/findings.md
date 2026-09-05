@@ -427,6 +427,69 @@ was actively hiding). Any future work on Steering Angle or the
 acceleration channels should start from this corrected methodology, not
 the naive positional one.
 
+### G-force channels: every technique re-run with the corrected methodology -- still not decoded
+
+Given RPM's fix, every earlier technique was re-run against Vertical
+Acceleration, GPS Longitudinal Acceleration, and GPS Lateral
+Acceleration specifically, this time all using the time-aligned
+methodology from the start (several of the original attempts --
+Spearman, keyframe+delta, bit-level search -- had unknowingly inherited
+the same positional-alignment bug that hid RPM, so they needed a proper
+re-run, not just a re-read of their old results):
+
+- **Direct time-aligned linear correlation, all record types/offsets/
+  widths:** only a partial echo of Lateral Acceleration (~0.54) at the
+  same byte region as the Steering Angle partial match (type 24 offset
+  16, type 28 offset 20) -- consistent with this being the *same*
+  physical signal already found for steering, not a distinct decode.
+  **Zero signal for Longitudinal or Vertical Acceleration anywhere.**
+- **Magnitude/absolute-value correlation** (in case of a sign or
+  rectification mismatch): the only "matches" found for Longitudinal
+  Acceleration were at the exact byte offsets already confirmed as RPM
+  and embedded GPS speed -- a confound, not a decode (braking/
+  accelerating naturally correlates with longitudinal G physically,
+  which is exactly what an RPM channel would echo without literally
+  being it). Same conclusion as Temperature 1's earlier false lead.
+- **Spearman rank correlation** (catches monotonic-but-nonlinear
+  encoding): same ~0.51-0.52 ceiling on Lateral Acceleration at the same
+  location, nothing for the other two.
+- **Bit-level search** against binarized sign targets (braking vs.
+  accelerating, bump up vs. down): weak, inconclusive (0.32 max),
+  scattered across several record types with no consistent bit position.
+- **Keyframe+delta stateful reconstruction**, redone with proper
+  time-aligned correlation this time (unlike the earlier pass): same
+  ~0.51 ceiling on Lateral Acceleration, with the correlation staying
+  essentially flat regardless of which delta offset/width was tried --
+  the same "keyframe-alone explains it" signature seen with Temperature
+  1 earlier, meaning the delta terms aren't real signal here either.
+- **Physical-model proxy** (new approach): computed lateral and
+  longitudinal G directly from the already-decoded GPS track, the same
+  way OpenLap derives them (lateral = speed x heading-rate / g;
+  longitudinal = d(speed)/dt / g) -- these proxies correlate reasonably
+  with the real TSV columns (0.91 for lateral, 0.55 for longitudinal,
+  confirming the proxies themselves are decent), then were correlated
+  against every raw candidate field the same way. Same result: only the
+  familiar ~0.48 Lateral echo at the steering region, nothing for
+  longitudinal.
+- **`RECRSMRY` exact-value search** for per-lap G-force min/max (the
+  same technique that found Steering Angle's and RPM's summary stats):
+  produced only scattered, inconsistent hits at different scales and
+  offsets per lap with no repeating stride -- unlike Steering Angle's
+  clean, verified 128-byte-stride pattern, this doesn't look like a real
+  structural match, just coincidental small-integer collisions in a
+  25KB buffer.
+
+**Conclusion:** Lateral Acceleration and Steering Angle appear to share
+one real underlying raw signal (found consistently across every
+technique, always at the same byte region, always capping in the
+~0.5-0.85 range depending on which TSV column it's compared against) --
+physically sensible, since turning the wheel and lateral G are directly
+linked. Longitudinal and Vertical Acceleration show no real signal under
+any technique tried, including several that weren't tried before RPM's
+fix. This isn't a case of "one clever trick left to find" the way RPM
+was -- it's now a much more thoroughly negative result for those two
+axes specifically.
+
 **Working theory, confirmed correct for RPM (see "RPM SOLVED" above):**
 RPM and Steering Angle are the two *highest-frequency, most
 rapidly-changing* channels in the whole file (22,124 and 11,056 firings
@@ -621,24 +684,34 @@ decision to not depend on Analyser:
   the format. RPM is split across 4 record types (14/18/24/28), each a
   raw unscaled big-endian int16 at a fixed offset, R²=0.999 combined,
   independently sanity-checked against a second file with no TSV.
-- **Steering Angle and 3-axis accelerometer G-force per-sample byte
-  encoding** -- the one remaining gap, now narrower and better-understood
-  than before RPM's fix. Steering Angle already shows a real, consistent
-  ~0.84 correlation under the corrected (time-aligned) methodology at
-  record types 24/28 -- very likely the right channel (a raw/unfiltered
-  steering sensor), not yet a bit-perfect match. GPS Lateral Acceleration
-  echoes weakly (~0.53) in the same region, plausibly a physical
-  correlation rather than a distinct decode. Vertical/GPS-Longitudinal
-  Acceleration show no signal yet. Next steps: re-run the *time-aligned*
-  search (the one that found RPM) more exhaustively for these targets
-  specifically -- check whether Steering, like RPM, spans more record
-  types than found so far; try a proper digital filter (not just a
-  moving average, which only partially closed the gap) to see if that's
-  the missing piece between the raw sensor and Analyser's filtered value;
-  a third real file with a matching TSV and more dramatic steering/
-  G-force variation would help disambiguate further. `RECRSMRY` gives
-  real per-lap min/max for Steering Angle as a fallback in the meantime
-  (confirmed scale: x10).
+- **Steering Angle byte encoding** -- narrower gap than before RPM's fix.
+  Real, consistent ~0.84 correlation under the corrected (time-aligned)
+  methodology at record types 24/28 -- very likely the right channel (a
+  raw/unfiltered steering sensor), not yet a bit-perfect match. Next
+  steps: check whether Steering, like RPM, spans more record types than
+  found so far; try a proper digital filter (not just a moving average,
+  which only partially closed the gap) to see if that's the missing
+  piece between the raw sensor and Analyser's filtered value; a third
+  real file with a matching TSV and more dramatic steering variation
+  would help. `RECRSMRY` gives real per-lap min/max for Steering Angle as
+  a fallback in the meantime (confirmed scale: x10).
+- **3-axis accelerometer G-force (Vertical, GPS Longitudinal, GPS
+  Lateral)** -- a thoroughly negative result now, not just an unexplored
+  one. Every technique that exists in this project's toolkit has been
+  tried with the corrected time-aligned methodology (direct correlation,
+  magnitude/absolute-value, Spearman rank, bit-level, stateful
+  keyframe+delta reconstruction, a physics-derived proxy signal computed
+  from the already-decoded GPS track, and an `RECRSMRY` exact-value
+  search) -- see "G-force channels" above. Lateral Acceleration shows a
+  real but capped (~0.5-0.85 depending on comparison) echo that's most
+  likely just Steering Angle's own physical correlation with cornering
+  force, not a distinct raw channel. Longitudinal and Vertical
+  Acceleration show no signal under any technique tried. If this matters
+  enough to keep pushing: a third real file+TSV pair (ideally one with
+  hard braking zones and curbs/bumps, to maximize longitudinal/vertical
+  G variation) is probably the highest-leverage next step, since every
+  purely-computational technique available has now been exhausted on the
+  two files in hand.
 - Exact byte boundaries for the DOP fields (Positional/Horizontal/
   Vertical DOP all decode with R²=1.0 individually, but their offsets --
   38/40/41 -- are close enough together that the precise boundary between
