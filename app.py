@@ -1156,162 +1156,713 @@ def _render_lap_picker(key_prefix: str, max_laps: int = MAX_COMPARE_LAPS) -> lis
     return compare_entries
 
 
+# ---------------------------------------------------------------------------
+# Data Analysis page -- design 1a ("channel-stack, pit-wall dark")
+#
+# Recreates design_handoff_karting_telemetry/README.md's 1a spec inside this
+# Streamlit app (route 1 from that README: custom CSS + Plotly, not a
+# separate frontend). Token values, spacing and type sizes below are taken
+# verbatim from that README's "Design tokens" section -- change the token
+# constant if something needs to change, not a one-off inline value.
+#
+# Known, deliberate departures from the literal spec (chrome is expected to
+# be approximate per the README; the numbers/charts are exact):
+#   - No fake top-bar nav (Analyse/Theoretical/Leaderboards/Garage) -- this
+#     app already has a real, working sidebar nav; duplicating it as inert
+#     pills would be worse than not having it. The context strip (circuit/
+#     class/session/temp/tyre) is recreated since it carries real data.
+#   - Scoped to the sidebar's single active session, matching the design's
+#     own "Laps · Run 4" lap list (one run, pick two of its laps) -- no
+#     cross-session/teammate/theoretical reference picker yet (README lists
+#     this as a real interaction the design supports; not built here).
+#   - The four "S1-S4" sectors are a fixed equal-distance quartering of the
+#     lap, independent of the corner/straight segmentation used elsewhere in
+#     this app -- broadcast-style sectors, not this app's corner numbering.
+#   - The track map keeps the real hover-synced cursor dot (render_linked_
+#     speed_delta's existing, working mechanism) rather than the literal
+#     SVG pathLength/dasharray technique the README describes -- the README
+#     itself calls the linked cursor "the single most important
+#     interaction," so that took priority over the exact map-drawing method.
+#   - The 74px trace-stack gutter shows each channel's static name/unit
+#     (via the y-axis title) but not a live per-lap cursor readout pinned
+#     there -- Streamlit has no cheap way to push a JS hover position back
+#     into a Python-rendered sidebar without a rerun per pixel moved (see
+#     render_linked_speed_delta's docstring); the crosshair + hover tooltip
+#     still surface the same numbers.
+# ---------------------------------------------------------------------------
+
+_DA1A = {  # design 1a's dark token palette (README "Design tokens" table)
+    "canvas": "#0b0d0f",
+    "surface": "#0d1114",
+    "surface_raised": "#101417",
+    "row_alt": "#0f1316",
+    "row_selected": "#181e22",
+    "ink": "#eef0f1",
+    "ink2": "#c9cfd4",
+    "ink_muted": "#8c959c",
+    "ink_faint": "#6d767d",
+    "ink_faint2": "#565f66",
+    "hairline": "rgba(255,255,255,.10)",
+    "hairline_strong": "rgba(255,255,255,.14)",
+    "neutral_bar": "#22282c",
+    "neutral_bar2": "#2a3136",
+    "accent": "#ff3b1f",
+    "gain": "#2fd07a",
+    "gain_card": "#3ddb85",
+    "loss": "#ff4a3d",
+    "loss_card": "#ff6a58",
+    "reference": "#b06cff",
+    "theoretical": "#ffd23d",
+}
+
+DA1A_N_SECTORS = 4
+
+
+def _da1a_inject_css() -> None:
+    t = _DA1A
+    st.markdown(
+        f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+.st-key-da1a_root {{
+    background: {t['canvas']};
+    padding: 14px 16px 20px 16px;
+    border-radius: 6px;
+    font-family: 'Archivo', sans-serif;
+    color: {t['ink']};
+}}
+.st-key-da1a_root .da1a-mono {{
+    font-family: 'JetBrains Mono', monospace;
+    font-variant-numeric: tabular-nums;
+}}
+.st-key-da1a_root .da1a-label {{
+    font-family: 'Archivo', sans-serif;
+    font-weight: 600;
+    font-size: 9px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    line-height: 1;
+    color: {t['ink_faint']};
+}}
+.st-key-da1a_root hr {{ border-color: {t['hairline']}; margin: 10px 0; }}
+.st-key-da1a_root [data-testid="stVerticalBlockBorderWrapper"] {{ border-color: {t['hairline']} !important; }}
+
+/* Context strip */
+.da1a-strip {{
+    display: flex; align-items: center; gap: 0; background: {t['surface']};
+    border: 1px solid {t['hairline']}; border-radius: 5px; padding: 0 2px; margin-bottom: 12px;
+    flex-wrap: wrap;
+}}
+.da1a-strip-cell {{ padding: 8px 18px; border-right: 1px solid {t['hairline']}; }}
+.da1a-strip-cell .da1a-label {{ margin-bottom: 3px; }}
+.da1a-strip-cell .da1a-value {{ font-weight: 600; font-size: 12px; color: {t['ink']}; }}
+
+/* Lap list rows */
+.st-key-da1a_root .stButton button {{
+    background: transparent; border: none; text-align: left; padding: 4px 8px;
+    font-family: 'JetBrains Mono', monospace; font-size: 11px; color: {t['ink2']};
+    width: 100%; border-radius: 3px;
+}}
+.st-key-da1a_root .stButton button:hover {{ background: {t['neutral_bar']}; color: {t['ink']}; }}
+.da1a-sector-bars {{ display: flex; gap: 3px; padding: 0 8px; margin-top: 2px; }}
+.da1a-sector-bars > div {{ flex: 1; height: 4px; border-radius: 1px; background: {t['neutral_bar2']}; }}
+
+/* Hero header */
+.da1a-hero-time {{
+    font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 44px;
+    line-height: .92; letter-spacing: -.02em; color: {t['ink']};
+}}
+.da1a-hero-delta {{ font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 30px; line-height: .92; }}
+.da1a-ref-block {{ border-left: 1px solid {t['hairline']}; padding-left: 18px; }}
+.da1a-ref-row {{ display: flex; justify-content: space-between; gap: 10px; font-size: 12px; margin-bottom: 3px; }}
+.da1a-ref-row .da1a-label {{ min-width: 96px; }}
+
+/* Sector delta mini-chart */
+.da1a-sector-chart {{ display: flex; gap: 6px; align-items: flex-end; height: 56px; }}
+.da1a-sector-col {{ width: 52px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }}
+.da1a-sector-col-bar {{ width: 100%; border-radius: 2px; }}
+
+/* Coach note card */
+.da1a-coach-card {{
+    background: {t['surface_raised']}; border: 1px solid {t['hairline']}; border-radius: 5px; padding: 14px;
+    font-size: 12px; line-height: 1.5; color: {t['ink2']};
+}}
+
+/* Track map legend / sector table */
+.da1a-legend-swatch {{ display: inline-block; width: 14px; height: 2px; margin-right: 5px; vertical-align: middle; }}
+
+/* Class standing card */
+.da1a-standing-card {{ background: {t['surface_raised']}; border: 1px solid {t['hairline']}; border-radius: 5px; padding: 14px; }}
+.da1a-standing-p {{ font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 26px; }}
+.da1a-progress-track {{ background: {t['neutral_bar']}; border-radius: 3px; height: 5px; overflow: hidden; margin: 8px 0; }}
+.da1a-progress-fill {{ background: {t['accent']}; height: 100%; }}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def _da1a_time_str(seconds: float | None) -> str:
+    """`SS.mmm`, 3 decimals -- design 1a's lap-time format (README:
+    "Lap times render as SS.mmm")."""
+    if seconds is None or (isinstance(seconds, float) and np.isnan(seconds)):
+        return "--.---"
+    return f"{seconds:.3f}"
+
+
+def _da1a_delta_str(seconds: float | None, plus_is_loss: bool = True) -> str:
+    """Signed delta with a real minus sign (U+2212), 3 decimals -- design
+    1a's delta format. `plus_is_loss` controls which sign is colored as a
+    loss vs. a gain when the caller also wants a color (see
+    `_da1a_delta_color`); the string itself always shows the literal sign.
+    """
+    if seconds is None or (isinstance(seconds, float) and np.isnan(seconds)):
+        return "--"
+    sign = "+" if seconds >= 0 else "−"
+    return f"{sign}{abs(seconds):.3f}"
+
+
+def _da1a_delta_color(seconds: float | None, plus_is_loss: bool = True) -> str:
+    if seconds is None or (isinstance(seconds, float) and np.isnan(seconds)):
+        return _DA1A["ink_muted"]
+    is_loss = (seconds > 0) if plus_is_loss else (seconds < 0)
+    if seconds == 0:
+        return _DA1A["ink_muted"]
+    return _DA1A["loss"] if is_loss else _DA1A["gain"]
+
+
+def _make_sector_segments(total_distance_m: float, n_sectors: int = DA1A_N_SECTORS) -> pd.DataFrame:
+    """Fixed equal-length distance sectors (S1..S4) spanning one lap --
+    broadcast-timing-style sectors, deliberately independent of this app's
+    own corner/straight segmentation (`telemetry.corners.segment_track`).
+    Built here (not in `telemetry/`) purely by composing the existing
+    `segment_times_for_lap` / `theoretical_best_lap` functions against a
+    synthetic segment table shaped like their real ones -- no telemetry
+    code needed changing for this.
+    """
+    if not total_distance_m or total_distance_m <= 0 or n_sectors < 1:
+        return pd.DataFrame(columns=["label", "kind", "start_m", "end_m"])
+    edges = np.linspace(0, total_distance_m, n_sectors + 1)
+    return pd.DataFrame(
+        [{"label": f"S{i + 1}", "kind": "sector", "start_m": edges[i], "end_m": edges[i + 1]} for i in range(n_sectors)]
+    )
+
+
+def _da1a_pick_lap_colors(selected_lap: int, reference_lap: int) -> tuple[str, str]:
+    return _DA1A["accent"], _DA1A["reference"]
+
+
+def _da1a_sector_delta_color(delta_s: float | None, best_owner_lap: int | None, lap_no: int) -> str:
+    """Sector-bar color per design 1a: purple if `lap_no` owns the
+    session-best time for that sector, else green/red by whether it beat
+    the comparison reference, else neutral grey."""
+    if best_owner_lap is not None and lap_no == best_owner_lap:
+        return _DA1A["reference"]
+    if delta_s is None or (isinstance(delta_s, float) and np.isnan(delta_s)):
+        return _DA1A["neutral_bar2"]
+    if delta_s < -1e-6:
+        return _DA1A["gain"]
+    if delta_s > 1e-6:
+        return _DA1A["loss"]
+    return _DA1A["neutral_bar2"]
+
+
+def _da1a_sector_times_table(session: Session, lap_numbers: list[int], sector_segments: pd.DataFrame) -> dict[int, list[float]]:
+    """Per-lap sector times (one list of `time_s`, S1..S4 order) for every
+    lap in `lap_numbers`, by composing the existing `segment_times_for_lap`
+    against the synthetic fixed-sector table -- no telemetry changes."""
+    out: dict[int, list[float]] = {}
+    for lap_no in lap_numbers:
+        times = segment_times_for_lap(session, lap_no, sector_segments)
+        out[lap_no] = times.set_index("segment_label")["time_s"].reindex(sector_segments["label"]).tolist()
+    return out
+
+
 def page_data_analysis() -> None:
+    """Design 1a ("channel-stack, pit-wall dark") -- see the long comment
+    block above this function for the handful of deliberate departures from
+    the literal design_handoff_karting_telemetry/README.md spec."""
     if not _require_data():
         return
-    st.subheader("Data analysis")
-    st.caption(
-        "A deeper look across speed, RPM, G-forces and delta -- pick any laps from any loaded sessions below. "
-        "Each row's color matches its line in the charts, and the fastest lap among your picks is always used "
-        "as the delta reference and as the map's tracked position. On a phone, try the "
-        "**Data Analysis (Mobile)** page instead -- same laps, one full-width chart at a time."
-    )
 
-    compare_entries = _render_lap_picker("da", MAX_COMPARE_LAPS)
+    _da1a_inject_css()
+    root = st.container(key="da1a_root")
+    with root:
+        # -- lap list source: every lap in the active session (incl. flagged
+        # ones -- faded/struck-through, not hidden, per the README's
+        # "empty and degraded states" note on incident laps) --------------
+        all_lap_numbers = laps["lap_number"].tolist()
+        max_lap_no = max(all_lap_numbers) if all_lap_numbers else None
 
-    if not compare_entries:
-        st.info("Add at least one lap to compare.")
-        render_footer()
-        return
+        default_selected = analyzed_lap if analyzed_lap in clean_lap_numbers else best_lap
+        default_reference = best_lap
+        if default_reference == default_selected and len(clean) >= 2:
+            second_fastest = clean.sort_values("lap_time_s")["lap_number"].tolist()[1]
+            default_reference = second_fastest
 
-    # No manual reference/position picker on this page (unlike Speed &
-    # Delta) -- the fastest lap among the current picks always plays both
-    # roles, per how this page was requested.
-    fastest_entry = min(compare_entries, key=lambda e: e["lap_time"] if e["lap_time"] is not None else float("inf"))
+        if st.session_state.get("da1a_context_key") != active_session_key:
+            st.session_state["da1a_context_key"] = active_session_key
+            st.session_state["da1a_selected_lap"] = default_selected
+            st.session_state["da1a_reference_lap"] = default_reference
+            st.session_state["da1a_pinned_corners"] = set()
 
-    visible_keys = st.multiselect(
-        "Charts to show", DATA_ANALYSIS_CHART_KEYS, default=DATA_ANALYSIS_CHART_KEYS, key="da_visible_charts",
-        format_func=lambda k: DATA_ANALYSIS_CHART_LABELS[k],
-    )
-    active_keys = [k for k in DATA_ANALYSIS_CHART_KEYS if k in visible_keys]
-    if not active_keys:
-        st.info("Select at least one chart to display.")
-        render_footer()
-        return
+        selected_lap = st.session_state.get("da1a_selected_lap", default_selected)
+        reference_lap = st.session_state.get("da1a_reference_lap", default_reference)
+        if selected_lap not in all_lap_numbers:
+            selected_lap = default_selected
+        if reference_lap not in all_lap_numbers or reference_lap == selected_lap:
+            reference_lap = default_reference if default_reference != selected_lap else selected_lap
+        st.session_state["da1a_selected_lap"] = selected_lap
+        st.session_state["da1a_reference_lap"] = reference_lap
+        st.session_state.setdefault("da1a_pinned_corners", set())
+        st.session_state.setdefault("da1a_axis_basis", "Distance")
+        st.session_state.setdefault("da1a_trace_view", "Split channels")
+        st.session_state.setdefault("da1a_show_throttle_brake", True)
 
-    row_index = {key: i + 1 for i, key in enumerate(active_keys)}
-    n_rows = len(active_keys)
-    fig = make_subplots(
-        rows=n_rows, cols=1, shared_xaxes=True, vertical_spacing=0.04,
-        subplot_titles=[DATA_ANALYSIS_CHART_LABELS[k] for k in active_keys],
-    )
+        sel_color, ref_color = _da1a_pick_lap_colors(selected_lap, reference_lap)
 
-    lap_traces: dict[int, pd.DataFrame] = {}
-    for entry in compare_entries:
-        trace = lap_metric_trace(entry["session"], entry["lap_number"])
-        lap_traces[entry["row_id"]] = trace
-        color, tag = entry["color"], entry["tag"]
-        if "speed" in row_index:
-            fig.add_trace(
-                go.Scatter(
-                    x=trace["lap_distance_m"], y=trace["GPS Speed"], mode="lines", name=tag, legendgroup=tag, line=dict(color=color),
-                    hovertemplate=f"{tag}: %{{y:.1f}} km/h<extra></extra>",
-                ),
-                row=row_index["speed"], col=1,
-            )
-        if "rpm" in row_index:
-            fig.add_trace(
-                go.Scatter(
-                    x=trace["lap_distance_m"], y=trace["RPM"], mode="lines", name=f"{tag} RPM", legendgroup=tag, line=dict(color=color),
-                    showlegend="speed" not in row_index, hovertemplate=f"{tag}: %{{y:.0f}} RPM<extra></extra>",
-                ),
-                row=row_index["rpm"], col=1,
-            )
-        if "lat_g" in row_index:
-            fig.add_trace(
-                go.Scatter(
-                    x=trace["lap_distance_m"], y=trace["GPS Lateral Acceleration"], mode="lines", name=f"{tag} lat g", legendgroup=tag,
-                    line=dict(color=color), showlegend=False, hovertemplate=f"{tag}: %{{y:.2f}}g<extra></extra>",
-                ),
-                row=row_index["lat_g"], col=1,
-            )
-        if "lon_g" in row_index:
-            fig.add_trace(
-                go.Scatter(
-                    x=trace["lap_distance_m"], y=trace["GPS Longitudinal Acceleration"], mode="lines", name=f"{tag} lon g", legendgroup=tag,
-                    line=dict(color=color), showlegend=False, hovertemplate=f"{tag}: %{{y:.2f}}g<extra></extra>",
-                ),
-                row=row_index["lon_g"], col=1,
-            )
-        if "delta" in row_index and entry is not fastest_entry:
-            dt = cross_session_delta_trace(entry["session"], entry["lap_number"], fastest_entry["session"], fastest_entry["lap_number"], n_points=800)
-            fig.add_trace(
-                go.Scatter(
-                    x=dt["distance_m"], y=dt["delta_s"], mode="lines", name=f"{tag} delta", legendgroup=tag, line=dict(color=color),
-                    showlegend=False, hovertemplate=f"{tag}: %{{y:.4f}}s<extra></extra>",
-                ),
-                row=row_index["delta"], col=1,
-            )
-
-    if "delta" in row_index:
-        fig.add_hline(y=0, row=row_index["delta"], col=1, line_dash="dash", line_color="gray")
-
-    if "rpm" in row_index:
-        rpm_row = row_index["rpm"]
-        fig.add_hrect(
-            y0=setup.peak_power_rpm_low, y1=setup.peak_power_rpm_high,
-            row=rpm_row, col=1, fillcolor="green", opacity=0.1, line_width=0,
+        # -- context strip --------------------------------------------------
+        active_db = session_db_lookup.get(active_session_key) or {}
+        circuit = active_db.get("track_name") or "Unknown circuit"
+        session_dt = " · ".join(x for x in [active_session.start_date, active_session.start_time] if x) or "Unknown"
+        air_temp = setup.carburettor.ambient_temp_c if setup else None
+        track_temp = setup.track_session.track_temp_c if setup else None
+        temp_str = (
+            f"{air_temp:.1f}°C / {track_temp:.1f}°C" if air_temp is not None and track_temp is not None
+            else (f"{air_temp:.1f}°C air" if air_temp is not None else (f"{track_temp:.1f}°C track" if track_temp is not None else "—"))
         )
-        rpm_domain = _axis_y_domain(fig, rpm_row)
-        fig.update_layout(
-            legend2=dict(
-                x=1.02, xanchor="left", y=(rpm_domain[0] + rpm_domain[1]) / 2, yanchor="middle",
-                title=dict(text="% of lap in power band", font=dict(size=11)), font=dict(size=11),
-                bgcolor="rgba(0,0,0,0)",
-            )
+        tyre = setup.tyres if setup else None
+        tyre_str = tyre.compound if tyre and tyre.compound else "—"
+        if tyre and tyre.hot_pressure_front_bar and tyre.hot_pressure_rear_bar:
+            tyre_str += f" · {tyre.hot_pressure_front_bar:.2f}/{tyre.hot_pressure_rear_bar:.2f} bar"
+
+        strip_cells = [
+            ("Circuit", circuit), ("Class", setup.class_name if setup else "—"),
+            ("Session", f"{session_dt} · {len(laps)} laps"), ("Air / Track temp", temp_str), ("Tyre", tyre_str),
+        ]
+        st.markdown(
+            '<div class="da1a-strip">' + "".join(
+                f'<div class="da1a-strip-cell"><div class="da1a-label">{label}</div>'
+                f'<div class="da1a-value da1a-mono">{value}</div></div>'
+                for label, value in strip_cells
+            ) + "</div>",
+            unsafe_allow_html=True,
         )
-        for entry in compare_entries:
-            band = time_in_rpm_band(entry["session"], entry["lap_number"], (setup.peak_power_rpm_low, setup.peak_power_rpm_high))
-            pct_label = f"{band['fraction_in_band'] * 100:.0f}%" if band.get("lap_duration_s", 0) > 0 else "n/a"
-            fig.add_trace(
-                go.Scatter(
-                    x=[None], y=[None], mode="markers", marker=dict(size=10, color=entry["color"], symbol="square"),
-                    name=f"{entry['tag']}: {pct_label}", legend="legend2", showlegend=True, hoverinfo="skip",
-                ),
-                row=rpm_row, col=1,
+
+        lap_col, center_col, rail_col = st.columns([1, 3.8, 1.3], gap="medium")
+
+        # === LAP LIST (left) ===============================================
+        with lap_col:
+            st.markdown(f'<div class="da1a-label">Laps · {len(laps)} total</div>', unsafe_allow_html=True)
+            sector_total_m = float(segments["end_m"].max()) if not segments.empty else 0.0
+            sector_segments = _make_sector_segments(sector_total_m, DA1A_N_SECTORS)
+            list_lap_numbers = [selected_lap, reference_lap] + sorted(
+                (n for n in all_lap_numbers if n not in (selected_lap, reference_lap)), reverse=True
+            )
+            sector_times_by_lap: dict[int, list[float]] = {}
+            best_owner_by_sector: list[int | None] = [None] * DA1A_N_SECTORS
+            if not sector_segments.empty and clean_lap_numbers:
+                sector_times_by_lap = _da1a_sector_times_table(active_session, list_lap_numbers, sector_segments)
+                _, best_sector_df = theoretical_best_lap(active_session, clean_lap_numbers, sector_segments)
+                if not best_sector_df.empty:
+                    owner_by_label = dict(zip(best_sector_df["segment_label"], best_sector_df["lap_number"]))
+                    best_owner_by_sector = [owner_by_label.get(lbl) for lbl in sector_segments["label"]]
+
+            for lap_no in list_lap_numbers:
+                lap_row = laps.loc[laps["lap_number"] == lap_no]
+                if lap_row.empty:
+                    continue
+                lap_row = lap_row.iloc[0]
+                lap_time_s = lap_row["lap_time_s"]
+                is_selected, is_reference = lap_no == selected_lap, lap_no == reference_lap
+                delta_vs_ref = (lap_time_s - lap_time_by_number.get(reference_lap, float("nan"))) if not is_reference else None
+
+                age = (max_lap_no - lap_no) if max_lap_no is not None else 0
+                opacity = 1.0 if is_selected or is_reference or age <= 2 else (0.6 if age <= 5 else 0.45)
+                bg = _DA1A["row_selected"] if is_selected else ("transparent")
+                border = f"inset 2px 0 0 {_DA1A['accent']}" if is_selected else (f"inset 2px 0 0 {_DA1A['reference']}" if is_reference else "none")
+                incident = bool(lap_row.get("likely_incident", False))
+
+                row_key = f"da1a_lap_row_{lap_no}"
+                with st.container(key=row_key):
+                    st.markdown(
+                        f"<style>.st-key-{row_key} {{ background:{bg}; box-shadow:{border}; opacity:{opacity}; "
+                        f"border-radius:2px; margin-bottom:2px; }}</style>",
+                        unsafe_allow_html=True,
+                    )
+                    bars_html = ""
+                    if lap_no in sector_times_by_lap:
+                        for i, t in enumerate(sector_times_by_lap[lap_no]):
+                            ref_t = sector_times_by_lap.get(reference_lap, [None] * DA1A_N_SECTORS)[i]
+                            d = (t - ref_t) if (t is not None and ref_t is not None and not (np.isnan(t) or np.isnan(ref_t))) else None
+                            color = _da1a_sector_delta_color(d, best_owner_by_sector[i], lap_no)
+                            bars_html += f'<div style="background:{color};"></div>'
+                    st.markdown(f'<div class="da1a-sector-bars">{bars_html}</div>', unsafe_allow_html=True)
+
+                    time_txt = _da1a_time_str(lap_time_s)
+                    if incident:
+                        time_txt = f"~~{time_txt}~~"
+                    tag = "ref" if is_reference else (_da1a_delta_str(delta_vs_ref) if delta_vs_ref is not None else "")
+                    label = f"{lap_no:>2}  {time_txt}  {tag}"
+                    if st.button(label, key=f"da1a_select_{lap_no}", use_container_width=True):
+                        if lap_no != selected_lap:
+                            st.session_state["da1a_reference_lap"] = selected_lap
+                            st.session_state["da1a_selected_lap"] = lap_no
+                            st.rerun()
+
+            st.markdown("<hr/>", unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="da1a-label">Reference</div>'
+                f'<div style="font-size:11px; margin-top:4px;"><span class="da1a-legend-swatch" style="background:{_DA1A["reference"]};"></span>'
+                f'Session best · Lap {best_lap}</div>'
+                f'<div style="font-size:11px; margin-top:3px;"><span class="da1a-legend-swatch" style="background:{_DA1A["theoretical"]};"></span>'
+                f'Theoretical best · {_da1a_time_str(theoretical_best_s)}s</div>',
+                unsafe_allow_html=True,
             )
 
-    fig.update_xaxes(title_text="Distance (m)", row=n_rows, col=1)
-    # "closest" (not "x"/"x unified"): both of those hovermodes draw the
-    # shared distance value as a small floating label right on the axis
-    # regardless of each trace's hovertemplate -- there's no layout option
-    # to suppress just that label, so "closest" is the only mode that shows
-    # nothing but each hovered trace's own (distance-free) tooltip.
-    fig.update_layout(hovermode="closest")
-    fig.update_xaxes(showspikes=False)
-    row_y_domains = [_axis_y_domain(fig, r) for r in range(1, n_rows + 1)]
+        # Data shared by the center column and the right rail.
+        selected_trace = add_braking_throttle_estimates(lap_metric_trace(active_session, selected_lap))
+        reference_trace = add_braking_throttle_estimates(lap_metric_trace(active_session, reference_lap))
+        selected_time_s = lap_time_by_number.get(selected_lap)
+        reference_time_s = lap_time_by_number.get(reference_lap)
+        delta_vs_best = (selected_time_s - summary["best_lap_s"]) if summary else None
 
-    per_row_height = 260
-    fig_height = per_row_height * n_rows
+        sector_deltas: list[float | None] = []
+        if sector_times_by_lap.get(selected_lap) and sector_times_by_lap.get(reference_lap):
+            for t_sel, t_ref in zip(sector_times_by_lap[selected_lap], sector_times_by_lap[reference_lap]):
+                sector_deltas.append(t_sel - t_ref if not (np.isnan(t_sel) or np.isnan(t_ref)) else None)
 
-    primary_trace = lap_traces[fastest_entry["row_id"]].dropna(subset=["lap_distance_m", "Latitude", "Longitude"]).sort_values("lap_distance_m")
-    map_fig = go.Figure()
-    map_fig.add_trace(
-        go.Scattergl(
-            x=primary_trace["Longitude"], y=primary_trace["Latitude"], mode="lines",
-            line=dict(color=fastest_entry["color"], width=2), showlegend=False,
+        # Corner-by-corner causal comparison (selected vs reference), reused
+        # from the same engine the Lap Comparison page already uses.
+        thresholds = calibrate_thresholds_cached(active_session, session_cache_key(active_session), tuple(clean_lap_numbers), segments)
+        corner_result = compare_corners_cached(
+            active_session, session_cache_key(active_session), selected_lap,
+            active_session, session_cache_key(active_session), reference_lap,
+            segments, thresholds,
         )
-    )
-    if not primary_trace.empty:
-        map_fig.add_trace(
-            go.Scatter(
-                x=[primary_trace["Longitude"].iloc[0]], y=[primary_trace["Latitude"].iloc[0]],
-                mode="markers", marker=dict(size=16, color="red", line=dict(width=2, color="white")), showlegend=False,
+        selected_aggs = segment_aggregates(selected_trace, segments)
+
+        # === CENTER COLUMN ==================================================
+        with center_col:
+            hero_l, hero_r = st.columns([1, 1])
+            with hero_l:
+                st.markdown(f'<div class="da1a-label">Lap {selected_lap} · selected</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="da1a-hero-time da1a-mono">{_da1a_time_str(selected_time_s)}</div>', unsafe_allow_html=True)
+                if reference_time_s is not None and selected_time_s is not None:
+                    lap_vs_lap = selected_time_s - reference_time_s
+                    st.markdown(
+                        f'<div class="da1a-label" style="margin-top:6px;">vs Lap {reference_lap}</div>'
+                        f'<div class="da1a-hero-delta da1a-mono" style="color:{_da1a_delta_color(lap_vs_lap)};">'
+                        f'{_da1a_delta_str(lap_vs_lap)}</div>',
+                        unsafe_allow_html=True,
+                    )
+            with hero_r:
+                st.markdown(
+                    '<div class="da1a-ref-block">'
+                    + f'<div class="da1a-ref-row"><span class="da1a-label">Best lap</span>'
+                      f'<span class="da1a-mono" style="color:{_DA1A["reference"]};">{_da1a_time_str(summary["best_lap_s"]) if summary else "--.---"}</span></div>'
+                    + f'<div class="da1a-ref-row"><span class="da1a-label">Theoretical</span>'
+                      f'<span class="da1a-mono" style="color:{_DA1A["theoretical"]};">{_da1a_time_str(theoretical_best_s)}</span></div>'
+                    + f'<div class="da1a-ref-row"><span class="da1a-label">Δ vs best</span>'
+                      f'<span class="da1a-mono" style="color:{_da1a_delta_color(delta_vs_best)};">{_da1a_delta_str(delta_vs_best)}</span></div>'
+                    + "</div>",
+                    unsafe_allow_html=True,
+                )
+
+            if sector_deltas:
+                max_abs = max((abs(d) for d in sector_deltas if d is not None), default=0.0) or 1.0
+                cols_html = ""
+                for i, d in enumerate(sector_deltas):
+                    label = sector_segments.iloc[i]["label"]
+                    if d is None:
+                        cols_html += f'<div class="da1a-sector-col"><div class="da1a-label">{label}</div></div>'
+                        continue
+                    pct = min(100, abs(d) / max_abs * 100)
+                    color = _da1a_delta_color(d)
+                    if d <= 0:  # gaining: bar grows up from the bottom
+                        bar = f'<div style="height:{pct}%; align-self:flex-end;" class="da1a-sector-col-bar" ></div>'
+                    else:  # losing: bar hangs down from the top
+                        bar = f'<div style="height:{pct}%; align-self:flex-start; margin-top:auto;" class="da1a-sector-col-bar"></div>'
+                    cols_html += (
+                        f'<div class="da1a-sector-col" style="justify-content:{"flex-end" if d <= 0 else "flex-start"};">'
+                        f'<div class="da1a-sector-col-bar" style="height:{pct}%; background:{color};"></div></div>'
+                        f'<div class="da1a-mono" style="font-size:10px; text-align:center; width:52px;">{_da1a_delta_str(d)}</div>'
+                        f'<div class="da1a-label" style="text-align:center; width:52px;">{label}</div>'
+                    )
+                st.markdown(f'<div class="da1a-sector-chart">{cols_html}</div>', unsafe_allow_html=True)
+
+            st.markdown("<hr/>", unsafe_allow_html=True)
+
+            ctrl_l, ctrl_r1, ctrl_r2 = st.columns([2, 1, 1])
+            ctrl_l.markdown(
+                f'<span class="da1a-mono" style="color:{sel_color};">■</span> Lap {selected_lap} &nbsp;&nbsp;'
+                f'<span class="da1a-mono" style="color:{ref_color};">■</span> Lap {reference_lap}',
+                unsafe_allow_html=True,
             )
-        )
-    map_fig.update_layout(yaxis=dict(scaleanchor="x"), xaxis_title="Longitude", yaxis_title="Latitude", margin=dict(t=10))
+            axis_basis = ctrl_r1.segmented_control("Axis", ["Distance", "Time"], key="da1a_axis_basis")
+            trace_view = ctrl_r2.segmented_control("View", ["Overlay", "Split channels"], key="da1a_trace_view")
+            show_throttle_brake = st.checkbox("Show throttle / brake (estimated)", key="da1a_show_throttle_brake")
 
-    st.caption(
-        f"Fastest lap selected: {fastest_entry['tag']} ({fastest_entry['lap_time']:.2f}s) -- used as the delta "
-        "reference above and the map's tracked position below. Scroll the charts on the left to see them all -- "
-        "the map stays put on the right, hovering anywhere in the charts moves its marker, and a crosshair line "
-        "marks the same distance across every chart so you can line up a feature in one against the others."
-    )
-    render_linked_speed_delta(
-        fig, map_fig,
-        primary_trace["lap_distance_m"].tolist(), primary_trace["Latitude"].tolist(), primary_trace["Longitude"].tolist(),
-        height=fig_height, map_height=per_row_height, chart_row_y_domains=row_y_domains,
-    )
+            use_distance = axis_basis == "Distance"
+            if use_distance:
+                sel_x, ref_x = selected_trace["lap_distance_m"], reference_trace["lap_distance_m"]
+                x_title = "Distance (m)"
+            else:
+                sel_x = selected_trace["session_time_s"] - selected_trace["session_time_s"].iloc[0] if not selected_trace.empty else selected_trace["session_time_s"]
+                ref_x = reference_trace["session_time_s"] - reference_trace["session_time_s"].iloc[0] if not reference_trace.empty else reference_trace["session_time_s"]
+                x_title = "Elapsed time (s)"
+
+            channels: list[tuple[str, str, int]] = [("Speed", "km/h", 158)]
+            if use_distance:
+                channels.append(("Delta t", "s · cumulative", 76))
+            if show_throttle_brake:
+                channels.append(("Throttle (est.)", "% · 0-100", 56))
+                channels.append(("Brake (est.)", "on/off · est.", 46))
+
+            if trace_view == "Overlay":
+                fig = go.Figure()
+
+                def _norm(series: pd.Series) -> np.ndarray:
+                    arr = series.to_numpy(dtype=float)
+                    finite = arr[np.isfinite(arr)]
+                    if finite.size == 0:
+                        return arr
+                    lo, hi = finite.min(), finite.max()
+                    return (arr - lo) / (hi - lo) if hi > lo else arr * 0
+                fig.add_trace(go.Scatter(x=sel_x, y=_norm(selected_trace["GPS Speed"]), mode="lines", name="Speed (sel)", line=dict(color=sel_color, width=2)))
+                fig.add_trace(go.Scatter(x=ref_x, y=_norm(reference_trace["GPS Speed"]), mode="lines", name="Speed (ref)", line=dict(color=ref_color, width=1.6)))
+                if use_distance:
+                    dt = cross_session_delta_trace(active_session, selected_lap, active_session, reference_lap, n_points=800)
+                    fig.add_trace(go.Scatter(x=dt["distance_m"], y=_norm(dt["delta_s"]), mode="lines", name="Delta t", line=dict(color=_DA1A["gain"], width=1.4)))
+                row_y_domains = None
+                fig.update_layout(height=280, yaxis_title="Normalized 0-1")
+                fig.update_xaxes(title_text=x_title)
+            else:
+                row_index = {name: i + 1 for i, (name, _, _) in enumerate(channels)}
+                n_rows = len(channels)
+                weights = [w for _, _, w in channels]
+                fig = make_subplots(
+                    rows=n_rows, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                    row_heights=[w / sum(weights) for w in weights],
+                )
+                fig.add_trace(
+                    go.Scatter(x=ref_x, y=reference_trace["GPS Speed"], mode="lines", name=f"Lap {reference_lap}", line=dict(color=ref_color, width=1.6)),
+                    row=row_index["Speed"], col=1,
+                )
+                fig.add_trace(
+                    go.Scatter(x=sel_x, y=selected_trace["GPS Speed"], mode="lines", name=f"Lap {selected_lap}", line=dict(color=sel_color, width=2)),
+                    row=row_index["Speed"], col=1,
+                )
+                if not segments.empty:
+                    corners_only = segments.loc[segments["kind"] == "corner"].reset_index(drop=True)
+                    for i, corner in corners_only.iterrows():
+                        fig.add_vline(
+                            x=corner["start_m"], row=row_index["Speed"], col=1,
+                            line=dict(color=_DA1A["hairline_strong"], width=1),
+                            annotation_text=f"T{i + 1}", annotation_position="top", annotation_font=dict(size=9, color=_DA1A["ink_faint"]),
+                        )
+                if "Delta t" in row_index:
+                    delta_row = row_index["Delta t"]
+                    dt = cross_session_delta_trace(active_session, selected_lap, active_session, reference_lap, n_points=800)
+                    gain_fill = np.minimum(dt["delta_s"], 0.0)
+                    fig.add_trace(
+                        go.Scatter(x=dt["distance_m"], y=gain_fill, mode="lines", line=dict(width=0), fill="tozeroy",
+                                   fillcolor="rgba(47,208,122,.16)", hoverinfo="skip", showlegend=False),
+                        row=delta_row, col=1,
+                    )
+                    fig.add_trace(
+                        go.Scatter(x=dt["distance_m"], y=dt["delta_s"], mode="lines", name="Delta t", line=dict(color=sel_color, width=1.6), showlegend=False,
+                                   hovertemplate="%{y:.3f}s<extra></extra>"),
+                        row=delta_row, col=1,
+                    )
+                    fig.add_hline(y=0, row=delta_row, col=1, line=dict(color="rgba(255,255,255,.22)", dash="dash", width=1))
+                    d0, d1 = _axis_y_domain(fig, delta_row)
+                    fig.add_annotation(text="GAINING", xref="paper", yref="paper", x=0.01, y=d1, showarrow=False,
+                                        font=dict(size=9, color=_DA1A["gain"]), xanchor="left", yanchor="top")
+                    fig.add_annotation(text="LOSING", xref="paper", yref="paper", x=0.01, y=d0, showarrow=False,
+                                        font=dict(size=9, color=_DA1A["loss"]), xanchor="left", yanchor="bottom")
+                if "Throttle (est.)" in row_index:
+                    t_row = row_index["Throttle (est.)"]
+                    fig.add_trace(
+                        go.Scatter(x=ref_x, y=reference_trace["power_on_estimate"].astype(int) * 100, mode="lines",
+                                   line=dict(color=ref_color, width=1.6, shape="hv"), showlegend=False, hoverinfo="skip"),
+                        row=t_row, col=1,
+                    )
+                    fig.add_trace(
+                        go.Scatter(x=sel_x, y=selected_trace["power_on_estimate"].astype(int) * 100, mode="lines",
+                                   line=dict(color=sel_color, width=2, shape="hv"), showlegend=False, hoverinfo="skip"),
+                        row=t_row, col=1,
+                    )
+                if "Brake (est.)" in row_index:
+                    b_row = row_index["Brake (est.)"]
+                    fig.add_trace(
+                        go.Scatter(x=ref_x, y=reference_trace["braking_estimate"].astype(int) * 100, mode="lines",
+                                   line=dict(color=ref_color, width=1.6, shape="hv"), showlegend=False, hoverinfo="skip"),
+                        row=b_row, col=1,
+                    )
+                    fig.add_trace(
+                        go.Scatter(x=sel_x, y=selected_trace["braking_estimate"].astype(int) * 100, mode="lines",
+                                   line=dict(color=sel_color, width=2, shape="hv"), showlegend=False, hoverinfo="skip"),
+                        row=b_row, col=1,
+                    )
+                for name, unit, _ in channels:
+                    fig.update_yaxes(title_text=f"{name}<br><span style='font-size:9px'>{unit}</span>", title_font=dict(size=10), row=row_index[name], col=1)
+                fig.update_xaxes(title_text=x_title, row=n_rows, col=1)
+                fig.update_layout(hovermode="closest", showlegend=False)
+                fig.update_xaxes(showspikes=False)
+                row_y_domains = [_axis_y_domain(fig, r) for r in range(1, n_rows + 1)]
+
+            fig.update_layout(
+                paper_bgcolor=_DA1A["surface"], plot_bgcolor=_DA1A["surface"],
+                font=dict(family="Archivo, sans-serif", size=11, color=_DA1A["ink2"]),
+                margin=dict(l=10, r=10, t=24, b=10),
+            )
+            fig.update_xaxes(gridcolor=_DA1A["hairline"], zerolinecolor=_DA1A["hairline"])
+            fig.update_yaxes(gridcolor=_DA1A["hairline"], zerolinecolor=_DA1A["hairline"])
+
+            map_trace = selected_trace.dropna(subset=["lap_distance_m", "Latitude", "Longitude"]).sort_values("lap_distance_m")
+            map_fig = go.Figure()
+            if not sector_segments.empty and not map_trace.empty:
+                for i, seg in sector_segments.iterrows():
+                    seg_pts = map_trace[(map_trace["lap_distance_m"] >= seg["start_m"]) & (map_trace["lap_distance_m"] <= seg["end_m"])]
+                    color = _da1a_sector_delta_color(
+                        sector_deltas[i] if i < len(sector_deltas) else None, best_owner_by_sector[i] if i < len(best_owner_by_sector) else None, selected_lap,
+                    )
+                    map_fig.add_trace(go.Scattergl(x=seg_pts["Longitude"], y=seg_pts["Latitude"], mode="lines", line=dict(color=color, width=4), showlegend=False, hoverinfo="skip"))
+            else:
+                map_fig.add_trace(go.Scattergl(x=map_trace["Longitude"], y=map_trace["Latitude"], mode="lines", line=dict(color=sel_color, width=3), showlegend=False))
+            if not map_trace.empty:
+                map_fig.add_trace(
+                    go.Scatter(x=[map_trace["Longitude"].iloc[0]], y=[map_trace["Latitude"].iloc[0]], mode="markers",
+                               marker=dict(size=14, color=_DA1A["accent"], line=dict(width=2, color=_DA1A["surface"])), showlegend=False)
+                )
+            map_fig.update_layout(
+                yaxis=dict(scaleanchor="x", visible=False), xaxis=dict(visible=False), margin=dict(t=4, b=4, l=4, r=4),
+                paper_bgcolor=_DA1A["surface_raised"], plot_bgcolor=_DA1A["surface_raised"],
+            )
+
+            if use_distance:
+                st.caption("Hovering any channel moves the crosshair across every row and the dot on the track map.")
+                render_linked_speed_delta(
+                    fig, map_fig, map_trace["lap_distance_m"].tolist(), map_trace["Latitude"].tolist(), map_trace["Longitude"].tolist(),
+                    height=(280 if trace_view == "Overlay" else sum(w for _, _, w in channels)),
+                    map_height=180, chart_row_y_domains=row_y_domains,
+                )
+            else:
+                st.caption("The linked cursor + track map only sync in Distance mode (Time-basis laps don't share a common x-axis).")
+                fig.update_layout(height=280 if trace_view == "Overlay" else sum(w for _, _, w in channels))
+                st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
+            # -- "Where the time went" -----------------------------------------
+            st.markdown('<div class="da1a-label" style="margin-top:14px;">Where the time went · '
+                        f'lap {selected_lap} vs lap {reference_lap}</div>', unsafe_allow_html=True)
+            if corner_result.empty:
+                st.caption("No corner-level data could be extracted for this pair of laps (check GPS coverage).")
+            else:
+                table = corner_result.merge(
+                    selected_aggs[["segment_label", "min_speed_kmh"]], left_on="corner_label", right_on="segment_label", how="left"
+                )
+                table = table.sort_values("net_time_impact_s", key=lambda s: s.abs(), ascending=False).head(8)
+                rows_html = ""
+                for i, (_, row) in enumerate(table.iterrows()):
+                    corner_no = row["corner_label"].replace("Corner ", "")
+                    pinned = row["corner_label"] in st.session_state["da1a_pinned_corners"]
+                    bg = _DA1A["row_alt"] if i % 2 else "transparent"
+                    delta_color = _da1a_delta_color(row["net_time_impact_s"])
+                    pin_mark = "📌 " if pinned else ""
+                    rows_html += (
+                        f'<div style="display:grid; grid-template-columns:30px 1fr 70px 70px 70px; padding:7px 8px; '
+                        f'background:{bg}; font-size:11px; align-items:center;">'
+                        f'<span class="da1a-mono" style="color:{_DA1A["ink_faint"]};">T{corner_no}</span>'
+                        f'<span>{pin_mark}{row["corner_label"]}</span>'
+                        f'<span class="da1a-mono" style="text-align:right;">{row["min_speed_kmh"]:.1f}</span>'
+                        f'<span class="da1a-mono" style="text-align:right;">{_da1a_delta_str(row["apex_distance_delta_m"])} m</span>'
+                        f'<span class="da1a-mono" style="text-align:right; color:{delta_color};">{_da1a_delta_str(row["net_time_impact_s"])}</span>'
+                        "</div>"
+                    )
+                st.markdown(
+                    '<div style="display:grid; grid-template-columns:30px 1fr 70px 70px 70px; padding:0 8px 6px 8px;">'
+                    + "".join(f'<span class="da1a-label">{h}</span>' for h in ["Trn", "Corner", "Min spd", "Apex", "Δ"])
+                    + "</div>" + rows_html,
+                    unsafe_allow_html=True,
+                )
+
+                worst = rank_headline_findings(corner_result, n=1)
+                st.markdown('<div style="height:10px;"></div>', unsafe_allow_html=True)
+                if worst:
+                    finding = worst[0]
+                    st.markdown(
+                        f'<div class="da1a-coach-card"><div class="da1a-label" style="margin-bottom:6px;">Coach note</div>'
+                        f"{finding['narrative']}</div>",
+                        unsafe_allow_html=True,
+                    )
+                    note_c1, note_c2 = st.columns(2)
+                    if note_c1.button("Send to driver", key="da1a_send_note"):
+                        st.toast(f"Note for {finding['corner_label']} recorded -- no driver messaging backend is wired up yet, so this just confirms the action.")
+                    if note_c2.button("Pin corner", key="da1a_pin_note"):
+                        st.session_state["da1a_pinned_corners"].add(finding["corner_label"])
+                        st.rerun()
+                else:
+                    st.success("No significant corner-by-corner difference between these two laps.")
+
+        # === RIGHT RAIL ======================================================
+        with rail_col:
+            st.markdown(f'<div class="da1a-label">Track map · sector delta</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div style="font-size:10px; margin:4px 0 8px 0;">'
+                f'<span class="da1a-legend-swatch" style="background:{_DA1A["gain"]};"></span>faster&nbsp;&nbsp;'
+                f'<span class="da1a-legend-swatch" style="background:{_DA1A["loss"]};"></span>slower&nbsp;&nbsp;'
+                f'<span class="da1a-legend-swatch" style="background:{_DA1A["reference"]};"></span>personal-best sector</div>',
+                unsafe_allow_html=True,
+            )
+            if not use_distance:
+                # The map above is embedded in the same hover-linked component
+                # as the chart only in Distance mode -- render a static copy
+                # here too so the right rail still shows it in Time mode.
+                st.plotly_chart(map_fig, width="stretch", config={"displayModeBar": False})
+
+            if not sector_segments.empty and sector_times_by_lap:
+                st.markdown('<div class="da1a-label" style="margin-top:10px;">Sector table</div>', unsafe_allow_html=True)
+                sec_rows = ""
+                for i, seg in sector_segments.iterrows():
+                    owner = best_owner_by_sector[i]
+                    owner_time = sector_times_by_lap.get(owner, [None] * DA1A_N_SECTORS)[i] if owner is not None else None
+                    d = sector_deltas[i] if i < len(sector_deltas) else None
+                    sec_rows += (
+                        '<div style="display:grid; grid-template-columns:28px 1fr 54px 54px; padding:5px 4px; font-size:11px;">'
+                        f'<span class="da1a-mono">{seg["label"]}</span>'
+                        f'<span>{("Lap " + str(owner)) if owner is not None else "—"}</span>'
+                        f'<span class="da1a-mono" style="text-align:right;">{_da1a_time_str(owner_time) if owner_time is not None else "—"}</span>'
+                        f'<span class="da1a-mono" style="text-align:right; color:{_da1a_delta_color(d)};">{_da1a_delta_str(d)}</span>'
+                        "</div>"
+                    )
+                st.markdown(sec_rows, unsafe_allow_html=True)
+
+            st.markdown('<div class="da1a-label" style="margin-top:14px;">Class standing</div>', unsafe_allow_html=True)
+            rankings = accounts_lib.driver_rankings(int(current_profile["id"])) if active_db.get("track_name") else pd.DataFrame()
+            mine = rankings[rankings["track_name"] == active_db.get("track_name")] if not rankings.empty else pd.DataFrame()
+            if mine.empty:
+                st.markdown(
+                    '<div class="da1a-standing-card" style="font-size:11px; color:'
+                    f'{_DA1A["ink_muted"]};">Not enough shared session data at this circuit yet to show a class '
+                    "standing -- share sessions from the My Sessions page to appear on this board.</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                row = mine.iloc[0]
+                pct = max(0.0, min(100.0, 100.0 * (1 - (int(row["rank"]) - 1) / max(1, int(row["field_size"]) - 1))))
+                st.markdown(
+                    f'<div class="da1a-standing-card"><div class="da1a-standing-p da1a-mono">P{int(row["rank"])}</div>'
+                    f'<div style="font-size:11px; color:{_DA1A["ink_muted"]};">of {int(row["field_size"])} at this circuit</div>'
+                    f'<div class="da1a-progress-track"><div class="da1a-progress-fill" style="width:{pct:.0f}%;"></div></div>'
+                    f'<div style="font-size:11px;">Best lap: <span class="da1a-mono">{_da1a_time_str(row["best_lap_s"])}</span></div>'
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+                if st.button("Compare with next-fastest lap", key="da1a_compare_next", use_container_width=True):
+                    st.switch_page(page_leaderboards_obj)
+
     render_footer()
 
 
@@ -1374,7 +1925,7 @@ def page_data_analysis_mobile() -> None:
         return
     st.subheader("Data analysis (mobile)")
     st.caption(
-        "The same laps as Data Analysis, redrawn one chart at a time for a small screen. Drag the chart to scroll "
+        "The same laps as Lap Analysis, redrawn one chart at a time for a small screen. Drag the chart to scroll "
         "across the lap, pinch (or scroll) to zoom into any part of it in detail, and tap anywhere on it to move "
         "the map marker to that point."
     )
@@ -1877,7 +2428,7 @@ def page_lap_comparison() -> None:
 
     st.subheader("Speed & delta trace")
     st.caption(
-        "For visual context -- the same linked chart/map view as the Data Analysis page, scoped to your selected "
+        "For visual context -- the same linked chart/map view as the Lap Analysis page, scoped to your selected "
         "laps here. Delta is vs. the reference lap."
     )
     fig = make_subplots(
@@ -3453,7 +4004,7 @@ page_team_obj = st.Page(page_team, title="Team", icon="👥")
 page_leaderboards_obj = st.Page(page_leaderboards, title="Leaderboards", icon="🏆")
 page_find_profile_obj = st.Page(page_find_profile, title="Find My Profile", icon="🔍")
 page_lap_times_obj = st.Page(page_lap_times, title="Lap Times", icon="⏱️")
-page_data_analysis_obj = st.Page(page_data_analysis, title="Data Analysis", icon="📈")
+page_data_analysis_obj = st.Page(page_data_analysis, title="Lap Analysis", icon="📈")
 page_data_analysis_mobile_obj = st.Page(page_data_analysis_mobile, title="Data Analysis (Mobile)", icon="📱")
 page_track_map_obj = st.Page(page_track_map, title="Track Map", icon="🗺️")
 page_braking_rpm_obj = st.Page(page_braking_rpm, title="Braking / RPM", icon="🛞")
