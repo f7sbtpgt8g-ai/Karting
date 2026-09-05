@@ -1,0 +1,4 @@
+# Only needed for mitm_capture.py (the primary capture method). analyze_har.py
+# has no extra dependencies beyond the stdlib and works on a HAR file from
+# either capture method.
+mitmproxy>=11.0
