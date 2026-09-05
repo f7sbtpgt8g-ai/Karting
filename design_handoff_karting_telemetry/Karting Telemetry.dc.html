@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#e8e8e4;font-family:Archivo,Helvetica,sans-serif}
+a{color:#c02d12;text-decoration:none}a:hover{color:#ff3b1f}
+.dv-turn{padding:40px 44px 32px;border-bottom:1px solid rgba(0,0,0,.08);scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 20px}
+.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 13px/1.2 Archivo,sans-serif;color:#1a1a1a}
+.dv-opts{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 11px/1.3 Archivo,sans-serif;color:rgba(0,0,0,.55)}
+.dv-card{max-width:100%;background:#fff;border:1px solid rgba(0,0,0,.10);border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);overflow:hidden}
+.dv-opt:target .dv-oid{background:#ff3b1f;color:#fff}
+.dv-next{margin:22px 0 0;font:12px/1.5 Archivo,sans-serif;color:rgba(0,0,0,.5)}
+.n{font-family:"JetBrains Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.lbl{font:600 9px/1 Archivo,sans-serif;letter-spacing:.14em;text-transform:uppercase}
+</style></helmet>
+
+<section class="dv-turn" id="t2">
+<div class="dv-thd"><a class="dv-tid" href="#t2">2</a><span class="dv-tname">Mobile — at-track review and on-phone trace reading</span></div>
+
+<div style="max-width:960px;margin:0 0 30px;padding:20px 22px;background:#fff;border:1px solid rgba(0,0,0,.10);border-radius:8px">
+<div class="lbl" style="color:#ff3b1f;margin-bottom:12px">Making traces readable on a phone</div>
+<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:22px;font:400 12px/1.55 Archivo,sans-serif;color:#3c4247">
+<div><div style="font-weight:600;color:#0f1214;margin-bottom:4px">Values move off the axis and onto a fixed readout</div>Phone traces are too small to read a number off the plot. The header holds the values at the cursor for both laps, so the trace only has to show shape and the axis labels can shrink.</div>
+<div><div style="font-weight:600;color:#0f1214;margin-bottom:4px">The finger never covers the trace</div>Scrubbing happens on a 52px bar in the thumb zone at the bottom, not by dragging on the plot. Corner-step buttons either side jump between turns, which is how a driver actually navigates a lap.</div>
+<div><div style="font-weight:600;color:#0f1214;margin-bottom:4px">One channel deep, not four channels shallow</div>Traces are 2–3× taller than the desktop equivalent with heavier strokes (2.4–3.4px). Pedals collapse into one row. A whole-lap strip under the plots shows which slice of the lap is on screen.</div>
+<div><div style="font-weight:600;color:#0f1214;margin-bottom:4px">Landscape is a real mode, not a fallback</div>Rotating gives the full lap at desktop stroke density with minimal chrome — the fastest way to read a whole trace at the track.</div>
+</div>
+</div>
+
+<div class="dv-opts">
+
+<div class="dv-opt" id="2a">
+<div class="dv-olabel"><a class="dv-oid" href="#2a">2a</a>Mobile · At-track quick lap review</div>
+<div><x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ true }}" width="{{ frameW }}" height="{{ frameH }}" hint-size="402px,874px"><div style="width:100%;height:100%;background:#0b0d0f;display:flex;flex-direction:column;box-sizing:border-box;padding-top:54px">
+
+<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 16px 12px">
+<div><div class="lbl" style="color:#6d767d;">Whilton Mill · Rotax Senior</div><div style="font:600 13px Archivo,sans-serif;color:#eef0f1;margin-top:3px">Run 4 · 14 laps</div></div>
+<div style="display:flex;align-items:center;gap:6px;padding:7px 10px;border:1px solid rgba(255,255,255,.13);border-radius:20px"><div style="width:5px;height:5px;border-radius:9px;background:#2fd07a"></div><span class="n" style="font-size:11px;color:#c9cfd4;">Synced</span></div>
+</div>
+
+<div style="padding:16px;background:#101417;border-top:1px solid rgba(255,255,255,.08);border-bottom:1px solid rgba(255,255,255,.08)">
+<div class="lbl" style="color:#ff3b1f;">New best · lap 12</div>
+<div style="display:flex;align-items:flex-end;gap:14px;margin-top:8px">
+<span class="n" style="font-size:48px;color:#eef0f1;font-weight:700;line-height:.88;letter-spacing:-.03em">48.312</span>
+<span class="n" style="font-size:22px;color:#2fd07a;font-weight:700;line-height:1.4">−0.376</span>
+</div>
+<div style="display:flex;gap:20px;margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.10)">
+<div><div class="lbl" style="color:#6d767d;">Theoretical</div><div class="n" style="font-size:15px;color:#ffd23d;margin-top:4px">47.951</div></div>
+<div><div class="lbl" style="color:#6d767d;">Class record</div><div class="n" style="font-size:15px;color:#8c959c;margin-top:4px">47.402</div></div>
+<div><div class="lbl" style="color:#6d767d;">Standing</div><div class="n" style="font-size:15px;color:#eef0f1;margin-top:4px">P4 <span style="color:#8c959c">/218</span></div></div>
+</div>
+</div>
+
+<div style="padding:14px 16px 4px"><div class="lbl" style="color:#6d767d;">Laps · swipe</div></div>
+<div style="display:flex;gap:8px;padding:8px 16px 14px;overflow:hidden">
+<div style="flex:none;min-width:78px;padding:9px 11px;border-radius:5px;background:#1f262b;box-shadow:inset 0 -2px 0 #ff3b1f"><div class="n" style="font-size:11px;color:#eef0f1;">L12</div><div class="n" style="font-size:15px;color:#eef0f1;margin-top:3px">48.312</div><div class="n" style="font-size:11px;color:#2fd07a;margin-top:2px">−0.376</div></div><div style="flex:none;min-width:78px;padding:9px 11px;border-radius:5px;background:#12171a;"><div class="n" style="font-size:11px;color:#8c959c;">L09</div><div class="n" style="font-size:15px;color:#c9cfd4;margin-top:3px">48.688</div><div class="n" style="font-size:11px;color:#b06cff;margin-top:2px">ref</div></div><div style="flex:none;min-width:78px;padding:9px 11px;border-radius:5px;background:#12171a;"><div class="n" style="font-size:11px;color:#8c959c;">L13</div><div class="n" style="font-size:15px;color:#c9cfd4;margin-top:3px">48.741</div><div class="n" style="font-size:11px;color:#ff4a3d;margin-top:2px">+0.053</div></div><div style="flex:none;min-width:78px;padding:9px 11px;border-radius:5px;background:#12171a;"><div class="n" style="font-size:11px;color:#8c959c;">L11</div><div class="n" style="font-size:15px;color:#c9cfd4;margin-top:3px">48.902</div><div class="n" style="font-size:11px;color:#ff4a3d;margin-top:2px">+0.214</div></div>
+</div>
+
+<div style="display:flex;gap:6px;padding:0 16px 16px">
+<div style="flex:1;padding:10px 8px;border-radius:5px;background:#12171a;box-shadow:inset 0 -3px 0 #2fd07a;min-height:64px;box-sizing:border-box"><div class="lbl" style="color:#6d767d;">S1</div><div class="n" style="font-size:13px;color:#eef0f1;margin-top:6px">12.041</div><div class="n" style="font-size:11px;color:#2fd07a;margin-top:3px">−0.148</div></div><div style="flex:1;padding:10px 8px;border-radius:5px;background:#12171a;box-shadow:inset 0 -3px 0 #2fd07a;min-height:64px;box-sizing:border-box"><div class="lbl" style="color:#6d767d;">S2</div><div class="n" style="font-size:13px;color:#eef0f1;margin-top:6px">10.884</div><div class="n" style="font-size:11px;color:#2fd07a;margin-top:3px">−0.081</div></div><div style="flex:1;padding:10px 8px;border-radius:5px;background:#12171a;box-shadow:inset 0 -3px 0 #ff4a3d;min-height:64px;box-sizing:border-box"><div class="lbl" style="color:#6d767d;">S3</div><div class="n" style="font-size:13px;color:#eef0f1;margin-top:6px">13.412</div><div class="n" style="font-size:11px;color:#ff4a3d;margin-top:3px">+0.062</div></div><div style="flex:1;padding:10px 8px;border-radius:5px;background:#12171a;box-shadow:inset 0 -3px 0 #2fd07a;min-height:64px;box-sizing:border-box"><div class="lbl" style="color:#6d767d;">S4</div><div class="n" style="font-size:13px;color:#eef0f1;margin-top:6px">11.975</div><div class="n" style="font-size:11px;color:#2fd07a;margin-top:3px">−0.209</div></div>
+</div>
+
+<div style="margin:0 16px;border:1px solid rgba(255,255,255,.10);border-radius:6px;background:#0f1316;overflow:hidden">
+<div style="display:flex;gap:5px;padding:10px 10px 8px">
+<span class="lbl" style="color:#eef0f1;padding:8px 12px;background:#1f262b;border-radius:4px">Speed</span>
+<span class="lbl" style="color:#8c959c;padding:8px 12px">Delta</span>
+<span class="lbl" style="color:#8c959c;padding:8px 12px">Pedals</span>
+<span style="flex:1"></span>
+<span class="lbl" style="color:#ff3b1f;padding:8px 4px">Full screen ↗</span>
+</div>
+<div style="position:relative;padding:0 0 8px">
+<div style="position:absolute;left:16px;top:6px;z-index:2;display:flex;gap:12px">
+<span class="n" style="font-size:13px;color:#ff3b1f;">104.8</span><span class="n" style="font-size:13px;color:#b06cff;">101.2</span><span class="n" style="font-size:11px;color:#8c959c;">km/h</span><span class="n" style="font-size:11px;color:#6d767d;">· 612 m</span>
+</div>
+<div style="position:absolute;left:60.6%;top:0;bottom:8px;width:2px;background:#ff3b1f;z-index:2"></div>
+<svg viewBox="0 0 1000 150" preserveAspectRatio="none" style="width:100%;height:138px;display:block">
+<g stroke="rgba(255,255,255,.07)" stroke-width="1" vector-effect="non-scaling-stroke"><path d="M0 50H1000"/><path d="M0 100H1000"/></g>
+<path d="M0 36.2L9 47.0L18 56.6L28 66.6L37 75.4L46 82.8L55 86.2L64 87.0L73 82.7L83 77.4L92 68.2L101 58.2L110 56.5L119 67.9L128 78.4L138 86.5L147 95.9L156 100.1L165 103.8L174 103.7L183 101.2L193 94.9L202 87.7L211 78.0L220 69.2L229 57.1L239 47.2L248 38.9L257 34.7L266 44.7L275 53.4L284 61.9L294 66.6L303 67.0L312 63.8L321 58.1L330 48.2L339 52.5L349 61.1L358 71.1L367 81.1L376 90.7L385 99.4L394 106.4L404 112.2L413 114.7L422 115.9L431 113.5L440 110.9L450 103.6L459 96.5L468 87.7L477 77.5L486 67.1L495 57.0L505 48.8L514 46.9L523 55.4L532 64.5L541 71.6L550 75.9L560 77.6L569 76.3L578 72.2L587 65.8L596 57.3L606 49.1L615 59.9L624 71.4L633 83.2L642 91.1L651 96.9L661 99.2L670 95.4L679 90.0L688 82.2L697 70.7L706 59.1L716 46.2L725 35.5L734 27.8L743 30.6L752 41.0L761 50.4L771 57.3L780 61.1L789 58.7L798 50.8L807 45.2L817 56.4L826 67.7L835 78.6L844 88.9L853 98.2L862 104.2L872 108.8L881 110.8L890 108.0L899 103.8L908 95.5L917 87.7L927 76.2L936 65.9L945 53.7L954 44.2L963 35.3L972 27.5L982 19.8L991 15.9L1000 11.8" fill="none" stroke="#b06cff" stroke-width="2.4" vector-effect="non-scaling-stroke"/>
+<path d="M0 35.8L9 45.9L18 56.5L28 66.1L37 75.2L46 81.5L55 85.3L64 85.2L73 82.1L83 75.5L92 67.1L101 56.6L110 55.6L119 67.1L128 76.7L138 86.7L147 94.5L156 100.7L165 103.5L174 103.5L183 101.0L193 95.2L202 87.4L211 77.3L220 67.1L229 57.3L239 46.5L248 36.7L257 32.6L266 42.6L275 52.8L284 61.2L294 66.2L303 66.4L312 63.6L321 55.8L330 46.7L339 51.6L349 60.9L358 71.4L367 81.1L376 91.1L385 99.3L394 106.3L404 111.4L413 114.5L422 115.2L431 113.8L440 109.8L450 103.7L459 96.0L468 86.7L477 76.9L486 66.9L495 56.9L505 47.0L514 45.6L523 54.7L532 63.6L541 70.4L550 75.3L560 77.3L569 75.6L578 70.6L587 64.4L596 55.7L606 47.6L615 58.5L624 70.5L633 81.8L642 90.9L651 95.8L661 97.8L670 95.1L679 89.9L688 80.9L697 69.5L706 57.5L716 45.9L725 34.7L734 25.0L743 30.6L752 40.3L761 49.9L771 57.0L780 59.2L789 57.1L798 50.4L807 44.1L817 55.5L826 65.8L835 77.0L844 87.3L853 97.1L862 104.4L872 108.3L881 109.9L890 108.0L899 103.5L908 95.5L917 86.7L927 75.4L936 64.5L945 53.1L954 42.7L963 33.6L972 25.6L982 18.9L991 13.6L1000 9.6" fill="none" stroke="#ff3b1f" stroke-width="3.4" vector-effect="non-scaling-stroke"/>
+</svg>
+<div style="display:flex;justify-content:space-between;padding:4px 16px 0">
+<span class="lbl" style="color:#6d767d;">T1</span><span class="lbl" style="color:#6d767d;">T3</span><span class="lbl" style="color:#ff3b1f;">T6</span><span class="lbl" style="color:#6d767d;">T8</span>
+</div>
+</div>
+</div>
+
+<div style="margin:16px 0 0;flex:1">
+<div style="padding:0 16px 8px"><div class="lbl" style="color:#6d767d;">Where the time went</div></div>
+<div style="display:flex;align-items:center;gap:12px;padding:13px 16px;border-top:1px solid rgba(255,255,255,.07);background:#15100f">
+<span class="n" style="font-size:12px;color:#8c959c;width:22px">T6</span>
+<span style="flex:1;min-width:0"><span style="display:block;font:600 13px Archivo,sans-serif;color:#eef0f1">Pylon left</span><span style="display:block;font:400 11.5px/1.4 Archivo,sans-serif;color:#8c959c;margin-top:2px">Coasting — brake released 1.4 m early</span></span>
+<span class="n" style="font-size:14px;color:#ff4a3d;">+0.062</span>
+<span style="color:#6d767d;font-size:13px">›</span></div>
+<div style="display:flex;align-items:center;gap:12px;padding:13px 16px;border-top:1px solid rgba(255,255,255,.07);">
+<span class="n" style="font-size:12px;color:#8c959c;width:22px">T8</span>
+<span style="flex:1;min-width:0"><span style="display:block;font:600 13px Archivo,sans-serif;color:#eef0f1">Onto the straight</span><span style="display:block;font:400 11.5px/1.4 Archivo,sans-serif;color:#8c959c;margin-top:2px">Carried 2.1 m more exit</span></span>
+<span class="n" style="font-size:14px;color:#2fd07a;">−0.209</span>
+<span style="color:#6d767d;font-size:13px">›</span></div>
+</div>
+
+<div style="display:flex;border-top:1px solid rgba(255,255,255,.10);background:#0f1316;padding-bottom:22px">
+<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;padding:9px 0 4px"><i style="width:16px;height:3px;background:#ff3b1f"></i><span class="lbl" style="color:#eef0f1;">Session</span></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;padding:9px 0 4px"><i style="width:16px;height:3px;background:#2a3136"></i><span class="lbl" style="color:#6d767d;">Analyse</span></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;padding:9px 0 4px"><i style="width:16px;height:3px;background:#2a3136"></i><span class="lbl" style="color:#6d767d;">Boards</span></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;padding:9px 0 4px"><i style="width:16px;height:3px;background:#2a3136"></i><span class="lbl" style="color:#6d767d;">Garage</span></div>
+</div>
+</div></x-import></div>
+</div>
+
+<div class="dv-opt" id="2b">
+<div class="dv-olabel"><a class="dv-oid" href="#2b">2b</a>Mobile · Trace scrub — portrait, thumb scrubber</div>
+<div><x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ true }}" width="{{ frameW }}" height="{{ frameH }}" hint-size="402px,874px"><div style="width:100%;height:100%;background:#0b0d0f;display:flex;flex-direction:column;box-sizing:border-box;padding-top:54px">
+
+<div style="display:flex;align-items:center;gap:10px;padding:6px 14px 12px">
+<span style="color:#c9cfd4;font-size:16px">‹</span>
+<div style="flex:1"><div style="font:600 13px Archivo,sans-serif;color:#eef0f1">Lap 12 vs Lap 9</div><div class="n" style="font-size:11px;color:#8c959c;margin-top:2px">Run 4 · distance basis</div></div>
+<span class="lbl" style="color:#c9cfd4;padding:8px 10px;border:1px solid rgba(255,255,255,.14);border-radius:4px">Ref</span>
+</div>
+
+<div style="padding:12px 14px;background:#101417;border-top:1px solid rgba(255,255,255,.08);border-bottom:1px solid rgba(255,255,255,.08)">
+<div style="display:flex;align-items:baseline;justify-content:space-between">
+<span class="n" style="font-size:20px;color:#eef0f1;font-weight:700">612 m</span>
+<span style="font:600 12px Archivo,sans-serif;color:#ff3b1f">T6 Pylon left · entry</span>
+</div>
+<div style="display:flex;gap:10px;margin-top:12px">
+<div style="flex:1"><div class="lbl" style="color:#6d767d;">Speed</div><div style="display:flex;align-items:baseline;gap:8px;margin-top:5px"><span class="n" style="font-size:19px;color:#ff3b1f;font-weight:700">104.8</span><span class="n" style="font-size:13px;color:#b06cff;">101.2</span></div><div class="n" style="font-size:10px;color:#6d767d;margin-top:2px">km/h · you / ref</div></div>
+<div style="flex:1"><div class="lbl" style="color:#6d767d;">Delta t</div><div style="display:flex;align-items:baseline;gap:8px;margin-top:5px"><span class="n" style="font-size:19px;color:#2fd07a;font-weight:700">−0.376</span><span class="n" style="font-size:13px;color:#2fd07a;"></span></div><div class="n" style="font-size:10px;color:#6d767d;margin-top:2px">s cumulative</div></div>
+<div style="flex:1"><div class="lbl" style="color:#6d767d;">Throttle</div><div style="display:flex;align-items:baseline;gap:8px;margin-top:5px"><span class="n" style="font-size:19px;color:#ff3b1f;font-weight:700">0</span><span class="n" style="font-size:13px;color:#b06cff;">18</span></div><div class="n" style="font-size:10px;color:#6d767d;margin-top:2px">% · you / ref</div></div>
+</div>
+</div>
+
+<div style="border-top:1px solid rgba(255,255,255,.09);position:relative;padding-top:22px">
+<div style="position:absolute;left:14px;top:6px;z-index:2;display:flex;align-items:baseline;gap:8px"><span class="lbl" style="color:#eef0f1;">Speed</span><span class="n" style="font-size:10px;color:#6d767d;">km/h</span><span class="n" style="font-size:12px;color:#ff3b1f;">104.8</span></div>
+<svg viewBox="0 0 1000 150" preserveAspectRatio="none" style="width:100%;height:150px;display:block"><g stroke="rgba(255,255,255,.06)" stroke-width="1" vector-effect="non-scaling-stroke"><path d="M0 50H1000"/><path d="M0 100H1000"/></g><path d="M0 36.2L9 47.0L18 56.6L28 66.6L37 75.4L46 82.8L55 86.2L64 87.0L73 82.7L83 77.4L92 68.2L101 58.2L110 56.5L119 67.9L128 78.4L138 86.5L147 95.9L156 100.1L165 103.8L174 103.7L183 101.2L193 94.9L202 87.7L211 78.0L220 69.2L229 57.1L239 47.2L248 38.9L257 34.7L266 44.7L275 53.4L284 61.9L294 66.6L303 67.0L312 63.8L321 58.1L330 48.2L339 52.5L349 61.1L358 71.1L367 81.1L376 90.7L385 99.4L394 106.4L404 112.2L413 114.7L422 115.9L431 113.5L440 110.9L450 103.6L459 96.5L468 87.7L477 77.5L486 67.1L495 57.0L505 48.8L514 46.9L523 55.4L532 64.5L541 71.6L550 75.9L560 77.6L569 76.3L578 72.2L587 65.8L596 57.3L606 49.1L615 59.9L624 71.4L633 83.2L642 91.1L651 96.9L661 99.2L670 95.4L679 90.0L688 82.2L697 70.7L706 59.1L716 46.2L725 35.5L734 27.8L743 30.6L752 41.0L761 50.4L771 57.3L780 61.1L789 58.7L798 50.8L807 45.2L817 56.4L826 67.7L835 78.6L844 88.9L853 98.2L862 104.2L872 108.8L881 110.8L890 108.0L899 103.8L908 95.5L917 87.7L927 76.2L936 65.9L945 53.7L954 44.2L963 35.3L972 27.5L982 19.8L991 15.9L1000 11.8" fill="none" stroke="#b06cff" stroke-width="2.4" vector-effect="non-scaling-stroke"/><path d="M0 35.8L9 45.9L18 56.5L28 66.1L37 75.2L46 81.5L55 85.3L64 85.2L73 82.1L83 75.5L92 67.1L101 56.6L110 55.6L119 67.1L128 76.7L138 86.7L147 94.5L156 100.7L165 103.5L174 103.5L183 101.0L193 95.2L202 87.4L211 77.3L220 67.1L229 57.3L239 46.5L248 36.7L257 32.6L266 42.6L275 52.8L284 61.2L294 66.2L303 66.4L312 63.6L321 55.8L330 46.7L339 51.6L349 60.9L358 71.4L367 81.1L376 91.1L385 99.3L394 106.3L404 111.4L413 114.5L422 115.2L431 113.8L440 109.8L450 103.7L459 96.0L468 86.7L477 76.9L486 66.9L495 56.9L505 47.0L514 45.6L523 54.7L532 63.6L541 70.4L550 75.3L560 77.3L569 75.6L578 70.6L587 64.4L596 55.7L606 47.6L615 58.5L624 70.5L633 81.8L642 90.9L651 95.8L661 97.8L670 95.1L679 89.9L688 80.9L697 69.5L706 57.5L716 45.9L725 34.7L734 25.0L743 30.6L752 40.3L761 49.9L771 57.0L780 59.2L789 57.1L798 50.4L807 44.1L817 55.5L826 65.8L835 77.0L844 87.3L853 97.1L862 104.4L872 108.3L881 109.9L890 108.0L899 103.5L908 95.5L917 86.7L927 75.4L936 64.5L945 53.1L954 42.7L963 33.6L972 25.6L982 18.9L991 13.6L1000 9.6" fill="none" stroke="#ff3b1f" stroke-width="3.4" vector-effect="non-scaling-stroke"/><path d="M606 0V150" stroke="#ff3b1f" stroke-width="2" vector-effect="non-scaling-stroke"/></svg></div>
+
+<div style="border-top:1px solid rgba(255,255,255,.09);position:relative;padding-top:22px">
+<div style="position:absolute;left:14px;top:6px;z-index:2;display:flex;align-items:baseline;gap:8px"><span class="lbl" style="color:#eef0f1;">Delta t</span><span class="n" style="font-size:10px;color:#6d767d;">s</span><span class="n" style="font-size:12px;color:#2fd07a;">−0.376</span></div>
+<svg viewBox="0 0 1000 72" preserveAspectRatio="none" style="width:100%;height:92px;display:block"><path d="M0 35.9L9 35.8L18 35.7L28 35.6L37 35.5L46 35.0L55 34.6L64 33.8L73 33.5L83 32.9L92 32.6L101 32.2L110 32.0L119 31.8L128 31.2L138 31.3L147 30.4L156 30.9L165 30.5L174 30.3L183 30.1L193 30.3L202 30.2L211 29.9L220 29.3L229 29.4L239 29.3L248 28.9L257 28.7L266 28.3L275 28.2L284 28.0L294 27.9L303 27.8L312 27.7L321 27.2L330 27.0L339 26.8L349 26.7L358 26.8L367 26.8L376 27.0L385 26.9L394 26.9L404 25.9L413 25.6L422 24.6L431 25.0L440 23.7L450 23.7L459 23.4L468 22.9L477 22.7L486 22.7L495 22.6L505 22.3L514 22.1L523 22.0L532 21.7L541 21.4L550 21.2L560 21.1L569 20.9L578 20.4L587 20.0L596 19.7L606 19.4L615 19.1L624 18.8L633 18.3L642 18.2L651 17.5L661 16.5L670 16.3L679 16.2L688 15.7L697 15.4L706 15.0L716 15.0L725 14.9L734 14.5L743 14.5L752 14.4L761 14.3L771 14.3L780 13.8L789 13.5L798 13.4L807 13.2L817 13.0L826 12.5L835 11.9L844 11.2L853 10.4L862 10.5L872 9.9L881 8.8L890 8.8L899 8.5L908 8.5L917 8.1L927 7.8L936 7.4L945 7.3L954 7.1L963 6.8L972 6.6L982 6.5L991 6.3L1000 6.1 L1000 36 L0 36 Z" fill="rgba(47,208,122,.18)"/><path d="M0 36H1000" stroke="rgba(255,255,255,.22)" stroke-width="1" vector-effect="non-scaling-stroke" stroke-dasharray="3 3"/><path d="M0 35.9L9 35.8L18 35.7L28 35.6L37 35.5L46 35.0L55 34.6L64 33.8L73 33.5L83 32.9L92 32.6L101 32.2L110 32.0L119 31.8L128 31.2L138 31.3L147 30.4L156 30.9L165 30.5L174 30.3L183 30.1L193 30.3L202 30.2L211 29.9L220 29.3L229 29.4L239 29.3L248 28.9L257 28.7L266 28.3L275 28.2L284 28.0L294 27.9L303 27.8L312 27.7L321 27.2L330 27.0L339 26.8L349 26.7L358 26.8L367 26.8L376 27.0L385 26.9L394 26.9L404 25.9L413 25.6L422 24.6L431 25.0L440 23.7L450 23.7L459 23.4L468 22.9L477 22.7L486 22.7L495 22.6L505 22.3L514 22.1L523 22.0L532 21.7L541 21.4L550 21.2L560 21.1L569 20.9L578 20.4L587 20.0L596 19.7L606 19.4L615 19.1L624 18.8L633 18.3L642 18.2L651 17.5L661 16.5L670 16.3L679 16.2L688 15.7L697 15.4L706 15.0L716 15.0L725 14.9L734 14.5L743 14.5L752 14.4L761 14.3L771 14.3L780 13.8L789 13.5L798 13.4L807 13.2L817 13.0L826 12.5L835 11.9L844 11.2L853 10.4L862 10.5L872 9.9L881 8.8L890 8.8L899 8.5L908 8.5L917 8.1L927 7.8L936 7.4L945 7.3L954 7.1L963 6.8L972 6.6L982 6.5L991 6.3L1000 6.1" fill="none" stroke="#2fd07a" stroke-width="3" vector-effect="non-scaling-stroke"/><path d="M606 0V72" stroke="#ff3b1f" stroke-width="2" vector-effect="non-scaling-stroke"/></svg></div>
+
+<div style="border-top:1px solid rgba(255,255,255,.09);position:relative;padding-top:22px">
+<div style="position:absolute;left:14px;top:6px;z-index:2;display:flex;align-items:baseline;gap:8px"><span class="lbl" style="color:#eef0f1;">Pedals</span><span class="n" style="font-size:10px;color:#6d767d;">thr / brk</span><span class="n" style="font-size:12px;color:#c9cfd4;">8 events</span></div>
+<svg viewBox="0 0 1000 56" preserveAspectRatio="none" style="width:100%;height:76px;display:block"><path d="M0 54.0L9 54.0L18 54.0L28 54.0L37 54.0L46 54.0L55 54.0L64 2.0L73 2.0L83 2.0L92 2.0L101 2.0L110 54.0L119 54.0L128 54.0L138 54.0L147 54.0L156 54.0L165 54.0L174 2.0L183 2.0L193 2.0L202 2.0L211 2.0L220 2.0L229 2.0L239 2.0L248 2.0L257 54.0L266 54.0L275 54.0L284 54.0L294 54.0L303 2.0L312 2.0L321 2.0L330 2.0L339 54.0L349 54.0L358 54.0L367 54.0L376 54.0L385 54.0L394 54.0L404 54.0L413 54.0L422 9.4L431 2.0L440 2.0L450 2.0L459 2.0L468 2.0L477 2.0L486 2.0L495 2.0L505 2.0L514 54.0L523 54.0L532 54.0L541 54.0L550 54.0L560 51.2L569 2.0L578 2.0L587 2.0L596 2.0L606 54.0L615 54.0L624 54.0L633 54.0L642 54.0L651 54.0L661 11.7L670 2.0L679 2.0L688 2.0L697 2.0L706 2.0L716 2.0L725 2.0L734 2.0L743 54.0L752 54.0L761 54.0L771 54.0L780 27.3L789 2.0L798 2.0L807 54.0L817 54.0L826 54.0L835 54.0L844 54.0L853 54.0L862 54.0L872 54.0L881 18.4L890 2.0L899 2.0L908 2.0L917 2.0L927 2.0L936 2.0L945 2.0L954 2.0L963 2.0L972 2.0L982 2.0L991 2.0L1000 2.0" fill="none" stroke="#b06cff" stroke-width="2" vector-effect="non-scaling-stroke"/><path d="M0 54.0L9 54.0L18 54.0L28 54.0L37 54.0L46 54.0L55 54.0L64 2.0L73 2.0L83 2.0L92 2.0L101 2.0L110 54.0L119 54.0L128 54.0L138 54.0L147 54.0L156 54.0L165 54.0L174 2.0L183 2.0L193 2.0L202 2.0L211 2.0L220 2.0L229 2.0L239 2.0L248 2.0L257 54.0L266 54.0L275 54.0L284 54.0L294 54.0L303 2.0L312 2.0L321 2.0L330 2.0L339 54.0L349 54.0L358 54.0L367 54.0L376 54.0L385 54.0L394 54.0L404 54.0L413 54.0L422 6.1L431 2.0L440 2.0L450 2.0L459 2.0L468 2.0L477 2.0L486 2.0L495 2.0L505 2.0L514 54.0L523 54.0L532 54.0L541 54.0L550 54.0L560 25.9L569 2.0L578 2.0L587 2.0L596 2.0L606 54.0L615 54.0L624 54.0L633 54.0L642 54.0L651 54.0L661 11.5L670 2.0L679 2.0L688 2.0L697 2.0L706 2.0L716 2.0L725 2.0L734 2.0L743 54.0L752 54.0L761 54.0L771 54.0L780 28.1L789 2.0L798 2.0L807 54.0L817 54.0L826 54.0L835 54.0L844 54.0L853 54.0L862 54.0L872 54.0L881 13.2L890 2.0L899 2.0L908 2.0L917 2.0L927 2.0L936 2.0L945 2.0L954 2.0L963 2.0L972 2.0L982 2.0L991 2.0L1000 2.0" fill="none" stroke="#ff3b1f" stroke-width="2.8" vector-effect="non-scaling-stroke"/><path d="M0 2.0L9 2.0L18 2.0L28 2.0L37 2.0L46 2.0L55 12.2L64 44.0L73 44.0L83 44.0L92 44.0L101 44.0L110 2.0L119 2.0L128 2.0L138 2.0L147 2.0L156 2.0L165 14.2L174 44.0L183 44.0L193 44.0L202 44.0L211 44.0L220 44.0L229 44.0L239 44.0L248 44.0L257 14.8L266 2.0L275 2.0L284 2.0L294 2.0L303 44.0L312 44.0L321 44.0L330 44.0L339 2.0L349 2.0L358 2.0L367 2.0L376 2.0L385 2.0L394 2.0L404 2.0L413 9.9L422 44.0L431 44.0L440 44.0L450 44.0L459 44.0L468 44.0L477 44.0L486 44.0L495 44.0L505 44.0L514 13.4L523 2.0L532 2.0L541 2.0L550 2.0L560 44.0L569 44.0L578 44.0L587 44.0L596 44.0L606 15.7L615 2.0L624 2.0L633 2.0L642 2.0L651 2.0L661 44.0L670 44.0L679 44.0L688 44.0L697 44.0L706 44.0L716 44.0L725 44.0L734 44.0L743 2.0L752 2.0L761 2.0L771 2.0L780 44.0L789 44.0L798 44.0L807 4.0L817 2.0L826 2.0L835 2.0L844 2.0L853 2.0L862 2.0L872 2.0L881 44.0L890 44.0L899 44.0L908 44.0L917 44.0L927 44.0L936 44.0L945 44.0L954 44.0L963 44.0L972 44.0L982 44.0L991 44.0L1000 44.0" fill="none" stroke="#4d7cff" stroke-width="2.4" vector-effect="non-scaling-stroke"/><path d="M606 0V56" stroke="#ff3b1f" stroke-width="2" vector-effect="non-scaling-stroke"/></svg></div>
+
+<div style="flex:1"></div>
+
+<div style="padding:14px 14px 10px;border-top:1px solid rgba(255,255,255,.10);background:#0f1316">
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:9px">
+<span class="lbl" style="color:#6d767d;">Whole lap · window 480–760 m</span>
+<span class="lbl" style="color:#ff3b1f;">Reset zoom</span>
+</div>
+<div style="position:relative;height:34px;border-radius:4px;background:#12171a;overflow:hidden">
+<svg viewBox="0 0 1000 150" preserveAspectRatio="none" style="width:100%;height:100%;display:block;opacity:.5"><path d="M0 35.8L9 45.9L18 56.5L28 66.1L37 75.2L46 81.5L55 85.3L64 85.2L73 82.1L83 75.5L92 67.1L101 56.6L110 55.6L119 67.1L128 76.7L138 86.7L147 94.5L156 100.7L165 103.5L174 103.5L183 101.0L193 95.2L202 87.4L211 77.3L220 67.1L229 57.3L239 46.5L248 36.7L257 32.6L266 42.6L275 52.8L284 61.2L294 66.2L303 66.4L312 63.6L321 55.8L330 46.7L339 51.6L349 60.9L358 71.4L367 81.1L376 91.1L385 99.3L394 106.3L404 111.4L413 114.5L422 115.2L431 113.8L440 109.8L450 103.7L459 96.0L468 86.7L477 76.9L486 66.9L495 56.9L505 47.0L514 45.6L523 54.7L532 63.6L541 70.4L550 75.3L560 77.3L569 75.6L578 70.6L587 64.4L596 55.7L606 47.6L615 58.5L624 70.5L633 81.8L642 90.9L651 95.8L661 97.8L670 95.1L679 89.9L688 80.9L697 69.5L706 57.5L716 45.9L725 34.7L734 25.0L743 30.6L752 40.3L761 49.9L771 57.0L780 59.2L789 57.1L798 50.4L807 44.1L817 55.5L826 65.8L835 77.0L844 87.3L853 97.1L862 104.4L872 108.3L881 109.9L890 108.0L899 103.5L908 95.5L917 86.7L927 75.4L936 64.5L945 53.1L954 42.7L963 33.6L972 25.6L982 18.9L991 13.6L1000 9.6" fill="none" stroke="#8c959c" stroke-width="3" vector-effect="non-scaling-stroke"/></svg>
+<div style="position:absolute;left:45%;width:28%;top:0;bottom:0;border:1.5px solid #ff3b1f;background:rgba(255,59,31,.14);border-radius:3px"></div>
+</div>
+
+<div style="display:flex;align-items:center;gap:10px;margin-top:14px">
+<div style="width:52px;height:52px;flex:none;border-radius:6px;background:#1f262b;display:flex;align-items:center;justify-content:center;font:600 11px Archivo,sans-serif;color:#c9cfd4;letter-spacing:.1em">◀ T5</div>
+<div style="flex:1;position:relative;height:52px;border-radius:6px;background:#12171a;display:flex;align-items:center;padding:0 10px;box-sizing:border-box">
+<div style="height:4px;flex:1;background:#2a3136;border-radius:3px"></div>
+<div style="position:absolute;left:58%;top:50%;transform:translate(-50%,-50%);width:46px;height:46px;border-radius:8px;background:#ff3b1f;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px"><span style="font:700 11px ui-monospace,monospace;color:#0b0d0f">612</span><span style="font:600 8px Archivo,sans-serif;color:rgba(0,0,0,.55);letter-spacing:.08em">M</span></div>
+</div>
+<div style="width:52px;height:52px;flex:none;border-radius:6px;background:#1f262b;display:flex;align-items:center;justify-content:center;font:600 11px Archivo,sans-serif;color:#c9cfd4;letter-spacing:.1em">T7 ▶</div>
+</div>
+<div style="text-align:center;padding:12px 0 20px"><span class="n" style="font-size:11px;color:#6d767d;">Drag to scrub · rotate for full-width traces</span></div>
+</div>
+</div></x-import></div>
+</div>
+
+<div class="dv-opt" id="2c">
+<div class="dv-olabel"><a class="dv-oid" href="#2c">2c</a>Mobile · Trace scrub — rotated to landscape</div>
+<div><x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" dark="{{ true }}" width="{{ landW }}" height="{{ landH }}" hint-size="874px,402px"><div style="width:100%;height:100%;background:#0b0d0f;display:flex;flex-direction:column;box-sizing:border-box;padding:48px 0 0">
+<div style="display:flex;align-items:center;gap:16px;padding:2px 20px 8px">
+<span style="font:600 12px Archivo,sans-serif;color:#eef0f1">Lap 12 <span style="color:#8c959c">vs</span> Lap 9</span>
+<span class="n" style="font-size:13px;color:#eef0f1;font-weight:700">612 m</span>
+<span style="font:600 11px Archivo,sans-serif;color:#ff3b1f">T6 Pylon left</span>
+<span style="flex:1"></span>
+<span class="n" style="font-size:13px;color:#2fd07a;font-weight:700">−0.376</span>
+<span class="lbl" style="color:#6d767d;">cumulative</span>
+</div>
+<div style="border-top:1px solid rgba(255,255,255,.09);position:relative;padding-top:18px">
+<div style="position:absolute;left:12px;top:4px;z-index:2;display:flex;gap:8px;align-items:baseline"><span class="lbl" style="color:#eef0f1;">Speed</span><span class="n" style="font-size:12px;color:#ff3b1f;">104.8 / 101.2 km/h</span></div>
+<svg viewBox="0 0 1000 150" preserveAspectRatio="none" style="width:100%;height:100px;display:block"><g stroke="rgba(255,255,255,.06)" stroke-width="1" vector-effect="non-scaling-stroke"><path d="M0 50H1000"/><path d="M0 100H1000"/></g><path d="M0 36.2L9 47.0L18 56.6L28 66.6L37 75.4L46 82.8L55 86.2L64 87.0L73 82.7L83 77.4L92 68.2L101 58.2L110 56.5L119 67.9L128 78.4L138 86.5L147 95.9L156 100.1L165 103.8L174 103.7L183 101.2L193 94.9L202 87.7L211 78.0L220 69.2L229 57.1L239 47.2L248 38.9L257 34.7L266 44.7L275 53.4L284 61.9L294 66.6L303 67.0L312 63.8L321 58.1L330 48.2L339 52.5L349 61.1L358 71.1L367 81.1L376 90.7L385 99.4L394 106.4L404 112.2L413 114.7L422 115.9L431 113.5L440 110.9L450 103.6L459 96.5L468 87.7L477 77.5L486 67.1L495 57.0L505 48.8L514 46.9L523 55.4L532 64.5L541 71.6L550 75.9L560 77.6L569 76.3L578 72.2L587 65.8L596 57.3L606 49.1L615 59.9L624 71.4L633 83.2L642 91.1L651 96.9L661 99.2L670 95.4L679 90.0L688 82.2L697 70.7L706 59.1L716 46.2L725 35.5L734 27.8L743 30.6L752 41.0L761 50.4L771 57.3L780 61.1L789 58.7L798 50.8L807 45.2L817 56.4L826 67.7L835 78.6L844 88.9L853 98.2L862 104.2L872 108.8L881 110.8L890 108.0L899 103.8L908 95.5L917 87.7L927 76.2L936 65.9L945 53.7L954 44.2L963 35.3L972 27.5L982 19.8L991 15.9L1000 11.8" fill="none" stroke="#b06cff" stroke-width="1.8" vector-effect="non-scaling-stroke"/><path d="M0 35.8L9 45.9L18 56.5L28 66.1L37 75.2L46 81.5L55 85.3L64 85.2L73 82.1L83 75.5L92 67.1L101 56.6L110 55.6L119 67.1L128 76.7L138 86.7L147 94.5L156 100.7L165 103.5L174 103.5L183 101.0L193 95.2L202 87.4L211 77.3L220 67.1L229 57.3L239 46.5L248 36.7L257 32.6L266 42.6L275 52.8L284 61.2L294 66.2L303 66.4L312 63.6L321 55.8L330 46.7L339 51.6L349 60.9L358 71.4L367 81.1L376 91.1L385 99.3L394 106.3L404 111.4L413 114.5L422 115.2L431 113.8L440 109.8L450 103.7L459 96.0L468 86.7L477 76.9L486 66.9L495 56.9L505 47.0L514 45.6L523 54.7L532 63.6L541 70.4L550 75.3L560 77.3L569 75.6L578 70.6L587 64.4L596 55.7L606 47.6L615 58.5L624 70.5L633 81.8L642 90.9L651 95.8L661 97.8L670 95.1L679 89.9L688 80.9L697 69.5L706 57.5L716 45.9L725 34.7L734 25.0L743 30.6L752 40.3L761 49.9L771 57.0L780 59.2L789 57.1L798 50.4L807 44.1L817 55.5L826 65.8L835 77.0L844 87.3L853 97.1L862 104.4L872 108.3L881 109.9L890 108.0L899 103.5L908 95.5L917 86.7L927 75.4L936 64.5L945 53.1L954 42.7L963 33.6L972 25.6L982 18.9L991 13.6L1000 9.6" fill="none" stroke="#ff3b1f" stroke-width="2.4" vector-effect="non-scaling-stroke"/><path d="M606 0V150" stroke="#ff3b1f" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg></div>
+<div style="border-top:1px solid rgba(255,255,255,.09);position:relative;padding-top:18px">
+<div style="position:absolute;left:12px;top:4px;z-index:2;display:flex;gap:8px;align-items:baseline"><span class="lbl" style="color:#eef0f1;">Delta t</span><span class="n" style="font-size:12px;color:#2fd07a;">−0.376 s</span></div>
+<svg viewBox="0 0 1000 72" preserveAspectRatio="none" style="width:100%;height:64px;display:block"><path d="M0 35.9L9 35.8L18 35.7L28 35.6L37 35.5L46 35.0L55 34.6L64 33.8L73 33.5L83 32.9L92 32.6L101 32.2L110 32.0L119 31.8L128 31.2L138 31.3L147 30.4L156 30.9L165 30.5L174 30.3L183 30.1L193 30.3L202 30.2L211 29.9L220 29.3L229 29.4L239 29.3L248 28.9L257 28.7L266 28.3L275 28.2L284 28.0L294 27.9L303 27.8L312 27.7L321 27.2L330 27.0L339 26.8L349 26.7L358 26.8L367 26.8L376 27.0L385 26.9L394 26.9L404 25.9L413 25.6L422 24.6L431 25.0L440 23.7L450 23.7L459 23.4L468 22.9L477 22.7L486 22.7L495 22.6L505 22.3L514 22.1L523 22.0L532 21.7L541 21.4L550 21.2L560 21.1L569 20.9L578 20.4L587 20.0L596 19.7L606 19.4L615 19.1L624 18.8L633 18.3L642 18.2L651 17.5L661 16.5L670 16.3L679 16.2L688 15.7L697 15.4L706 15.0L716 15.0L725 14.9L734 14.5L743 14.5L752 14.4L761 14.3L771 14.3L780 13.8L789 13.5L798 13.4L807 13.2L817 13.0L826 12.5L835 11.9L844 11.2L853 10.4L862 10.5L872 9.9L881 8.8L890 8.8L899 8.5L908 8.5L917 8.1L927 7.8L936 7.4L945 7.3L954 7.1L963 6.8L972 6.6L982 6.5L991 6.3L1000 6.1 L1000 36 L0 36 Z" fill="rgba(47,208,122,.18)"/><path d="M0 36H1000" stroke="rgba(255,255,255,.22)" stroke-width="1" vector-effect="non-scaling-stroke" stroke-dasharray="3 3"/><path d="M0 35.9L9 35.8L18 35.7L28 35.6L37 35.5L46 35.0L55 34.6L64 33.8L73 33.5L83 32.9L92 32.6L101 32.2L110 32.0L119 31.8L128 31.2L138 31.3L147 30.4L156 30.9L165 30.5L174 30.3L183 30.1L193 30.3L202 30.2L211 29.9L220 29.3L229 29.4L239 29.3L248 28.9L257 28.7L266 28.3L275 28.2L284 28.0L294 27.9L303 27.8L312 27.7L321 27.2L330 27.0L339 26.8L349 26.7L358 26.8L367 26.8L376 27.0L385 26.9L394 26.9L404 25.9L413 25.6L422 24.6L431 25.0L440 23.7L450 23.7L459 23.4L468 22.9L477 22.7L486 22.7L495 22.6L505 22.3L514 22.1L523 22.0L532 21.7L541 21.4L550 21.2L560 21.1L569 20.9L578 20.4L587 20.0L596 19.7L606 19.4L615 19.1L624 18.8L633 18.3L642 18.2L651 17.5L661 16.5L670 16.3L679 16.2L688 15.7L697 15.4L706 15.0L716 15.0L725 14.9L734 14.5L743 14.5L752 14.4L761 14.3L771 14.3L780 13.8L789 13.5L798 13.4L807 13.2L817 13.0L826 12.5L835 11.9L844 11.2L853 10.4L862 10.5L872 9.9L881 8.8L890 8.8L899 8.5L908 8.5L917 8.1L927 7.8L936 7.4L945 7.3L954 7.1L963 6.8L972 6.6L982 6.5L991 6.3L1000 6.1" fill="none" stroke="#2fd07a" stroke-width="2.2" vector-effect="non-scaling-stroke"/><path d="M606 0V72" stroke="#ff3b1f" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg></div>
+<div style="border-top:1px solid rgba(255,255,255,.09);position:relative;padding-top:18px">
+<div style="position:absolute;left:12px;top:4px;z-index:2;display:flex;gap:8px;align-items:baseline"><span class="lbl" style="color:#eef0f1;">Pedals</span><span class="n" style="font-size:12px;color:#c9cfd4;">8 brake events</span></div>
+<svg viewBox="0 0 1000 56" preserveAspectRatio="none" style="width:100%;height:48px;display:block"><path d="M0 54.0L9 54.0L18 54.0L28 54.0L37 54.0L46 54.0L55 54.0L64 2.0L73 2.0L83 2.0L92 2.0L101 2.0L110 54.0L119 54.0L128 54.0L138 54.0L147 54.0L156 54.0L165 54.0L174 2.0L183 2.0L193 2.0L202 2.0L211 2.0L220 2.0L229 2.0L239 2.0L248 2.0L257 54.0L266 54.0L275 54.0L284 54.0L294 54.0L303 2.0L312 2.0L321 2.0L330 2.0L339 54.0L349 54.0L358 54.0L367 54.0L376 54.0L385 54.0L394 54.0L404 54.0L413 54.0L422 6.1L431 2.0L440 2.0L450 2.0L459 2.0L468 2.0L477 2.0L486 2.0L495 2.0L505 2.0L514 54.0L523 54.0L532 54.0L541 54.0L550 54.0L560 25.9L569 2.0L578 2.0L587 2.0L596 2.0L606 54.0L615 54.0L624 54.0L633 54.0L642 54.0L651 54.0L661 11.5L670 2.0L679 2.0L688 2.0L697 2.0L706 2.0L716 2.0L725 2.0L734 2.0L743 54.0L752 54.0L761 54.0L771 54.0L780 28.1L789 2.0L798 2.0L807 54.0L817 54.0L826 54.0L835 54.0L844 54.0L853 54.0L862 54.0L872 54.0L881 13.2L890 2.0L899 2.0L908 2.0L917 2.0L927 2.0L936 2.0L945 2.0L954 2.0L963 2.0L972 2.0L982 2.0L991 2.0L1000 2.0" fill="none" stroke="#ff3b1f" stroke-width="2" vector-effect="non-scaling-stroke"/><path d="M0 2.0L9 2.0L18 2.0L28 2.0L37 2.0L46 2.0L55 12.2L64 44.0L73 44.0L83 44.0L92 44.0L101 44.0L110 2.0L119 2.0L128 2.0L138 2.0L147 2.0L156 2.0L165 14.2L174 44.0L183 44.0L193 44.0L202 44.0L211 44.0L220 44.0L229 44.0L239 44.0L248 44.0L257 14.8L266 2.0L275 2.0L284 2.0L294 2.0L303 44.0L312 44.0L321 44.0L330 44.0L339 2.0L349 2.0L358 2.0L367 2.0L376 2.0L385 2.0L394 2.0L404 2.0L413 9.9L422 44.0L431 44.0L440 44.0L450 44.0L459 44.0L468 44.0L477 44.0L486 44.0L495 44.0L505 44.0L514 13.4L523 2.0L532 2.0L541 2.0L550 2.0L560 44.0L569 44.0L578 44.0L587 44.0L596 44.0L606 15.7L615 2.0L624 2.0L633 2.0L642 2.0L651 2.0L661 44.0L670 44.0L679 44.0L688 44.0L697 44.0L706 44.0L716 44.0L725 44.0L734 44.0L743 2.0L752 2.0L761 2.0L771 2.0L780 44.0L789 44.0L798 44.0L807 4.0L817 2.0L826 2.0L835 2.0L844 2.0L853 2.0L862 2.0L872 2.0L881 44.0L890 44.0L899 44.0L908 44.0L917 44.0L927 44.0L936 44.0L945 44.0L954 44.0L963 44.0L972 44.0L982 44.0L991 44.0L1000 44.0" fill="none" stroke="#4d7cff" stroke-width="2" vector-effect="non-scaling-stroke"/><path d="M606 0V56" stroke="#ff3b1f" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg></div>
+<div style="display:flex;align-items:center;gap:14px;padding:8px 20px 10px;border-top:1px solid rgba(255,255,255,.09);margin-top:auto">
+<span class="lbl" style="color:#6d767d;">T1</span><span class="lbl" style="color:#6d767d;">T2</span><span class="lbl" style="color:#6d767d;">T3</span><span class="lbl" style="color:#6d767d;">T4</span><span class="lbl" style="color:#6d767d;">T5</span><span class="lbl" style="color:#ff3b1f;">T6</span><span class="lbl" style="color:#6d767d;">T7</span><span class="lbl" style="color:#6d767d;">T8</span>
+<span style="flex:1"></span>
+<span class="lbl" style="color:#c9cfd4;padding:7px 11px;border:1px solid rgba(255,255,255,.14);border-radius:4px">Sectors</span>
+<span class="lbl" style="color:#c9cfd4;padding:7px 11px;border:1px solid rgba(255,255,255,.14);border-radius:4px">Map</span>
+</div>
+</div></x-import></div>
+</div>
+
+</div>
+<p class="dv-next">Try next: "put the track map on <a class="dv-oid" href="#2a">2a</a>" · "add a leaderboard screen for mobile" · "show the corner-detail screen you tap into"</p>
+</section>
+
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">Karting telemetry — web analysis + at-track mobile</span></div>
+
+<div style="max-width:960px;margin:0 0 30px;padding:20px 22px;background:#fff;border:1px solid rgba(0,0,0,.10);border-radius:8px">
+<div class="lbl" style="color:#ff3b1f;margin-bottom:12px">Assumptions &amp; direction</div>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:22px;font:400 12px/1.55 Archivo,sans-serif;color:#3c4247">
+<div><div style="font-weight:600;color:#0f1214;margin-bottom:4px">Who it's for</div>Club racer reviewing their own laps, and a coach comparing several drivers in one session. So: lap list always visible, driver switching cheap, no wizard flows.</div>
+<div><div style="font-weight:600;color:#0f1214;margin-bottom:4px">Visual language</div>Broadcast timing conventions (purple = best, green = gain, red = loss) on a pit-wall dark workspace, with a light "factory technical" alternative. Mono/tabular numerals throughout, dense.</div>
+<div><div style="font-weight:600;color:#0f1214;margin-bottom:4px">Placeholders</div>Track outline, corner names, lap times and setup values are stand-ins. Real circuit geometry, engine classes and MyChron/AiM channel names should replace them.</div>
+</div>
+<div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(0,0,0,.09);font:400 12px/1.55 Archivo,sans-serif;color:#3c4247"><span style="font-weight:600;color:#0f1214">Variations focus on data layout:</span> <a class="dv-oid" href="#1a">1a</a> stacks channels the way a data engineer reads them; <a class="dv-oid" href="#1b">1b</a> leads with the track map so a driver sees where the time went before reading a trace.</div>
+</div>
+
+<div class="dv-opts">
+
+<div class="dv-opt" id="1a">
+<div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>Web · Lap analysis — channel-stack layout, pit-wall dark</div>
+<div class="dv-card" style="width:1440px;background:#0b0d0f;border-color:rgba(255,255,255,.14)">
+
+<div style="display:flex;align-items:center;justify-content:space-between;height:52px;padding:0 18px;background:#101417;border-bottom:1px solid rgba(255,255,255,.09);box-sizing:border-box">
+<div style="display:flex;align-items:center;gap:28px">
+<div style="display:flex;align-items:center;gap:9px">
+<div style="width:13px;height:15px;background:#ff3b1f;transform:skewX(-14deg)"></div>
+<span style="font:700 13px/1 Archivo,sans-serif;letter-spacing:.16em;color:#eef0f1">APEXLINE</span>
+</div>
+<div style="display:flex;gap:4px">
+<div class="lbl" style="padding:8px 11px;color:#eef0f1;box-shadow:inset 0 -2px 0 #ff3b1f">Analyse</div>
+<div class="lbl" style="padding:8px 11px;color:#8c959c">Theoretical</div>
+<div class="lbl" style="padding:8px 11px;color:#8c959c">Leaderboards</div>
+<div class="lbl" style="padding:8px 11px;color:#8c959c">Garage</div>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:10px">
+<div style="display:flex;align-items:center;gap:7px;padding:6px 10px;border:1px solid rgba(255,255,255,.13);border-radius:4px">
+<div style="width:5px;height:5px;border-radius:9px;background:#2fd07a"></div>
+<span class="n" style="font-size:11px;color:#c9cfd4">MyChron 5S · synced</span>
+</div>
+<div class="lbl" style="padding:7px 11px;background:#ff3b1f;color:#0b0d0f;border-radius:4px">Import session</div>
+<div style="width:28px;height:28px;border-radius:4px;background:#242b30;display:flex;align-items:center;justify-content:center;font:700 10px Archivo,sans-serif;color:#c9cfd4;letter-spacing:.06em">JM</div>
+</div>
+</div>
+
+<div style="display:flex;align-items:stretch;height:46px;background:#0d1114;border-bottom:1px solid rgba(255,255,255,.09)">
+<div style="display:flex;flex-direction:column;justify-content:center;gap:3px;padding:0 18px;border-right:1px solid rgba(255,255,255,.07)"><span class="lbl" style="color:#6d767d">Circuit</span><span style="font:600 12px Archivo,sans-serif;color:#eef0f1">Whilton Mill · Club</span></div>
+<div style="display:flex;flex-direction:column;justify-content:center;gap:3px;padding:0 18px;border-right:1px solid rgba(255,255,255,.07)"><span class="lbl" style="color:#6d767d">Class</span><span style="font:600 12px Archivo,sans-serif;color:#eef0f1">Rotax Senior Max</span></div>
+<div style="display:flex;flex-direction:column;justify-content:center;gap:3px;padding:0 18px;border-right:1px solid rgba(255,255,255,.07)"><span class="lbl" style="color:#6d767d">Session</span><span class="n" style="font-size:12px;color:#eef0f1">Sun 30 Aug · Run 4 · 14 laps</span></div>
+<div style="display:flex;flex-direction:column;justify-content:center;gap:3px;padding:0 18px;border-right:1px solid rgba(255,255,255,.07)"><span class="lbl" style="color:#6d767d">Air / Track</span><span class="n" style="font-size:12px;color:#eef0f1">18.4 °C / 31.2 °C</span></div>
+<div style="display:flex;flex-direction:column;justify-content:center;gap:3px;padding:0 18px;border-right:1px solid rgba(255,255,255,.07)"><span class="lbl" style="color:#6d767d">Tyre</span><span style="font:600 12px Archivo,sans-serif;color:#eef0f1">MOJO D5 · 3 heats</span></div>
+<div style="flex:1"></div>
+<div style="display:flex;align-items:center;gap:8px;padding:0 18px">
+<div class="lbl" style="padding:6px 10px;border:1px solid rgba(255,255,255,.14);color:#c9cfd4;border-radius:3px">Share comparison</div>
+<div class="lbl" style="padding:6px 10px;border:1px solid rgba(255,255,255,.14);color:#c9cfd4;border-radius:3px">Export CSV</div>
+</div>
+</div>
+
+<div style="display:flex;align-items:stretch">
+
+<div style="width:238px;flex:none;border-right:1px solid rgba(255,255,255,.09);background:#0d1114">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px 10px;border-bottom:1px solid rgba(255,255,255,.07)">
+<span class="lbl" style="color:#6d767d">Laps · Run 4</span><span class="lbl" style="color:#ff3b1f">Compare 2</span>
+</div>
+<div style="display:grid;grid-template-columns:26px 1fr 54px 46px;gap:8px;padding:8px 14px 6px"><span class="lbl" style="color:#565f66">Lap</span><span class="lbl" style="color:#565f66">Sectors</span><span class="lbl" style="color:#565f66;text-align:right">Time</span><span class="lbl" style="color:#565f66;text-align:right">Δ</span></div>
+
+<div style="display:grid;grid-template-columns:26px 1fr 54px 46px;gap:8px;align-items:center;padding:7px 14px;background:#181e22;box-shadow:inset 2px 0 0 #ff3b1f"><span class="n" style="font-size:11px;color:#eef0f1">12</span><span style="display:flex;gap:3px"><i style="height:4px;flex:1;background:#2fd07a"></i><i style="height:4px;flex:1;background:#b06cff"></i><i style="height:4px;flex:1;background:#ff4a3d"></i><i style="height:4px;flex:1;background:#2fd07a"></i></span><span class="n" style="font-size:12px;color:#eef0f1;text-align:right">48.312</span><span class="n" style="font-size:11px;color:#2fd07a;text-align:right">−0.376</span></div>
+
+<div style="display:grid;grid-template-columns:26px 1fr 54px 46px;gap:8px;align-items:center;padding:7px 14px;box-shadow:inset 2px 0 0 #b06cff"><span class="n" style="font-size:11px;color:#8c959c">09</span><span style="display:flex;gap:3px"><i style="height:4px;flex:1;background:#b06cff"></i><i style="height:4px;flex:1;background:#b06cff"></i><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i></span><span class="n" style="font-size:12px;color:#b06cff;text-align:right">48.688</span><span class="n" style="font-size:11px;color:#6d767d;text-align:right">ref</span></div>
+
+<div style="display:grid;grid-template-columns:26px 1fr 54px 46px;gap:8px;align-items:center;padding:7px 14px"><span class="n" style="font-size:11px;color:#8c959c">13</span><span style="display:flex;gap:3px"><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2fd07a"></i><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#ff4a3d"></i></span><span class="n" style="font-size:12px;color:#c9cfd4;text-align:right">48.741</span><span class="n" style="font-size:11px;color:#ff4a3d;text-align:right">+0.053</span></div>
+<div style="display:grid;grid-template-columns:26px 1fr 54px 46px;gap:8px;align-items:center;padding:7px 14px"><span class="n" style="font-size:11px;color:#8c959c">11</span><span style="display:flex;gap:3px"><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2fd07a"></i><i style="height:4px;flex:1;background:#2a3136"></i></span><span class="n" style="font-size:12px;color:#c9cfd4;text-align:right">48.902</span><span class="n" style="font-size:11px;color:#ff4a3d;text-align:right">+0.214</span></div>
+<div style="display:grid;grid-template-columns:26px 1fr 54px 46px;gap:8px;align-items:center;padding:7px 14px"><span class="n" style="font-size:11px;color:#8c959c">10</span><span style="display:flex;gap:3px"><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i></span><span class="n" style="font-size:12px;color:#c9cfd4;text-align:right">49.104</span><span class="n" style="font-size:11px;color:#ff4a3d;text-align:right">+0.416</span></div>
+<div style="display:grid;grid-template-columns:26px 1fr 54px 46px;gap:8px;align-items:center;padding:7px 14px"><span class="n" style="font-size:11px;color:#8c959c">08</span><span style="display:flex;gap:3px"><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i></span><span class="n" style="font-size:12px;color:#c9cfd4;text-align:right">49.220</span><span class="n" style="font-size:11px;color:#ff4a3d;text-align:right">+0.532</span></div>
+<div style="display:grid;grid-template-columns:26px 1fr 54px 46px;gap:8px;align-items:center;padding:7px 14px"><span class="n" style="font-size:11px;color:#8c959c">07</span><span style="display:flex;gap:3px"><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i></span><span class="n" style="font-size:12px;color:#c9cfd4;text-align:right">49.318</span><span class="n" style="font-size:11px;color:#ff4a3d;text-align:right">+0.630</span></div>
+<div style="display:grid;grid-template-columns:26px 1fr 54px 46px;gap:8px;align-items:center;padding:7px 14px;opacity:.6"><span class="n" style="font-size:11px;color:#8c959c">06</span><span style="display:flex;gap:3px"><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i></span><span class="n" style="font-size:12px;color:#c9cfd4;text-align:right">49.774</span><span class="n" style="font-size:11px;color:#ff4a3d;text-align:right">+1.086</span></div>
+<div style="display:grid;grid-template-columns:26px 1fr 54px 46px;gap:8px;align-items:center;padding:7px 14px;opacity:.45"><span class="n" style="font-size:11px;color:#8c959c">05</span><span style="display:flex;gap:3px"><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i><i style="height:4px;flex:1;background:#2a3136"></i></span><span class="n" style="font-size:12px;color:#c9cfd4;text-align:right">50.011</span><span class="n" style="font-size:11px;color:#ff4a3d;text-align:right">+1.323</span></div>
+
+<div style="margin:12px 14px;padding:12px;border:1px solid rgba(255,255,255,.09);border-radius:5px;background:#101417">
+<div class="lbl" style="color:#6d767d;margin-bottom:9px">Reference</div>
+<div style="display:flex;flex-direction:column;gap:7px">
+<div style="display:flex;align-items:center;gap:8px"><i style="width:14px;height:2px;background:#b06cff"></i><span style="font:500 11px Archivo,sans-serif;color:#c9cfd4">Session best · Lap 9</span></div>
+<div style="display:flex;align-items:center;gap:8px"><i style="width:14px;height:2px;background:#ffd23d"></i><span style="font:500 11px Archivo,sans-serif;color:#c9cfd4">Theoretical best</span></div>
+<div style="display:flex;align-items:center;gap:8px;opacity:.55"><i style="width:14px;height:2px;background:#5b6570"></i><span style="font:500 11px Archivo,sans-serif;color:#c9cfd4">Track record · T. Aldridge</span></div>
+</div>
+</div>
+</div>
+
+<div style="flex:1;min-width:0;padding:16px 20px 20px">
+
+<div style="display:flex;align-items:flex-end;gap:34px;padding-bottom:14px;border-bottom:1px solid rgba(255,255,255,.10)">
+<div>
+<div class="lbl" style="color:#6d767d;margin-bottom:6px">Lap 12 · selected</div>
+<div class="n" style="font-size:44px;line-height:.92;font-weight:700;color:#eef0f1;letter-spacing:-.02em">48.312</div>
+</div>
+<div>
+<div class="lbl" style="color:#6d767d;margin-bottom:6px">vs session best</div>
+<div class="n" style="font-size:44px;line-height:.92;font-weight:700;color:#2fd07a;letter-spacing:-.02em">−0.376</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:5px;padding-left:34px;border-left:1px solid rgba(255,255,255,.10)">
+<div style="display:flex;gap:10px;align-items:baseline"><span class="lbl" style="color:#6d767d;width:96px">Best lap</span><span class="n" style="font-size:14px;color:#b06cff">48.688</span></div>
+<div style="display:flex;gap:10px;align-items:baseline"><span class="lbl" style="color:#6d767d;width:96px">Theoretical</span><span class="n" style="font-size:14px;color:#ffd23d">47.951</span></div>
+<div style="display:flex;gap:10px;align-items:baseline"><span class="lbl" style="color:#6d767d;width:96px">Class record</span><span class="n" style="font-size:14px;color:#8c959c">47.402</span></div>
+</div>
+<div style="flex:1"></div>
+<div style="display:flex;gap:6px;align-items:flex-end">
+<div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div style="width:52px;height:56px;display:flex;align-items:flex-end"><i style="width:100%;height:62%;background:#2fd07a"></i></div><span class="n" style="font-size:10px;color:#2fd07a">−0.148</span><span class="lbl" style="color:#6d767d">S1</span></div>
+<div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div style="width:52px;height:56px;display:flex;align-items:flex-end"><i style="width:100%;height:34%;background:#2fd07a"></i></div><span class="n" style="font-size:10px;color:#2fd07a">−0.081</span><span class="lbl" style="color:#6d767d">S2</span></div>
+<div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div style="width:52px;height:56px;display:flex;align-items:flex-start"><i style="width:100%;height:26%;background:#ff4a3d"></i></div><span class="n" style="font-size:10px;color:#ff4a3d">+0.062</span><span class="lbl" style="color:#6d767d">S3</span></div>
+<div style="display:flex;flex-direction:column;align-items:center;gap:6px"><div style="width:52px;height:56px;display:flex;align-items:flex-end"><i style="width:100%;height:88%;background:#2fd07a"></i></div><span class="n" style="font-size:10px;color:#2fd07a">−0.209</span><span class="lbl" style="color:#6d767d">S4</span></div>
+</div>
+</div>
+
+<div style="display:flex;align-items:center;gap:18px;padding:11px 0 6px">
+<div style="display:flex;align-items:center;gap:7px"><i style="width:16px;height:2px;background:#ff3b1f"></i><span class="n" style="font-size:11px;color:#c9cfd4">Lap 12</span></div>
+<div style="display:flex;align-items:center;gap:7px"><i style="width:16px;height:2px;background:#b06cff"></i><span class="n" style="font-size:11px;color:#c9cfd4">Lap 9 · best</span></div>
+<div style="flex:1"></div>
+<div style="display:flex;gap:5px">
+<span class="lbl" style="padding:5px 9px;border-radius:3px;background:#1f262b;color:#eef0f1">Distance</span>
+<span class="lbl" style="padding:5px 9px;border-radius:3px;color:#8c959c">Time</span>
+</div>
+<div style="width:1px;height:18px;background:rgba(255,255,255,.12)"></div>
+<div style="display:flex;gap:5px">
+<span class="lbl" style="padding:5px 9px;border-radius:3px;color:#8c959c">Overlay</span>
+<span class="lbl" style="padding:5px 9px;border-radius:3px;background:#1f262b;color:#eef0f1">Split channels</span>
+</div>
+</div>
+
+<div style="position:relative">
+<div style="position:absolute;left:74px;right:0;top:0;bottom:0;pointer-events:none">
+<div style="position:absolute;left:60.6%;top:0;bottom:0;width:1px;background:#ff3b1f"></div>
+<div style="position:absolute;left:60.6%;top:0;transform:translateX(-50%);margin-top:-2px;padding:4px 8px;background:#ff3b1f;border-radius:3px"><span class="n" style="font-size:10px;font-weight:700;color:#0b0d0f">612 m · T6 entry</span></div>
+</div>
+
+<div style="display:grid;grid-template-columns:74px 1fr;gap:0;border-top:1px solid rgba(255,255,255,.10)">
+<div style="padding:26px 10px 8px 0;border-right:1px solid rgba(255,255,255,.10)">
+<div class="lbl" style="color:#eef0f1">Speed</div>
+<div class="n" style="font-size:10px;color:#6d767d;margin-top:3px">km/h</div>
+<div style="margin-top:16px;display:flex;flex-direction:column;gap:2px">
+<div style="display:flex;align-items:center;gap:5px"><i style="width:8px;height:2px;background:#ff3b1f"></i><span class="n" style="font-size:11px;color:#eef0f1">104.8</span></div>
+<div style="display:flex;align-items:center;gap:5px"><i style="width:8px;height:2px;background:#b06cff"></i><span class="n" style="font-size:11px;color:#b06cff">101.2</span></div>
+</div>
+</div>
+<div style="position:relative;padding:26px 0 8px">
+<div style="position:relative;height:14px">
+<span class="lbl" style="position:absolute;left:6%;color:#565f66">T1</span><span class="lbl" style="position:absolute;left:17%;color:#565f66">T2</span><span class="lbl" style="position:absolute;left:30%;color:#565f66">T3</span><span class="lbl" style="position:absolute;left:42%;color:#565f66">T4</span><span class="lbl" style="position:absolute;left:56%;color:#565f66">T5</span><span class="lbl" style="position:absolute;left:66%;color:#565f66">T6</span><span class="lbl" style="position:absolute;left:78%;color:#565f66">T7</span><span class="lbl" style="position:absolute;left:88%;color:#565f66">T8</span>
+</div>
+<svg viewBox="0 0 1000 150" preserveAspectRatio="none" style="width:100%;height:100px;display:block">
+<g stroke="rgba(255,255,255,.07)" stroke-width="1" vector-effect="non-scaling-stroke"><path d="M0 38H1000"/><path d="M0 76H1000"/><path d="M0 114H1000"/></g>
+<g stroke="rgba(255,255,255,.06)" stroke-width="1" vector-effect="non-scaling-stroke"><path d="M60 0V150"/><path d="M170 0V150"/><path d="M300 0V150"/><path d="M420 0V150"/><path d="M560 0V150"/><path d="M660 0V150"/><path d="M780 0V150"/><path d="M880 0V150"/></g>
+<path d="M0 36.2L9 47.0L18 56.6L28 66.6L37 75.4L46 82.8L55 86.2L64 87.0L73 82.7L83 77.4L92 68.2L101 58.2L110 56.5L119 67.9L128 78.4L138 86.5L147 95.9L156 100.1L165 103.8L174 103.7L183 101.2L193 94.9L202 87.7L211 78.0L220 69.2L229 57.1L239 47.2L248 38.9L257 34.7L266 44.7L275 53.4L284 61.9L294 66.6L303 67.0L312 63.8L321 58.1L330 48.2L339 52.5L349 61.1L358 71.1L367 81.1L376 90.7L385 99.4L394 106.4L404 112.2L413 114.7L422 115.9L431 113.5L440 110.9L450 103.6L459 96.5L468 87.7L477 77.5L486 67.1L495 57.0L505 48.8L514 46.9L523 55.4L532 64.5L541 71.6L550 75.9L560 77.6L569 76.3L578 72.2L587 65.8L596 57.3L606 49.1L615 59.9L624 71.4L633 83.2L642 91.1L651 96.9L661 99.2L670 95.4L679 90.0L688 82.2L697 70.7L706 59.1L716 46.2L725 35.5L734 27.8L743 30.6L752 41.0L761 50.4L771 57.3L780 61.1L789 58.7L798 50.8L807 45.2L817 56.4L826 67.7L835 78.6L844 88.9L853 98.2L862 104.2L872 108.8L881 110.8L890 108.0L899 103.8L908 95.5L917 87.7L927 76.2L936 65.9L945 53.7L954 44.2L963 35.3L972 27.5L982 19.8L991 15.9L1000 11.8" fill="none" stroke="#b06cff" stroke-width="1.6" vector-effect="non-scaling-stroke"/>
+<path d="M0 35.8L9 45.9L18 56.5L28 66.1L37 75.2L46 81.5L55 85.3L64 85.2L73 82.1L83 75.5L92 67.1L101 56.6L110 55.6L119 67.1L128 76.7L138 86.7L147 94.5L156 100.7L165 103.5L174 103.5L183 101.0L193 95.2L202 87.4L211 77.3L220 67.1L229 57.3L239 46.5L248 36.7L257 32.6L266 42.6L275 52.8L284 61.2L294 66.2L303 66.4L312 63.6L321 55.8L330 46.7L339 51.6L349 60.9L358 71.4L367 81.1L376 91.1L385 99.3L394 106.3L404 111.4L413 114.5L422 115.2L431 113.8L440 109.8L450 103.7L459 96.0L468 86.7L477 76.9L486 66.9L495 56.9L505 47.0L514 45.6L523 54.7L532 63.6L541 70.4L550 75.3L560 77.3L569 75.6L578 70.6L587 64.4L596 55.7L606 47.6L615 58.5L624 70.5L633 81.8L642 90.9L651 95.8L661 97.8L670 95.1L679 89.9L688 80.9L697 69.5L706 57.5L716 45.9L725 34.7L734 25.0L743 30.6L752 40.3L761 49.9L771 57.0L780 59.2L789 57.1L798 50.4L807 44.1L817 55.5L826 65.8L835 77.0L844 87.3L853 97.1L862 104.4L872 108.3L881 109.9L890 108.0L899 103.5L908 95.5L917 86.7L927 75.4L936 64.5L945 53.1L954 42.7L963 33.6L972 25.6L982 18.9L991 13.6L1000 9.6" fill="none" stroke="#ff3b1f" stroke-width="2" vector-effect="non-scaling-stroke"/>
+</svg>
+</div>
+</div>
+
+<div style="display:grid;grid-template-columns:74px 1fr;border-top:1px solid rgba(255,255,255,.10)">
+<div style="padding:12px 10px 10px 0;border-right:1px solid rgba(255,255,255,.10)">
+<div class="lbl" style="color:#eef0f1">Delta t</div>
+<div class="n" style="font-size:10px;color:#6d767d;margin-top:3px">s · cumulative</div>
+<div class="n" style="font-size:14px;color:#2fd07a;margin-top:10px">−0.376</div>
+</div>
+<div style="padding:12px 0 10px;position:relative">
+<svg viewBox="0 0 1000 72" preserveAspectRatio="none" style="width:100%;height:76px;display:block">
+<path d="M0 35.9L9 35.8L18 35.7L28 35.6L37 35.5L46 35.0L55 34.6L64 33.8L73 33.5L83 32.9L92 32.6L101 32.2L110 32.0L119 31.8L128 31.2L138 31.3L147 30.4L156 30.9L165 30.5L174 30.3L183 30.1L193 30.3L202 30.2L211 29.9L220 29.3L229 29.4L239 29.3L248 28.9L257 28.7L266 28.3L275 28.2L284 28.0L294 27.9L303 27.8L312 27.7L321 27.2L330 27.0L339 26.8L349 26.7L358 26.8L367 26.8L376 27.0L385 26.9L394 26.9L404 25.9L413 25.6L422 24.6L431 25.0L440 23.7L450 23.7L459 23.4L468 22.9L477 22.7L486 22.7L495 22.6L505 22.3L514 22.1L523 22.0L532 21.7L541 21.4L550 21.2L560 21.1L569 20.9L578 20.4L587 20.0L596 19.7L606 19.4L615 19.1L624 18.8L633 18.3L642 18.2L651 17.5L661 16.5L670 16.3L679 16.2L688 15.7L697 15.4L706 15.0L716 15.0L725 14.9L734 14.5L743 14.5L752 14.4L761 14.3L771 14.3L780 13.8L789 13.5L798 13.4L807 13.2L817 13.0L826 12.5L835 11.9L844 11.2L853 10.4L862 10.5L872 9.9L881 8.8L890 8.8L899 8.5L908 8.5L917 8.1L927 7.8L936 7.4L945 7.3L954 7.1L963 6.8L972 6.6L982 6.5L991 6.3L1000 6.1 L1000 36 L0 36 Z" fill="rgba(47,208,122,.16)"/>
+<path d="M0 36H1000" stroke="rgba(255,255,255,.22)" stroke-width="1" vector-effect="non-scaling-stroke" stroke-dasharray="3 3"/>
+<path d="M0 35.9L9 35.8L18 35.7L28 35.6L37 35.5L46 35.0L55 34.6L64 33.8L73 33.5L83 32.9L92 32.6L101 32.2L110 32.0L119 31.8L128 31.2L138 31.3L147 30.4L156 30.9L165 30.5L174 30.3L183 30.1L193 30.3L202 30.2L211 29.9L220 29.3L229 29.4L239 29.3L248 28.9L257 28.7L266 28.3L275 28.2L284 28.0L294 27.9L303 27.8L312 27.7L321 27.2L330 27.0L339 26.8L349 26.7L358 26.8L367 26.8L376 27.0L385 26.9L394 26.9L404 25.9L413 25.6L422 24.6L431 25.0L440 23.7L450 23.7L459 23.4L468 22.9L477 22.7L486 22.7L495 22.6L505 22.3L514 22.1L523 22.0L532 21.7L541 21.4L550 21.2L560 21.1L569 20.9L578 20.4L587 20.0L596 19.7L606 19.4L615 19.1L624 18.8L633 18.3L642 18.2L651 17.5L661 16.5L670 16.3L679 16.2L688 15.7L697 15.4L706 15.0L716 15.0L725 14.9L734 14.5L743 14.5L752 14.4L761 14.3L771 14.3L780 13.8L789 13.5L798 13.4L807 13.2L817 13.0L826 12.5L835 11.9L844 11.2L853 10.4L862 10.5L872 9.9L881 8.8L890 8.8L899 8.5L908 8.5L917 8.1L927 7.8L936 7.4L945 7.3L954 7.1L963 6.8L972 6.6L982 6.5L991 6.3L1000 6.1" fill="none" stroke="#2fd07a" stroke-width="1.8" vector-effect="non-scaling-stroke"/>
+</svg>
+<span class="lbl" style="position:absolute;left:6px;top:14px;color:#2fd07a">Gaining</span>
+<span class="lbl" style="position:absolute;left:6px;bottom:12px;color:#ff4a3d">Losing</span>
+</div>
+</div>
+
+<sc-if value="{{ showThrottleBrake }}" hint-placeholder-val="{{ true }}">
+<div style="display:grid;grid-template-columns:74px 1fr;border-top:1px solid rgba(255,255,255,.10)">
+<div style="padding:12px 10px 10px 0;border-right:1px solid rgba(255,255,255,.10)">
+<div class="lbl" style="color:#eef0f1">Throttle</div>
+<div class="n" style="font-size:10px;color:#6d767d;margin-top:3px">% · 0–100</div>
+<div class="n" style="font-size:11px;color:#c9cfd4;margin-top:10px">88.4 full</div>
+</div>
+<div style="padding:12px 0 10px">
+<svg viewBox="0 0 1000 56" preserveAspectRatio="none" style="width:100%;height:48px;display:block">
+<path d="M0 54.0L9 54.0L18 54.0L28 54.0L37 54.0L46 54.0L55 54.0L64 2.0L73 2.0L83 2.0L92 2.0L101 2.0L110 54.0L119 54.0L128 54.0L138 54.0L147 54.0L156 54.0L165 54.0L174 2.0L183 2.0L193 2.0L202 2.0L211 2.0L220 2.0L229 2.0L239 2.0L248 2.0L257 54.0L266 54.0L275 54.0L284 54.0L294 54.0L303 2.0L312 2.0L321 2.0L330 2.0L339 54.0L349 54.0L358 54.0L367 54.0L376 54.0L385 54.0L394 54.0L404 54.0L413 54.0L422 9.4L431 2.0L440 2.0L450 2.0L459 2.0L468 2.0L477 2.0L486 2.0L495 2.0L505 2.0L514 54.0L523 54.0L532 54.0L541 54.0L550 54.0L560 51.2L569 2.0L578 2.0L587 2.0L596 2.0L606 54.0L615 54.0L624 54.0L633 54.0L642 54.0L651 54.0L661 11.7L670 2.0L679 2.0L688 2.0L697 2.0L706 2.0L716 2.0L725 2.0L734 2.0L743 54.0L752 54.0L761 54.0L771 54.0L780 27.3L789 2.0L798 2.0L807 54.0L817 54.0L826 54.0L835 54.0L844 54.0L853 54.0L862 54.0L872 54.0L881 18.4L890 2.0L899 2.0L908 2.0L917 2.0L927 2.0L936 2.0L945 2.0L954 2.0L963 2.0L972 2.0L982 2.0L991 2.0L1000 2.0" fill="none" stroke="#b06cff" stroke-width="1.4" vector-effect="non-scaling-stroke"/>
+<path d="M0 54.0L9 54.0L18 54.0L28 54.0L37 54.0L46 54.0L55 54.0L64 2.0L73 2.0L83 2.0L92 2.0L101 2.0L110 54.0L119 54.0L128 54.0L138 54.0L147 54.0L156 54.0L165 54.0L174 2.0L183 2.0L193 2.0L202 2.0L211 2.0L220 2.0L229 2.0L239 2.0L248 2.0L257 54.0L266 54.0L275 54.0L284 54.0L294 54.0L303 2.0L312 2.0L321 2.0L330 2.0L339 54.0L349 54.0L358 54.0L367 54.0L376 54.0L385 54.0L394 54.0L404 54.0L413 54.0L422 6.1L431 2.0L440 2.0L450 2.0L459 2.0L468 2.0L477 2.0L486 2.0L495 2.0L505 2.0L514 54.0L523 54.0L532 54.0L541 54.0L550 54.0L560 25.9L569 2.0L578 2.0L587 2.0L596 2.0L606 54.0L615 54.0L624 54.0L633 54.0L642 54.0L651 54.0L661 11.5L670 2.0L679 2.0L688 2.0L697 2.0L706 2.0L716 2.0L725 2.0L734 2.0L743 54.0L752 54.0L761 54.0L771 54.0L780 28.1L789 2.0L798 2.0L807 54.0L817 54.0L826 54.0L835 54.0L844 54.0L853 54.0L862 54.0L872 54.0L881 13.2L890 2.0L899 2.0L908 2.0L917 2.0L927 2.0L936 2.0L945 2.0L954 2.0L963 2.0L972 2.0L982 2.0L991 2.0L1000 2.0" fill="none" stroke="#ff3b1f" stroke-width="1.8" vector-effect="non-scaling-stroke"/>
+</svg>
+</div>
+</div>
+
+<div style="display:grid;grid-template-columns:74px 1fr;border-top:1px solid rgba(255,255,255,.10)">
+<div style="padding:12px 10px 10px 0;border-right:1px solid rgba(255,255,255,.10)">
+<div class="lbl" style="color:#eef0f1">Brake</div>
+<div class="n" style="font-size:10px;color:#6d767d;margin-top:3px">bar</div>
+<div class="n" style="font-size:11px;color:#c9cfd4;margin-top:10px">8 events</div>
+</div>
+<div style="padding:12px 0 10px">
+<svg viewBox="0 0 1000 46" preserveAspectRatio="none" style="width:100%;height:46px;display:block">
+<path d="M0 2.0L9 2.0L18 2.0L28 2.0L37 2.0L46 2.0L55 10.3L64 44.0L73 44.0L83 44.0L92 44.0L101 44.0L110 2.0L119 2.0L128 2.0L138 2.0L147 2.0L156 2.0L165 19.7L174 44.0L183 44.0L193 44.0L202 44.0L211 44.0L220 44.0L229 44.0L239 44.0L248 44.0L257 15.7L266 2.0L275 2.0L284 2.0L294 2.0L303 44.0L312 44.0L321 44.0L330 44.0L339 2.0L349 2.0L358 2.0L367 2.0L376 2.0L385 2.0L394 2.0L404 2.0L413 11.4L422 44.0L431 44.0L440 44.0L450 44.0L459 44.0L468 44.0L477 44.0L486 44.0L495 44.0L505 44.0L514 9.4L523 2.0L532 2.0L541 2.0L550 2.0L560 44.0L569 44.0L578 44.0L587 44.0L596 44.0L606 18.5L615 2.0L624 2.0L633 2.0L642 2.0L651 2.0L661 44.0L670 44.0L679 44.0L688 44.0L697 44.0L706 44.0L716 44.0L725 44.0L734 44.0L743 2.0L752 2.0L761 2.0L771 2.0L780 44.0L789 44.0L798 44.0L807 2.9L817 2.0L826 2.0L835 2.0L844 2.0L853 2.0L862 2.0L872 2.0L881 44.0L890 44.0L899 44.0L908 44.0L917 44.0L927 44.0L936 44.0L945 44.0L954 44.0L963 44.0L972 44.0L982 44.0L991 44.0L1000 44.0" fill="none" stroke="#b06cff" stroke-width="1.4" vector-effect="non-scaling-stroke"/>
+<path d="M0 2.0L9 2.0L18 2.0L28 2.0L37 2.0L46 2.0L55 12.2L64 44.0L73 44.0L83 44.0L92 44.0L101 44.0L110 2.0L119 2.0L128 2.0L138 2.0L147 2.0L156 2.0L165 14.2L174 44.0L183 44.0L193 44.0L202 44.0L211 44.0L220 44.0L229 44.0L239 44.0L248 44.0L257 14.8L266 2.0L275 2.0L284 2.0L294 2.0L303 44.0L312 44.0L321 44.0L330 44.0L339 2.0L349 2.0L358 2.0L367 2.0L376 2.0L385 2.0L394 2.0L404 2.0L413 9.9L422 44.0L431 44.0L440 44.0L450 44.0L459 44.0L468 44.0L477 44.0L486 44.0L495 44.0L505 44.0L514 13.4L523 2.0L532 2.0L541 2.0L550 2.0L560 44.0L569 44.0L578 44.0L587 44.0L596 44.0L606 15.7L615 2.0L624 2.0L633 2.0L642 2.0L651 2.0L661 44.0L670 44.0L679 44.0L688 44.0L697 44.0L706 44.0L716 44.0L725 44.0L734 44.0L743 2.0L752 2.0L761 2.0L771 2.0L780 44.0L789 44.0L798 44.0L807 4.0L817 2.0L826 2.0L835 2.0L844 2.0L853 2.0L862 2.0L872 2.0L881 44.0L890 44.0L899 44.0L908 44.0L917 44.0L927 44.0L936 44.0L945 44.0L954 44.0L963 44.0L972 44.0L982 44.0L991 44.0L1000 44.0" fill="none" stroke="#ff3b1f" stroke-width="1.8" vector-effect="non-scaling-stroke"/>
+</svg>
+</div>
+</div>
+</sc-if>
+</div>
+
+<div style="padding:14px 0 0;border-top:1px solid rgba(255,255,255,.10);margin-top:14px;display:flex;gap:14px">
+<div style="flex:1">
+<div class="lbl" style="color:#6d767d;margin-bottom:8px">Where the time went · lap 12 vs lap 9</div>
+<div style="display:flex;flex-direction:column;gap:1px">
+<div style="display:grid;grid-template-columns:30px 1fr 56px 56px 62px;gap:10px;align-items:center;padding:6px 8px;background:#101417"><span class="lbl" style="color:#565f66">Trn</span><span class="lbl" style="color:#565f66">Corner</span><span class="lbl" style="color:#565f66;text-align:right">Min spd</span><span class="lbl" style="color:#565f66;text-align:right">Apex</span><span class="lbl" style="color:#565f66;text-align:right">Δ</span></div>
+<div style="display:grid;grid-template-columns:30px 1fr 56px 56px 62px;gap:10px;align-items:center;padding:7px 8px"><span class="n" style="font-size:11px;color:#8c959c">T4</span><span style="font:500 12px Archivo,sans-serif;color:#eef0f1">Christmas hairpin</span><span class="n" style="font-size:11px;color:#c9cfd4;text-align:right">38.2</span><span class="n" style="font-size:11px;color:#c9cfd4;text-align:right">+0.6 m</span><span class="n" style="font-size:11px;color:#2fd07a;text-align:right">−0.121</span></div>
+<div style="display:grid;grid-template-columns:30px 1fr 56px 56px 62px;gap:10px;align-items:center;padding:7px 8px;background:#0f1316"><span class="n" style="font-size:11px;color:#8c959c">T6</span><span style="font:500 12px Archivo,sans-serif;color:#eef0f1">Pylon left</span><span class="n" style="font-size:11px;color:#c9cfd4;text-align:right">51.7</span><span class="n" style="font-size:11px;color:#c9cfd4;text-align:right">−1.4 m</span><span class="n" style="font-size:11px;color:#ff4a3d;text-align:right">+0.062</span></div>
+<div style="display:grid;grid-template-columns:30px 1fr 56px 56px 62px;gap:10px;align-items:center;padding:7px 8px"><span class="n" style="font-size:11px;color:#8c959c">T8</span><span style="font:500 12px Archivo,sans-serif;color:#eef0f1">Onto the straight</span><span class="n" style="font-size:11px;color:#c9cfd4;text-align:right">44.9</span><span class="n" style="font-size:11px;color:#c9cfd4;text-align:right">+2.1 m</span><span class="n" style="font-size:11px;color:#2fd07a;text-align:right">−0.209</span></div>
+</div>
+</div>
+<div style="width:300px;flex:none;padding:12px 14px;border:1px solid rgba(255,255,255,.10);border-radius:5px;background:#101417">
+<div class="lbl" style="color:#6d767d;margin-bottom:8px">Coach note</div>
+<div style="font:400 12px/1.5 Archivo,sans-serif;color:#c9cfd4">T6 is the only sector you lose. Brake release is 1.4 m earlier than lap 9 but minimum speed is the same — you are coasting, not carrying.</div>
+<div style="display:flex;gap:6px;margin-top:12px"><span class="lbl" style="padding:6px 9px;background:#ff3b1f;color:#0b0d0f;border-radius:3px">Send to driver</span><span class="lbl" style="padding:6px 9px;border:1px solid rgba(255,255,255,.14);color:#c9cfd4;border-radius:3px">Pin corner</span></div>
+</div>
+</div>
+</div>
+
+<div style="width:302px;flex:none;border-left:1px solid rgba(255,255,255,.09);background:#0d1114">
+<div style="padding:12px 14px 10px;border-bottom:1px solid rgba(255,255,255,.07);display:flex;align-items:center;justify-content:space-between"><span class="lbl" style="color:#6d767d">Track map · sector delta</span><span class="lbl" style="color:#ff3b1f">GPS</span></div>
+<div style="padding:10px 12px 4px">
+<svg viewBox="20 40 570 320" style="width:100%;height:180px;display:block">
+<path d="M529.2 200.0 Q529.2 200.0 528.1 216.8 Q527.0 233.6 509.9 247.1 Q492.8 260.7 467.7 268.3 Q442.7 275.8 417.6 278.1 Q392.4 280.4 371.2 279.7 Q350.0 279.1 332.6 277.3 Q315.3 275.5 300.5 272.8 Q285.8 270.1 273.3 266.1 Q260.7 262.1 250.3 257.2 Q239.9 252.2 230.2 247.2 Q220.6 242.2 208.4 237.4 Q196.3 232.6 179.4 226.5 Q162.4 220.3 142.5 210.2 Q122.6 200.0 106.9 184.6 Q91.2 169.1 88.6 150.9 Q86.1 132.6 101.4 117.6 Q116.7 102.5 145.8 96.9 Q174.9 91.2 206.8 97.2 Q238.7 103.1 262.3 116.7 Q285.9 130.4 297.2 144.1 Q308.6 157.7 313.3 164.6 Q318.0 171.5 326.8 170.3 Q335.6 169.0 355.8 164.3 Q376.1 159.6 405.9 158.4 Q435.8 157.2 465.3 164.2 Q494.7 171.2 512.0 185.6 Z" fill="none" stroke="#22282c" stroke-width="15" stroke-linejoin="round"/>
+<g fill="none" stroke-width="7" pathLength="100" stroke-linecap="butt">
+<path d="M529.2 200.0 Q529.2 200.0 528.1 216.8 Q527.0 233.6 509.9 247.1 Q492.8 260.7 467.7 268.3 Q442.7 275.8 417.6 278.1 Q392.4 280.4 371.2 279.7 Q350.0 279.1 332.6 277.3 Q315.3 275.5 300.5 272.8 Q285.8 270.1 273.3 266.1 Q260.7 262.1 250.3 257.2 Q239.9 252.2 230.2 247.2 Q220.6 242.2 208.4 237.4 Q196.3 232.6 179.4 226.5 Q162.4 220.3 142.5 210.2 Q122.6 200.0 106.9 184.6 Q91.2 169.1 88.6 150.9 Q86.1 132.6 101.4 117.6 Q116.7 102.5 145.8 96.9 Q174.9 91.2 206.8 97.2 Q238.7 103.1 262.3 116.7 Q285.9 130.4 297.2 144.1 Q308.6 157.7 313.3 164.6 Q318.0 171.5 326.8 170.3 Q335.6 169.0 355.8 164.3 Q376.1 159.6 405.9 158.4 Q435.8 157.2 465.3 164.2 Q494.7 171.2 512.0 185.6 Z" pathLength="100" stroke="#2fd07a" stroke-dasharray="26 74" stroke-dashoffset="0"/>
+<path d="M529.2 200.0 Q529.2 200.0 528.1 216.8 Q527.0 233.6 509.9 247.1 Q492.8 260.7 467.7 268.3 Q442.7 275.8 417.6 278.1 Q392.4 280.4 371.2 279.7 Q350.0 279.1 332.6 277.3 Q315.3 275.5 300.5 272.8 Q285.8 270.1 273.3 266.1 Q260.7 262.1 250.3 257.2 Q239.9 252.2 230.2 247.2 Q220.6 242.2 208.4 237.4 Q196.3 232.6 179.4 226.5 Q162.4 220.3 142.5 210.2 Q122.6 200.0 106.9 184.6 Q91.2 169.1 88.6 150.9 Q86.1 132.6 101.4 117.6 Q116.7 102.5 145.8 96.9 Q174.9 91.2 206.8 97.2 Q238.7 103.1 262.3 116.7 Q285.9 130.4 297.2 144.1 Q308.6 157.7 313.3 164.6 Q318.0 171.5 326.8 170.3 Q335.6 169.0 355.8 164.3 Q376.1 159.6 405.9 158.4 Q435.8 157.2 465.3 164.2 Q494.7 171.2 512.0 185.6 Z" pathLength="100" stroke="#b06cff" stroke-dasharray="22 78" stroke-dashoffset="-26"/>
+<path d="M529.2 200.0 Q529.2 200.0 528.1 216.8 Q527.0 233.6 509.9 247.1 Q492.8 260.7 467.7 268.3 Q442.7 275.8 417.6 278.1 Q392.4 280.4 371.2 279.7 Q350.0 279.1 332.6 277.3 Q315.3 275.5 300.5 272.8 Q285.8 270.1 273.3 266.1 Q260.7 262.1 250.3 257.2 Q239.9 252.2 230.2 247.2 Q220.6 242.2 208.4 237.4 Q196.3 232.6 179.4 226.5 Q162.4 220.3 142.5 210.2 Q122.6 200.0 106.9 184.6 Q91.2 169.1 88.6 150.9 Q86.1 132.6 101.4 117.6 Q116.7 102.5 145.8 96.9 Q174.9 91.2 206.8 97.2 Q238.7 103.1 262.3 116.7 Q285.9 130.4 297.2 144.1 Q308.6 157.7 313.3 164.6 Q318.0 171.5 326.8 170.3 Q335.6 169.0 355.8 164.3 Q376.1 159.6 405.9 158.4 Q435.8 157.2 465.3 164.2 Q494.7 171.2 512.0 185.6 Z" pathLength="100" stroke="#ff4a3d" stroke-dasharray="26 74" stroke-dashoffset="-48"/>
+<path d="M529.2 200.0 Q529.2 200.0 528.1 216.8 Q527.0 233.6 509.9 247.1 Q492.8 260.7 467.7 268.3 Q442.7 275.8 417.6 278.1 Q392.4 280.4 371.2 279.7 Q350.0 279.1 332.6 277.3 Q315.3 275.5 300.5 272.8 Q285.8 270.1 273.3 266.1 Q260.7 262.1 250.3 257.2 Q239.9 252.2 230.2 247.2 Q220.6 242.2 208.4 237.4 Q196.3 232.6 179.4 226.5 Q162.4 220.3 142.5 210.2 Q122.6 200.0 106.9 184.6 Q91.2 169.1 88.6 150.9 Q86.1 132.6 101.4 117.6 Q116.7 102.5 145.8 96.9 Q174.9 91.2 206.8 97.2 Q238.7 103.1 262.3 116.7 Q285.9 130.4 297.2 144.1 Q308.6 157.7 313.3 164.6 Q318.0 171.5 326.8 170.3 Q335.6 169.0 355.8 164.3 Q376.1 159.6 405.9 158.4 Q435.8 157.2 465.3 164.2 Q494.7 171.2 512.0 185.6 Z" pathLength="100" stroke="#2fd07a" stroke-dasharray="24 76" stroke-dashoffset="-74"/>
+</g>
+<circle cx="300" cy="272" r="7" fill="#ff3b1f" stroke="#0d1114" stroke-width="2.5"/>
+<path d="M529 190V212" stroke="#eef0f1" stroke-width="3"/>
+</svg>
+</div>
+<div style="display:flex;gap:12px;padding:0 14px 12px">
+<div style="display:flex;align-items:center;gap:5px"><i style="width:9px;height:3px;background:#2fd07a"></i><span class="n" style="font-size:10px;color:#8c959c">faster</span></div>
+<div style="display:flex;align-items:center;gap:5px"><i style="width:9px;height:3px;background:#ff4a3d"></i><span class="n" style="font-size:10px;color:#8c959c">slower</span></div>
+<div style="display:flex;align-items:center;gap:5px"><i style="width:9px;height:3px;background:#b06cff"></i><span class="n" style="font-size:10px;color:#8c959c">personal best sector</span></div>
+</div>
+
+<div style="border-top:1px solid rgba(255,255,255,.07)">
+<div style="display:grid;grid-template-columns:34px 1fr 54px 56px;gap:8px;padding:10px 14px 7px"><span class="lbl" style="color:#565f66">Sec</span><span class="lbl" style="color:#565f66">Best in</span><span class="lbl" style="color:#565f66;text-align:right">Time</span><span class="lbl" style="color:#565f66;text-align:right">Δ</span></div>
+<div style="display:grid;grid-template-columns:34px 1fr 54px 56px;gap:8px;align-items:center;padding:7px 14px;border-top:1px solid rgba(255,255,255,.05)"><span class="n" style="font-size:11px;color:#eef0f1">S1</span><span class="n" style="font-size:11px;color:#8c959c">Lap 12</span><span class="n" style="font-size:12px;color:#2fd07a;text-align:right">12.041</span><span class="n" style="font-size:11px;color:#2fd07a;text-align:right">−0.148</span></div>
+<div style="display:grid;grid-template-columns:34px 1fr 54px 56px;gap:8px;align-items:center;padding:7px 14px;border-top:1px solid rgba(255,255,255,.05)"><span class="n" style="font-size:11px;color:#eef0f1">S2</span><span class="n" style="font-size:11px;color:#8c959c">Lap 12</span><span class="n" style="font-size:12px;color:#2fd07a;text-align:right">10.884</span><span class="n" style="font-size:11px;color:#2fd07a;text-align:right">−0.081</span></div>
+<div style="display:grid;grid-template-columns:34px 1fr 54px 56px;gap:8px;align-items:center;padding:7px 14px;border-top:1px solid rgba(255,255,255,.05)"><span class="n" style="font-size:11px;color:#eef0f1">S3</span><span class="n" style="font-size:11px;color:#b06cff">Lap 9</span><span class="n" style="font-size:12px;color:#ff4a3d;text-align:right">13.412</span><span class="n" style="font-size:11px;color:#ff4a3d;text-align:right">+0.062</span></div>
+<div style="display:grid;grid-template-columns:34px 1fr 54px 56px;gap:8px;align-items:center;padding:7px 14px;border-top:1px solid rgba(255,255,255,.05)"><span class="n" style="font-size:11px;color:#eef0f1">S4</span><span class="n" style="font-size:11px;color:#8c959c">Lap 12</span><span class="n" style="font-size:12px;color:#2fd07a;text-align:right">11.975</span><span class="n" style="font-size:11px;color:#2fd07a;text-align:right">−0.209</span></div>
+</div>
+
+<div style="margin:14px;padding:13px;border:1px solid rgba(255,255,255,.10);border-radius:5px;background:#101417">
+<div class="lbl" style="color:#6d767d;margin-bottom:10px">Class standing · Rotax Senior Max</div>
+<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px"><span class="n" style="font-size:26px;font-weight:700;color:#eef0f1">P4</span><span class="n" style="font-size:11px;color:#8c959c">of 218 at this circuit</span></div>
+<div style="height:5px;background:#22282c;border-radius:3px;overflow:hidden;margin:10px 0 8px"><i style="display:block;width:78%;height:100%;background:#ff3b1f"></i></div>
+<div style="display:flex;justify-content:space-between"><span class="n" style="font-size:10px;color:#8c959c">0.910 s to P3</span><span class="n" style="font-size:10px;color:#8c959c">record 47.402</span></div>
+<div class="lbl" style="margin-top:12px;padding:7px 0;text-align:center;border:1px solid rgba(255,255,255,.14);color:#c9cfd4;border-radius:3px">Compare with P3 lap</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<div class="dv-opt" id="1b">
+<div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>Web · Lap analysis — map-led layout, factory light</div>
+<div class="dv-card" style="width:1440px;background:#f4f4f1">
+
+<div style="display:flex;align-items:center;justify-content:space-between;height:52px;padding:0 18px;background:#fff;border-bottom:1px solid rgba(16,20,24,.12);box-sizing:border-box">
+<div style="display:flex;align-items:center;gap:28px">
+<div style="display:flex;align-items:center;gap:9px"><div style="width:13px;height:15px;background:#ff3b1f;transform:skewX(-14deg)"></div><span style="font:700 13px/1 Archivo,sans-serif;letter-spacing:.16em;color:#0f1214">APEXLINE</span></div>
+<div style="display:flex;gap:4px">
+<div class="lbl" style="padding:8px 11px;color:#0f1214;box-shadow:inset 0 -2px 0 #ff3b1f">Analyse</div>
+<div class="lbl" style="padding:8px 11px;color:#7b838a">Theoretical</div>
+<div class="lbl" style="padding:8px 11px;color:#7b838a">Leaderboards</div>
+<div class="lbl" style="padding:8px 11px;color:#7b838a">Garage</div>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:10px">
+<span class="n" style="font-size:11px;color:#6a7278">Whilton Mill · Rotax Senior · Run 4</span>
+<div style="width:28px;height:28px;border-radius:4px;background:#e6e6e1;display:flex;align-items:center;justify-content:center;font:700 10px Archivo,sans-serif;color:#4a5157">JM</div>
+</div>
+</div>
+
+<div style="display:flex;align-items:stretch;padding:16px;gap:16px">
+
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:16px">
+<div style="background:#fff;border:1px solid rgba(16,20,24,.12);border-radius:6px;overflow:hidden">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid rgba(16,20,24,.10)">
+<div style="display:flex;align-items:baseline;gap:12px"><span class="lbl" style="color:#6a7278">Delta map · lap 12 vs lap 9</span><span class="n" style="font-size:11px;color:#6a7278">colour = time gained or lost per metre</span></div>
+<div style="display:flex;gap:5px"><span class="lbl" style="padding:5px 9px;background:#0f1214;color:#fff;border-radius:3px">Delta</span><span class="lbl" style="padding:5px 9px;color:#6a7278">Speed</span><span class="lbl" style="padding:5px 9px;color:#6a7278">Line</span></div>
+</div>
+<div style="display:flex;align-items:stretch">
+<div style="flex:1;padding:10px 6px;background:#faf9f6">
+<svg viewBox="30 50 550 300" style="width:100%;height:376px;display:block">
+<path d="M529.2 200.0 Q529.2 200.0 528.1 216.8 Q527.0 233.6 509.9 247.1 Q492.8 260.7 467.7 268.3 Q442.7 275.8 417.6 278.1 Q392.4 280.4 371.2 279.7 Q350.0 279.1 332.6 277.3 Q315.3 275.5 300.5 272.8 Q285.8 270.1 273.3 266.1 Q260.7 262.1 250.3 257.2 Q239.9 252.2 230.2 247.2 Q220.6 242.2 208.4 237.4 Q196.3 232.6 179.4 226.5 Q162.4 220.3 142.5 210.2 Q122.6 200.0 106.9 184.6 Q91.2 169.1 88.6 150.9 Q86.1 132.6 101.4 117.6 Q116.7 102.5 145.8 96.9 Q174.9 91.2 206.8 97.2 Q238.7 103.1 262.3 116.7 Q285.9 130.4 297.2 144.1 Q308.6 157.7 313.3 164.6 Q318.0 171.5 326.8 170.3 Q335.6 169.0 355.8 164.3 Q376.1 159.6 405.9 158.4 Q435.8 157.2 465.3 164.2 Q494.7 171.2 512.0 185.6 Z" fill="none" stroke="#e3e2dc" stroke-width="26" stroke-linejoin="round"/>
+<g fill="none" stroke-width="11" pathLength="100" stroke-linecap="butt">
+<path d="M529.2 200.0 Q529.2 200.0 528.1 216.8 Q527.0 233.6 509.9 247.1 Q492.8 260.7 467.7 268.3 Q442.7 275.8 417.6 278.1 Q392.4 280.4 371.2 279.7 Q350.0 279.1 332.6 277.3 Q315.3 275.5 300.5 272.8 Q285.8 270.1 273.3 266.1 Q260.7 262.1 250.3 257.2 Q239.9 252.2 230.2 247.2 Q220.6 242.2 208.4 237.4 Q196.3 232.6 179.4 226.5 Q162.4 220.3 142.5 210.2 Q122.6 200.0 106.9 184.6 Q91.2 169.1 88.6 150.9 Q86.1 132.6 101.4 117.6 Q116.7 102.5 145.8 96.9 Q174.9 91.2 206.8 97.2 Q238.7 103.1 262.3 116.7 Q285.9 130.4 297.2 144.1 Q308.6 157.7 313.3 164.6 Q318.0 171.5 326.8 170.3 Q335.6 169.0 355.8 164.3 Q376.1 159.6 405.9 158.4 Q435.8 157.2 465.3 164.2 Q494.7 171.2 512.0 185.6 Z" pathLength="100" stroke="#16a45b" stroke-dasharray="14 86" stroke-dashoffset="0"/>
+<path d="M529.2 200.0 Q529.2 200.0 528.1 216.8 Q527.0 233.6 509.9 247.1 Q492.8 260.7 467.7 268.3 Q442.7 275.8 417.6 278.1 Q392.4 280.4 371.2 279.7 Q350.0 279.1 332.6 277.3 Q315.3 275.5 300.5 272.8 Q285.8 270.1 273.3 266.1 Q260.7 262.1 250.3 257.2 Q239.9 252.2 230.2 247.2 Q220.6 242.2 208.4 237.4 Q196.3 232.6 179.4 226.5 Q162.4 220.3 142.5 210.2 Q122.6 200.0 106.9 184.6 Q91.2 169.1 88.6 150.9 Q86.1 132.6 101.4 117.6 Q116.7 102.5 145.8 96.9 Q174.9 91.2 206.8 97.2 Q238.7 103.1 262.3 116.7 Q285.9 130.4 297.2 144.1 Q308.6 157.7 313.3 164.6 Q318.0 171.5 326.8 170.3 Q335.6 169.0 355.8 164.3 Q376.1 159.6 405.9 158.4 Q435.8 157.2 465.3 164.2 Q494.7 171.2 512.0 185.6 Z" pathLength="100" stroke="#9fb8a8" stroke-dasharray="10 90" stroke-dashoffset="-14"/>
+<path d="M529.2 200.0 Q529.2 200.0 528.1 216.8 Q527.0 233.6 509.9 247.1 Q492.8 260.7 467.7 268.3 Q442.7 275.8 417.6 278.1 Q392.4 280.4 371.2 279.7 Q350.0 279.1 332.6 277.3 Q315.3 275.5 300.5 272.8 Q285.8 270.1 273.3 266.1 Q260.7 262.1 250.3 257.2 Q239.9 252.2 230.2 247.2 Q220.6 242.2 208.4 237.4 Q196.3 232.6 179.4 226.5 Q162.4 220.3 142.5 210.2 Q122.6 200.0 106.9 184.6 Q91.2 169.1 88.6 150.9 Q86.1 132.6 101.4 117.6 Q116.7 102.5 145.8 96.9 Q174.9 91.2 206.8 97.2 Q238.7 103.1 262.3 116.7 Q285.9 130.4 297.2 144.1 Q308.6 157.7 313.3 164.6 Q318.0 171.5 326.8 170.3 Q335.6 169.0 355.8 164.3 Q376.1 159.6 405.9 158.4 Q435.8 157.2 465.3 164.2 Q494.7 171.2 512.0 185.6 Z" pathLength="100" stroke="#16a45b" stroke-dasharray="18 82" stroke-dashoffset="-24"/>
+<path d="M529.2 200.0 Q529.2 200.0 528.1 216.8 Q527.0 233.6 509.9 247.1 Q492.8 260.7 467.7 268.3 Q442.7 275.8 417.6 278.1 Q392.4 280.4 371.2 279.7 Q350.0 279.1 332.6 277.3 Q315.3 275.5 300.5 272.8 Q285.8 270.1 273.3 266.1 Q260.7 262.1 250.3 257.2 Q239.9 252.2 230.2 247.2 Q220.6 242.2 208.4 237.4 Q196.3 232.6 179.4 226.5 Q162.4 220.3 142.5 210.2 Q122.6 200.0 106.9 184.6 Q91.2 169.1 88.6 150.9 Q86.1 132.6 101.4 117.6 Q116.7 102.5 145.8 96.9 Q174.9 91.2 206.8 97.2 Q238.7 103.1 262.3 116.7 Q285.9 130.4 297.2 144.1 Q308.6 157.7 313.3 164.6 Q318.0 171.5 326.8 170.3 Q335.6 169.0 355.8 164.3 Q376.1 159.6 405.9 158.4 Q435.8 157.2 465.3 164.2 Q494.7 171.2 512.0 185.6 Z" pathLength="100" stroke="#d02f1f" stroke-dasharray="13 87" stroke-dashoffset="-42"/>
+<path d="M529.2 200.0 Q529.2 200.0 528.1 216.8 Q527.0 233.6 509.9 247.1 Q492.8 260.7 467.7 268.3 Q442.7 275.8 417.6 278.1 Q392.4 280.4 371.2 279.7 Q350.0 279.1 332.6 277.3 Q315.3 275.5 300.5 272.8 Q285.8 270.1 273.3 266.1 Q260.7 262.1 250.3 257.2 Q239.9 252.2 230.2 247.2 Q220.6 242.2 208.4 237.4 Q196.3 232.6 179.4 226.5 Q162.4 220.3 142.5 210.2 Q122.6 200.0 106.9 184.6 Q91.2 169.1 88.6 150.9 Q86.1 132.6 101.4 117.6 Q116.7 102.5 145.8 96.9 Q174.9 91.2 206.8 97.2 Q238.7 103.1 262.3 116.7 Q285.9 130.4 297.2 144.1 Q308.6 157.7 313.3 164.6 Q318.0 171.5 326.8 170.3 Q335.6 169.0 355.8 164.3 Q376.1 159.6 405.9 158.4 Q435.8 157.2 465.3 164.2 Q494.7 171.2 512.0 185.6 Z" pathLength="100" stroke="#9fb8a8" stroke-dasharray="9 91" stroke-dashoffset="-55"/>
+<path d="M529.2 200.0 Q529.2 200.0 528.1 216.8 Q527.0 233.6 509.9 247.1 Q492.8 260.7 467.7 268.3 Q442.7 275.8 417.6 278.1 Q392.4 280.4 371.2 279.7 Q350.0 279.1 332.6 277.3 Q315.3 275.5 300.5 272.8 Q285.8 270.1 273.3 266.1 Q260.7 262.1 250.3 257.2 Q239.9 252.2 230.2 247.2 Q220.6 242.2 208.4 237.4 Q196.3 232.6 179.4 226.5 Q162.4 220.3 142.5 210.2 Q122.6 200.0 106.9 184.6 Q91.2 169.1 88.6 150.9 Q86.1 132.6 101.4 117.6 Q116.7 102.5 145.8 96.9 Q174.9 91.2 206.8 97.2 Q238.7 103.1 262.3 116.7 Q285.9 130.4 297.2 144.1 Q308.6 157.7 313.3 164.6 Q318.0 171.5 326.8 170.3 Q335.6 169.0 355.8 164.3 Q376.1 159.6 405.9 158.4 Q435.8 157.2 465.3 164.2 Q494.7 171.2 512.0 185.6 Z" pathLength="100" stroke="#16a45b" stroke-dasharray="36 64" stroke-dashoffset="-64"/>
+</g>
+<circle cx="529" cy="200" r="5" fill="#0f1214"/>
+<path d="M529 188V212" stroke="#0f1214" stroke-width="3"/>
+<circle cx="248" cy="255" r="16" fill="none" stroke="#d02f1f" stroke-width="2"/>
+</svg>
+</div>
+<div style="width:250px;flex:none;border-left:1px solid rgba(16,20,24,.10);padding:14px 16px">
+<div class="lbl" style="color:#6a7278;margin-bottom:10px">Corner ledger</div>
+<div style="display:flex;flex-direction:column;gap:9px">
+<div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font:500 12px Archivo,sans-serif;color:#0f1214">T1 Pit bend</span><span class="n" style="font-size:12px;color:#16a45b">−0.041</span></div>
+<div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font:500 12px Archivo,sans-serif;color:#0f1214">T2 Kink</span><span class="n" style="font-size:12px;color:#6a7278">+0.004</span></div>
+<div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font:500 12px Archivo,sans-serif;color:#0f1214">T3 Esses in</span><span class="n" style="font-size:12px;color:#16a45b">−0.062</span></div>
+<div style="padding:9px 10px;background:#fdf0ee;border-left:2px solid #d02f1f"><div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font:600 12px Archivo,sans-serif;color:#0f1214">T4 Christmas hairpin</span><span class="n" style="font-size:12px;font-weight:700;color:#d02f1f">+0.128</span></div><div style="font:400 11px/1.45 Archivo,sans-serif;color:#5b6268;margin-top:5px">Biggest single loss. Min speed 2.4 km/h down, apex 0.6 m late.</div></div>
+<div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font:500 12px Archivo,sans-serif;color:#0f1214">T5 Sweeper</span><span class="n" style="font-size:12px;color:#16a45b">−0.055</span></div>
+<div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font:500 12px Archivo,sans-serif;color:#0f1214">T6 Pylon left</span><span class="n" style="font-size:12px;color:#d02f1f">+0.062</span></div>
+<div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font:500 12px Archivo,sans-serif;color:#0f1214">T7 Back kink</span><span class="n" style="font-size:12px;color:#16a45b">−0.088</span></div>
+<div style="display:flex;justify-content:space-between;align-items:baseline"><span style="font:500 12px Archivo,sans-serif;color:#0f1214">T8 Onto straight</span><span class="n" style="font-size:12px;color:#16a45b">−0.209</span></div>
+</div>
+<div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(16,20,24,.10);display:flex;justify-content:space-between"><span class="lbl" style="color:#6a7278">Net</span><span class="n" style="font-size:14px;font-weight:700;color:#16a45b">−0.376</span></div>
+</div>
+</div>
+</div>
+
+<div style="background:#fff;border:1px solid rgba(16,20,24,.12);border-radius:6px;padding:14px 16px">
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px"><span class="lbl" style="color:#6a7278">Speed &amp; cumulative delta</span><span class="n" style="font-size:11px;color:#6a7278">1 062 m lap · distance basis</span></div>
+<svg viewBox="0 0 1000 150" preserveAspectRatio="none" style="width:100%;height:120px;display:block">
+<g stroke="rgba(16,20,24,.08)" stroke-width="1" vector-effect="non-scaling-stroke"><path d="M0 38H1000"/><path d="M0 76H1000"/><path d="M0 114H1000"/></g>
+<path d="M0 36.2L9 47.0L18 56.6L28 66.6L37 75.4L46 82.8L55 86.2L64 87.0L73 82.7L83 77.4L92 68.2L101 58.2L110 56.5L119 67.9L128 78.4L138 86.5L147 95.9L156 100.1L165 103.8L174 103.7L183 101.2L193 94.9L202 87.7L211 78.0L220 69.2L229 57.1L239 47.2L248 38.9L257 34.7L266 44.7L275 53.4L284 61.9L294 66.6L303 67.0L312 63.8L321 58.1L330 48.2L339 52.5L349 61.1L358 71.1L367 81.1L376 90.7L385 99.4L394 106.4L404 112.2L413 114.7L422 115.9L431 113.5L440 110.9L450 103.6L459 96.5L468 87.7L477 77.5L486 67.1L495 57.0L505 48.8L514 46.9L523 55.4L532 64.5L541 71.6L550 75.9L560 77.6L569 76.3L578 72.2L587 65.8L596 57.3L606 49.1L615 59.9L624 71.4L633 83.2L642 91.1L651 96.9L661 99.2L670 95.4L679 90.0L688 82.2L697 70.7L706 59.1L716 46.2L725 35.5L734 27.8L743 30.6L752 41.0L761 50.4L771 57.3L780 61.1L789 58.7L798 50.8L807 45.2L817 56.4L826 67.7L835 78.6L844 88.9L853 98.2L862 104.2L872 108.8L881 110.8L890 108.0L899 103.8L908 95.5L917 87.7L927 76.2L936 65.9L945 53.7L954 44.2L963 35.3L972 27.5L982 19.8L991 15.9L1000 11.8" fill="none" stroke="#a8a9a3" stroke-width="1.4" vector-effect="non-scaling-stroke"/>
+<path d="M0 35.8L9 45.9L18 56.5L28 66.1L37 75.2L46 81.5L55 85.3L64 85.2L73 82.1L83 75.5L92 67.1L101 56.6L110 55.6L119 67.1L128 76.7L138 86.7L147 94.5L156 100.7L165 103.5L174 103.5L183 101.0L193 95.2L202 87.4L211 77.3L220 67.1L229 57.3L239 46.5L248 36.7L257 32.6L266 42.6L275 52.8L284 61.2L294 66.2L303 66.4L312 63.6L321 55.8L330 46.7L339 51.6L349 60.9L358 71.4L367 81.1L376 91.1L385 99.3L394 106.3L404 111.4L413 114.5L422 115.2L431 113.8L440 109.8L450 103.7L459 96.0L468 86.7L477 76.9L486 66.9L495 56.9L505 47.0L514 45.6L523 54.7L532 63.6L541 70.4L550 75.3L560 77.3L569 75.6L578 70.6L587 64.4L596 55.7L606 47.6L615 58.5L624 70.5L633 81.8L642 90.9L651 95.8L661 97.8L670 95.1L679 89.9L688 80.9L697 69.5L706 57.5L716 45.9L725 34.7L734 25.0L743 30.6L752 40.3L761 49.9L771 57.0L780 59.2L789 57.1L798 50.4L807 44.1L817 55.5L826 65.8L835 77.0L844 87.3L853 97.1L862 104.4L872 108.3L881 109.9L890 108.0L899 103.5L908 95.5L917 86.7L927 75.4L936 64.5L945 53.1L954 42.7L963 33.6L972 25.6L982 18.9L991 13.6L1000 9.6" fill="none" stroke="#0f1214" stroke-width="1.8" vector-effect="non-scaling-stroke"/>
+</svg>
+<svg viewBox="0 0 1000 72" preserveAspectRatio="none" style="width:100%;height:58px;display:block;margin-top:6px">
+<path d="M0 35.9L9 35.8L18 35.7L28 35.6L37 35.5L46 35.0L55 34.6L64 33.8L73 33.5L83 32.9L92 32.6L101 32.2L110 32.0L119 31.8L128 31.2L138 31.3L147 30.4L156 30.9L165 30.5L174 30.3L183 30.1L193 30.3L202 30.2L211 29.9L220 29.3L229 29.4L239 29.3L248 28.9L257 28.7L266 28.3L275 28.2L284 28.0L294 27.9L303 27.8L312 27.7L321 27.2L330 27.0L339 26.8L349 26.7L358 26.8L367 26.8L376 27.0L385 26.9L394 26.9L404 25.9L413 25.6L422 24.6L431 25.0L440 23.7L450 23.7L459 23.4L468 22.9L477 22.7L486 22.7L495 22.6L505 22.3L514 22.1L523 22.0L532 21.7L541 21.4L550 21.2L560 21.1L569 20.9L578 20.4L587 20.0L596 19.7L606 19.4L615 19.1L624 18.8L633 18.3L642 18.2L651 17.5L661 16.5L670 16.3L679 16.2L688 15.7L697 15.4L706 15.0L716 15.0L725 14.9L734 14.5L743 14.5L752 14.4L761 14.3L771 14.3L780 13.8L789 13.5L798 13.4L807 13.2L817 13.0L826 12.5L835 11.9L844 11.2L853 10.4L862 10.5L872 9.9L881 8.8L890 8.8L899 8.5L908 8.5L917 8.1L927 7.8L936 7.4L945 7.3L954 7.1L963 6.8L972 6.6L982 6.5L991 6.3L1000 6.1 L1000 36 L0 36 Z" fill="rgba(22,164,91,.14)"/>
+<path d="M0 36H1000" stroke="rgba(16,20,24,.25)" stroke-width="1" vector-effect="non-scaling-stroke" stroke-dasharray="3 3"/>
+<path d="M0 35.9L9 35.8L18 35.7L28 35.6L37 35.5L46 35.0L55 34.6L64 33.8L73 33.5L83 32.9L92 32.6L101 32.2L110 32.0L119 31.8L128 31.2L138 31.3L147 30.4L156 30.9L165 30.5L174 30.3L183 30.1L193 30.3L202 30.2L211 29.9L220 29.3L229 29.4L239 29.3L248 28.9L257 28.7L266 28.3L275 28.2L284 28.0L294 27.9L303 27.8L312 27.7L321 27.2L330 27.0L339 26.8L349 26.7L358 26.8L367 26.8L376 27.0L385 26.9L394 26.9L404 25.9L413 25.6L422 24.6L431 25.0L440 23.7L450 23.7L459 23.4L468 22.9L477 22.7L486 22.7L495 22.6L505 22.3L514 22.1L523 22.0L532 21.7L541 21.4L550 21.2L560 21.1L569 20.9L578 20.4L587 20.0L596 19.7L606 19.4L615 19.1L624 18.8L633 18.3L642 18.2L651 17.5L661 16.5L670 16.3L679 16.2L688 15.7L697 15.4L706 15.0L716 15.0L725 14.9L734 14.5L743 14.5L752 14.4L761 14.3L771 14.3L780 13.8L789 13.5L798 13.4L807 13.2L817 13.0L826 12.5L835 11.9L844 11.2L853 10.4L862 10.5L872 9.9L881 8.8L890 8.8L899 8.5L908 8.5L917 8.1L927 7.8L936 7.4L945 7.3L954 7.1L963 6.8L972 6.6L982 6.5L991 6.3L1000 6.1" fill="none" stroke="#16a45b" stroke-width="1.8" vector-effect="non-scaling-stroke"/>
+</svg>
+</div>
+</div>
+
+<div style="width:330px;flex:none;display:flex;flex-direction:column;gap:16px">
+<div style="background:#0f1214;border-radius:6px;padding:16px">
+<div class="lbl" style="color:#8c959c;margin-bottom:10px">Lap 12 · your new best</div>
+<div class="n" style="font-size:46px;line-height:.9;font-weight:700;color:#fff;letter-spacing:-.02em">48.312</div>
+<div style="display:flex;gap:16px;margin-top:14px;padding-top:13px;border-top:1px solid rgba(255,255,255,.14)">
+<div><div class="lbl" style="color:#8c959c;margin-bottom:4px">vs best</div><div class="n" style="font-size:15px;color:#3ddb85">−0.376</div></div>
+<div><div class="lbl" style="color:#8c959c;margin-bottom:4px">vs theoretical</div><div class="n" style="font-size:15px;color:#ffd23d">+0.361</div></div>
+<div><div class="lbl" style="color:#8c959c;margin-bottom:4px">vs record</div><div class="n" style="font-size:15px;color:#ff6a58">+0.910</div></div>
+</div>
+</div>
+
+<div style="background:#fff;border:1px solid rgba(16,20,24,.12);border-radius:6px;overflow:hidden">
+<div style="padding:12px 14px;border-bottom:1px solid rgba(16,20,24,.10)"><span class="lbl" style="color:#6a7278">Sector board</span></div>
+<div style="display:grid;grid-template-columns:30px 1fr 58px 58px;gap:8px;padding:9px 14px"><span class="lbl" style="color:#8c9096"></span><span class="lbl" style="color:#8c9096">Best in</span><span class="lbl" style="color:#8c9096;text-align:right">Lap 12</span><span class="lbl" style="color:#8c9096;text-align:right">Δ</span></div>
+<div style="display:grid;grid-template-columns:30px 1fr 58px 58px;gap:8px;align-items:center;padding:8px 14px;border-top:1px solid rgba(16,20,24,.07)"><span class="n" style="font-size:11px;color:#0f1214">S1</span><span class="n" style="font-size:11px;color:#6a7278">Lap 12</span><span class="n" style="font-size:12px;color:#16a45b">12.041</span><span class="n" style="font-size:11px;color:#16a45b;text-align:right">−0.148</span></div>
+<div style="display:grid;grid-template-columns:30px 1fr 58px 58px;gap:8px;align-items:center;padding:8px 14px;border-top:1px solid rgba(16,20,24,.07)"><span class="n" style="font-size:11px;color:#0f1214">S2</span><span class="n" style="font-size:11px;color:#6a7278">Lap 12</span><span class="n" style="font-size:12px;color:#16a45b">10.884</span><span class="n" style="font-size:11px;color:#16a45b;text-align:right">−0.081</span></div>
+<div style="display:grid;grid-template-columns:30px 1fr 58px 58px;gap:8px;align-items:center;padding:8px 14px;border-top:1px solid rgba(16,20,24,.07);background:#fdf0ee"><span class="n" style="font-size:11px;color:#0f1214">S3</span><span class="n" style="font-size:11px;color:#6a7278">Lap 9</span><span class="n" style="font-size:12px;color:#d02f1f">13.412</span><span class="n" style="font-size:11px;color:#d02f1f;text-align:right">+0.062</span></div>
+<div style="display:grid;grid-template-columns:30px 1fr 58px 58px;gap:8px;align-items:center;padding:8px 14px;border-top:1px solid rgba(16,20,24,.07)"><span class="n" style="font-size:11px;color:#0f1214">S4</span><span class="n" style="font-size:11px;color:#6a7278">Lap 12</span><span class="n" style="font-size:12px;color:#16a45b">11.975</span><span class="n" style="font-size:11px;color:#16a45b;text-align:right">−0.209</span></div>
+</div>
+
+<div style="background:#fff;border:1px solid rgba(16,20,24,.12);border-radius:6px;overflow:hidden">
+<div style="padding:12px 14px;border-bottom:1px solid rgba(16,20,24,.10);display:flex;justify-content:space-between"><span class="lbl" style="color:#6a7278">Laps</span><span class="lbl" style="color:#c02d12">Select 2 to compare</span></div>
+<div style="display:flex;flex-direction:column">
+<div style="display:flex;align-items:center;gap:10px;padding:8px 14px;background:#f6f5f1;box-shadow:inset 2px 0 0 #0f1214"><span class="n" style="font-size:11px;color:#6a7278;width:18px">12</span><span class="n" style="flex:1;font-size:12px;color:#0f1214">48.312</span><span style="width:60px;height:5px;background:#e3e2dc;border-radius:3px;overflow:hidden"><i style="display:block;width:96%;height:100%;background:#16a45b"></i></span><span class="n" style="font-size:11px;color:#16a45b;width:44px;text-align:right">−0.376</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-top:1px solid rgba(16,20,24,.07);box-shadow:inset 2px 0 0 #a8a9a3"><span class="n" style="font-size:11px;color:#6a7278;width:18px">09</span><span class="n" style="flex:1;font-size:12px;color:#0f1214">48.688</span><span style="width:60px;height:5px;background:#e3e2dc;border-radius:3px;overflow:hidden"><i style="display:block;width:88%;height:100%;background:#a8a9a3"></i></span><span class="n" style="font-size:11px;color:#6a7278;width:44px;text-align:right">ref</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-top:1px solid rgba(16,20,24,.07)"><span class="n" style="font-size:11px;color:#6a7278;width:18px">13</span><span class="n" style="flex:1;font-size:12px;color:#0f1214">48.741</span><span style="width:60px;height:5px;background:#e3e2dc;border-radius:3px;overflow:hidden"><i style="display:block;width:86%;height:100%;background:#c9c9c3"></i></span><span class="n" style="font-size:11px;color:#d02f1f;width:44px;text-align:right">+0.053</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-top:1px solid rgba(16,20,24,.07)"><span class="n" style="font-size:11px;color:#6a7278;width:18px">11</span><span class="n" style="flex:1;font-size:12px;color:#0f1214">48.902</span><span style="width:60px;height:5px;background:#e3e2dc;border-radius:3px;overflow:hidden"><i style="display:block;width:80%;height:100%;background:#c9c9c3"></i></span><span class="n" style="font-size:11px;color:#d02f1f;width:44px;text-align:right">+0.214</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-top:1px solid rgba(16,20,24,.07)"><span class="n" style="font-size:11px;color:#6a7278;width:18px">10</span><span class="n" style="flex:1;font-size:12px;color:#0f1214">49.104</span><span style="width:60px;height:5px;background:#e3e2dc;border-radius:3px;overflow:hidden"><i style="display:block;width:72%;height:100%;background:#c9c9c3"></i></span><span class="n" style="font-size:11px;color:#d02f1f;width:44px;text-align:right">+0.416</span></div>
+<div style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-top:1px solid rgba(16,20,24,.07)"><span class="n" style="font-size:11px;color:#6a7278;width:18px">08</span><span class="n" style="flex:1;font-size:12px;color:#0f1214">49.220</span><span style="width:60px;height:5px;background:#e3e2dc;border-radius:3px;overflow:hidden"><i style="display:block;width:68%;height:100%;background:#c9c9c3"></i></span><span class="n" style="font-size:11px;color:#d02f1f;width:44px;text-align:right">+0.532</span></div>
+</div>
+</div>
+
+<div style="background:#fff;border:1px solid rgba(16,20,24,.12);border-radius:6px;padding:14px">
+<div class="lbl" style="color:#6a7278;margin-bottom:10px">Share</div>
+<div style="font:400 12px/1.5 Archivo,sans-serif;color:#3c4247">Publish lap 12 to the Whilton Mill · Rotax Senior board. Other drivers can overlay their own lap against yours.</div>
+<div style="display:flex;gap:6px;margin-top:12px"><span class="lbl" style="padding:7px 10px;background:#ff3b1f;color:#fff;border-radius:3px">Publish lap</span><span class="lbl" style="padding:7px 10px;border:1px solid rgba(16,20,24,.16);color:#3c4247;border-radius:3px">Copy link</span></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+</div>
+<p class="dv-next">Try next: "make <a class="dv-oid" href="#1a">1a</a> light like <a class="dv-oid" href="#1b">1b</a>" · "add a multi-driver coach view" · "show the mobile live-timing screen"</p>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;showThrottleBrake&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Analysis&quot;},&quot;showTheoretical&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Analysis&quot;},&quot;showCommunity&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Community&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      showThrottleBrake: this.props.showThrottleBrake ?? true,
+      showTheoretical: this.props.showTheoretical ?? true,
+      showCommunity: this.props.showCommunity ?? true,
+      frameW: 402, frameH: 874, landW: 874, landH: 402,
+    };
+  }
+}
+</script>
+</body>
+</html>
