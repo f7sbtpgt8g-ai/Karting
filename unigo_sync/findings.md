@@ -7,14 +7,16 @@ info). Re-run the discovery harness and diff against this doc if a
 firmware update changes anything.
 
 Last updated: 2026-09-05. Sources: a real HAR capture of the device's web
-UI (page load + session list + downloading one session, three times); a
-real Unipro Analyser TSV export of that exact same session used as ground
-truth; and a from-scratch reverse-engineering pass on the raw binary
-format that **cracked the per-record framing** and decoded 8 channels
-(GPS position, altitude, embedded GPS speed, DOP/quality values, battery
-voltage, internal temperature) with verified formulas, independently of
-Analyser -- see "BREAKTHROUGH" below. RPM, steering angle, and
-accelerometer G-force remain the one open gap.
+UI; a real Unipro Analyser TSV export used as ground truth; a second real
+`.uni` file from a different track (Korsør) with no TSV, used for
+cross-validation; and a from-scratch reverse-engineering pass on the raw
+binary format that **cracked the per-record framing** and decoded 9
+channels independently of Analyser -- GPS position, altitude, embedded
+GPS speed, DOP/quality values, battery voltage, internal temperature, and
+**RPM** (full per-sample trace, R²=0.999) -- see "BREAKTHROUGH" and "RPM
+SOLVED" below. Steering angle and accelerometer G-force are the
+remaining open gap, with a real, promising partial lead (~0.84
+correlation) on steering.
 
 ## Device info
 
@@ -352,22 +354,95 @@ produce a corner-by-corner trace, but it can give real per-lap "peak
 RPM this lap" / "max steering angle this lap" numbers independent of
 Analyser, which is more than nothing for a first cut of Part 2.
 
-**Working theory for why these three resist the same techniques that
-worked for everything else:** RPM and Steering Angle are the two
-*highest-frequency, most rapidly-changing* channels in the whole file
-(22,124 and 11,056 firings respectively -- RPM fires almost 3x more often
-than GPS fixes), and the still-unidentified record types (11/14/18/24/28
-bytes) don't cleanly sum to either of those counts the way 45+32 cleanly
-accounted for the channels above. That, plus zero linear/lagged/float/
-delta signal despite exhaustive search, suggests either (a) they're
-bit-packed at a sub-byte level rather than byte-aligned, (b) they use a
-non-linear encoding (e.g. a lookup table, non-uniform quantization, or a
-proper stateful delta-decoder that needs the *exact* previous value, not
-just a naive cumulative sum), or (c) they're split across record types in
-a way that makes single-type positional correlation the wrong tool
-entirely (would need to reconstruct a merged, correctly-interleaved
-per-channel sequence across multiple record types before correlating,
-which is a bigger undertaking than what's been tried so far).
+### RPM SOLVED: the bug was in the correlation methodology, not the data
+
+**RPM is now decoded, independently of Analyser, with a full per-sample
+trace -- not just per-lap summary stats.** The root cause of every
+earlier failed attempt on RPM (and, per the working theory below, likely
+Steering/G-force too) was a flaw in how candidate values were compared
+against the TSV, not a property of the raw format:
+
+**The bug:** every correlation test up to this point assumed that "the
+Nth record of type X" lines up with "the Nth row of the matching TSV
+column." That assumption holds fine for a channel firing at close to the
+same rate as the GPS fixes (which is why Lat/Lon/Altitude/DOP/Battery/
+Temperature all decoded cleanly this way) -- but RPM fires **~3x more
+often than GPS** (22,124 times vs. 7,382), and per `RECRSMRY`'s earlier
+confirmation of the "keyframe/delta"-style record-type pairing, its
+samples turned out to be spread across **four different record types**
+(14, 18, 24, 28), not one. Naively truncating "the first N values of one
+record type" against "the first N rows of the TSV column" silently
+compares the wrong pairs of numbers once a channel is split this way --
+which explains why direct positional correlation (and everything built on
+top of it: lagged correlation, float32, delta/cumsum, rank correlation,
+keyframe+delta reconstruction, bit-level search) kept coming back
+negative, even though real fields were sitting right there.
+
+**The fix:** build a real byte-offset -> elapsed-session-time calibration
+curve from the 7,382 confirmed GPS-fix (type 45) records (each already
+tied to a real `Session Time` value from the TSV, via the position-based
+alignment that's valid for GPS-rate channels), then interpolate that
+curve to estimate the true elapsed time of *every* record of *every*
+type, and match each one to its temporally nearest real RPM sample
+(within a 50ms window) -- rather than assuming position `i` in one
+sequence means the same instant as position `i` in another. This turns
+"which byte holds RPM" into a well-posed, time-correct comparison instead
+of a coincidentally-misaligned one.
+
+**Result, once fixed:** RPM appears as a clean, unscaled, big-endian
+int16 value (`raw` in engine RPM directly, no divisor) at a specific byte
+offset in **each** of four record types:
+
+| Record type | Byte offset | Width | Count |
+|---|---|---|---|
+| 14 | 6 | 2 | 7,372 |
+| 18 | 10 | 2 | 3,690 |
+| 24 | 6 | 2 | 7,372 |
+| 28 | 10 | 2 | 2,952 |
+
+Combined (merged in true chronological order across all four types):
+**21,386 decoded samples against the TSV's 22,124 real RPM rows (97%
+coverage)**, fit against the real ground truth: `slope=0.999,
+intercept≈4, R²=0.9987, mean absolute error 73.5 RPM` (out of a 0-12,565
+range -- well under 1% typical error). `RPM unfiltered` fits marginally
+better (`R²=0.9991, mean error 52.2`) suggesting this raw channel is
+closer to the unfiltered signal, with Analyser's own smoothing accounting
+for most of the remaining small deltas -- not a decode error.
+
+**Independently sanity-checked against the second (Korsør) file**, which
+has no TSV to correlate against: all four record types individually
+report the *same* mean RPM (~6,854, agreeing to within 3 RPM across all
+four -- strong internal consistency), zero negative values, zero
+values above a physically implausible threshold, and smooth
+lap-to-lap-plausible acceleration ramps in the raw sample sequence. This
+is real, working confirmation on a file this decode was never tuned
+against.
+
+**Why this is a big deal beyond RPM itself:** the same time-alignment
+fix immediately improved Steering Angle's correlation too (from ~0.20 in
+the old, wrong methodology up to ~0.84 in the corrected one -- see the
+working theory and second-file cross-validation sections below, not yet
+a full clean decode but a real, promising lead that the old methodology
+was actively hiding). Any future work on Steering Angle or the
+acceleration channels should start from this corrected methodology, not
+the naive positional one.
+
+**Working theory, confirmed correct for RPM (see "RPM SOLVED" above):**
+RPM and Steering Angle are the two *highest-frequency, most
+rapidly-changing* channels in the whole file (22,124 and 11,056 firings
+respectively -- RPM fires almost 3x more often than GPS fixes), and the
+record types carrying them don't cleanly sum to either count under a
+single-type assumption. Of the three explanations originally proposed --
+(a) sub-byte bit-packing, (b) a non-linear/stateful encoding, (c) the
+channel being split across multiple record types in a way that makes
+single-type *positional* correlation the wrong tool -- **(c) was the
+correct explanation for RPM**: it's split across four record types
+(14/18/24/28), and the fix wasn't a different encoding at all, just
+comparing against the TSV by real elapsed time instead of by naive row
+position. The same corrected methodology is the natural next thing to
+apply to Steering Angle and the acceleration channels (see below --
+Steering Angle already jumped from ~0.20 to ~0.84 correlation under the
+same fix, a live, unresolved lead, not a dead end).
 
 ### Second real file: format/formula cross-validation + a keyframe/delta test
 
@@ -393,7 +468,10 @@ are general (not overfit to one session/location), found without needing
 a TSV for this file at all.
 
 **2. A "keyframe + delta" hypothesis, tested against the first file's real
-TSV (still no signal for RPM/Steering/G-force).** OpenLap's own module
+TSV.** (Superseded for RPM by the time-alignment fix above, which found
+RPM without needing this -- kept here as-run, since it correctly
+identified the right record-type pairing intuition even though the
+specific keyframe/delta reconstruction wasn't the mechanism.) OpenLap's own module
 docstring describes `RECRDATA` as using "a variable-length keyframe-vs-
 delta scheme" -- worth taking seriously given how the record-type tags
 naturally pair up: a common, smaller type (`14`, `24`) alongside a rarer,
@@ -496,61 +574,71 @@ decision to not depend on Analyser:
 
 1. **Independently decodable today, with verified exact formulas (see
    the decode table above):** GPS position, altitude, embedded GPS speed,
-   DOP/fix-quality values, battery voltage, and internal temperature --
+   DOP/fix-quality values, battery voltage, internal temperature, **and
+   now RPM** (full per-sample trace, R²=0.999, see "RPM SOLVED" above) --
    via the real record framing (not a fuzzy value-scan), which also means
    near-100% recovery within a session rather than OpenLap's ~60%-of-native-
    rate/50%-false-positive scan. Heading and distance are best computed
    from the decoded GPS track directly (bearing / integration), matching
    what OpenLap does, rather than hunted for as raw channels. Combined
    with the RECRGLOS timing-beacon coordinates OpenLap also uses, this is
-   enough for a track map, real GPS speed trace, and real lap timing --
-   independent of Analyser.
-2. **RPM, steering angle, and the 3-axis accelerometer G-forces remain
-   NOT recovered as a full per-sample trace**, despite the record framing
-   being solved and a very extensive, systematic search (see above,
-   including the `RECRSMRY` follow-up). This is a narrower, more specific
-   gap than "the whole format is unsolved," but it's still a real one.
-   `telemetry/parser.py`'s downstream analysis (corner-causal detection,
-   setup suggestions, throttle/braking inference) leans heavily on
-   exactly these three channels, so **a no-Analyser sync tool today would
-   still feed the pipeline meaningfully less than a `.tsv` export would**
-   -- this is a real fidelity trade-off, not a detail, and needs to be a
-   conscious decision rather than something this document quietly assumes
-   away. `RECRSMRY` does give real per-lap min/max for at least RPM and
-   Steering Angle as a fallback (see above) -- not a trace, but not zero
-   either.
-3. Next places to look for RPM/steering/G-force per-sample data, if
-   continuing: (a) a proper stateful delta-decoder (track a running
-   per-channel value and apply small signed deltas cumulatively, rather
-   than the naive global cumsum already tried and shown to be spurious),
-   (b) bit-level (not byte-aligned) packing within the still-partially-
-   understood record types (11/14/18/24/28 bytes), (c) obtaining a second
-   real `.uni`+`.tsv` pair -- ideally from a session with more dramatic
-   RPM/steering variation -- to cross-validate any future candidate
-   formula the same way the channels above were confirmed, (d) a deeper
-   pass on `RECRSMRY` beyond per-lap min/max, in case it also holds a
-   coarser (e.g. per-second) time-bucketed trace rather than just two
-   numbers per lap.
+   enough for a track map, real GPS speed trace, real lap timing, and now
+   a real RPM trace -- independent of Analyser.
+2. **Steering angle and the 3-axis accelerometer G-forces remain not
+   fully recovered as a clean per-sample trace**, though the picture
+   changed with the time-alignment fix that cracked RPM: Steering Angle
+   now shows a real, consistent ~0.84 correlation (up from ~0.20 under the
+   old, flawed methodology) at record types 24/28, with a stable slope
+   across both independently-derived record types -- this is very likely
+   the right channel (probably a raw/unfiltered steering sensor reading,
+   analogous to `RPM unfiltered`), just not yet a bit-perfect match to
+   Analyser's filtered `Steering Angle` column. GPS Lateral Acceleration
+   shows a weaker (~0.53) echo at the same byte region, plausibly because
+   it's physically correlated with steering rather than being a distinct
+   decoded channel. Vertical/GPS-Longitudinal Acceleration still show
+   no signal. `telemetry/parser.py`'s downstream analysis (corner-causal
+   detection, setup suggestions, throttle/braking inference) uses these
+   too, so full G-force recovery is still a real gap worth closing, but
+   RPM -- the channel flagged as critical -- is done.
+3. Next places to look for Steering/G-force, given RPM's fix as the
+   template: (a) re-run the *time-aligned* search (not the old positional
+   one) with a finer calibration window and a wider byte-offset net,
+   since RPM's true fields weren't even the ones the old methodology
+   ranked highest, (b) check whether Steering Angle, like RPM, is split
+   across more record types than the two found so far, (c) test whether
+   smoothing/filtering the raw candidate closes the gap toward Analyser's
+   value (tried moving-average smoothing already: improves ~0.84 to
+   ~0.88, a real but partial improvement -- worth a proper matched
+   digital filter instead of a naive moving average), (d) a second real
+   `.uni`+`.tsv` pair with more dramatic steering/G-force variation to
+   pin down the remaining gap precisely.
 
 ## Open questions
 
-- **RPM, Steering Angle, and 3-axis accelerometer G-force per-sample byte
-  encoding** -- the one major remaining gap. The outer record framing is
-  solved (see "BREAKTHROUGH" above) and 8 other channels are decoded with
-  verified, often-exact formulas; `RECRSMRY` additionally gives real
-  per-lap min/max for RPM and Steering Angle (confirming their physical
-  scale: RPM raw/unscaled, Steering Angle x10). But the full per-sample
-  trace for all three resisted linear/lagged/float32/delta-cumsum/rank
-  correlation search, AND a stateful keyframe+delta reconstruction search
-  (see "Second real file" above) -- across every record type and offset
-  tried so far. A second real file (Korsør) confirmed the *other* 8
-  channels' formulas generalize correctly, but didn't have a matching TSV
-  so couldn't directly help crack these three. Next things worth trying:
-  bit-level (non-byte-aligned) packing, a deeper `RECRSMRY` pass in case
-  it holds more than per-lap extremes, trying the keyframe+delta idea
-  with the roles/type-pairings reversed, or a third real file that DOES
-  come with a matching TSV and has more dramatic RPM/steering variation
-  than the two sessions seen so far.
+- ~~RPM per-sample byte encoding~~ **SOLVED** -- see "RPM SOLVED" above.
+  Root cause of the earlier failure was methodological (naive positional
+  correlation instead of true time-based alignment), not a property of
+  the format. RPM is split across 4 record types (14/18/24/28), each a
+  raw unscaled big-endian int16 at a fixed offset, R²=0.999 combined,
+  independently sanity-checked against a second file with no TSV.
+- **Steering Angle and 3-axis accelerometer G-force per-sample byte
+  encoding** -- the one remaining gap, now narrower and better-understood
+  than before RPM's fix. Steering Angle already shows a real, consistent
+  ~0.84 correlation under the corrected (time-aligned) methodology at
+  record types 24/28 -- very likely the right channel (a raw/unfiltered
+  steering sensor), not yet a bit-perfect match. GPS Lateral Acceleration
+  echoes weakly (~0.53) in the same region, plausibly a physical
+  correlation rather than a distinct decode. Vertical/GPS-Longitudinal
+  Acceleration show no signal yet. Next steps: re-run the *time-aligned*
+  search (the one that found RPM) more exhaustively for these targets
+  specifically -- check whether Steering, like RPM, spans more record
+  types than found so far; try a proper digital filter (not just a
+  moving average, which only partially closed the gap) to see if that's
+  the missing piece between the raw sensor and Analyser's filtered value;
+  a third real file with a matching TSV and more dramatic steering/
+  G-force variation would help disambiguate further. `RECRSMRY` gives
+  real per-lap min/max for Steering Angle as a fallback in the meantime
+  (confirmed scale: x10).
 - Exact byte boundaries for the DOP fields (Positional/Horizontal/
   Vertical DOP all decode with R²=1.0 individually, but their offsets --
   38/40/41 -- are close enough together that the precise boundary between
