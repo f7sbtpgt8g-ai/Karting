@@ -1,0 +1,44 @@
+# Supabase CLI / GitHub integration project config. Generated to match
+# `supabase init`'s standard scaffold -- this file (alongside
+# `supabase/migrations/`) is what lets both the CLI and the Supabase
+# GitHub integration recognize `supabase/` as this repo's Supabase project
+# directory. It carries no secrets; the actual project (URL, keys, DB
+# connection string) is linked separately, either via the Supabase
+# dashboard's GitHub integration settings or `supabase link --project-ref
+# <ref>` if you also use the CLI locally.
+
+project_id = "karting"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[db.pooler]
+enabled = false
+
+[studio]
+enabled = true
+port = 54323
+
+[inbucket]
+enabled = false
+
+[storage]
+enabled = false
+
+[auth]
+enabled = true
+site_url = "http://localhost:8501"
+additional_redirect_urls = []
+jwt_expiry = 3600
+enable_signup = true
+
+[analytics]
+enabled = false
