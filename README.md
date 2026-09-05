@@ -133,7 +133,8 @@ telemetry/            Parsing + analysis core (independently testable, no UI cod
   accounts.py                            Driver profiles, attribution, claiming, visibility gate
   auth.py                                 Registration/login/reset (Supabase or local provider)
   mailer.py                                Email templates + pluggable delivery
-  storage.py                     SQLite session library (history + corner/pattern trend logging)
+  storage.py                     Session library (history + corner/pattern trend logging) -- SQLite locally, Postgres/Supabase when configured
+  db.py                           Shared Postgres/Supabase connection helper (see "Migrating the database layer to Supabase")
 app.py                Streamlit UI (thin orchestration layer over telemetry/*)
 scripts/ingest.py     CLI ingestion into the session library (automation-friendly)
 tests/                pytest suite + synthetic fixture generator
@@ -336,9 +337,15 @@ Auth is behind a provider interface (`auth.py`):
 
 - **Supabase Auth** when `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set --
   the intended production path.
-- **A local provider** otherwise (PBKDF2 hashing, tokens in SQLite), so a
-  single-machine install works with no external service. Not recommended
-  for a real multi-user deployment.
+- **A local provider** otherwise (PBKDF2 hashing, tokens in a `users`
+  table), so a single-machine install works with no external service. Not
+  recommended for a real multi-user deployment.
+
+This is a separate switch from where that `users` table (and everything
+else) actually lives -- see "Migrating the database layer to Supabase"
+below, controlled independently by `SUPABASE_DB_URL`/`DATABASE_URL`. Auth
+can move to Supabase Auth (GoTrue) while storage stays on local SQLite, or
+vice versa, or both at once.
 
 Email delivery (`mailer.py`) uses SMTP when `SMTP_HOST` is set and
 otherwise records messages to an `email_outbox` table without sending. When
@@ -675,12 +682,12 @@ specific session* (not from whatever session you looked at previously --
 see "Filling in the kart setup" above). Both are browsable from the
 **History** view.
 
-**Important caveat:** this storage lives on the app's local disk. On
-Streamlit Community Cloud specifically, that disk is wiped on every
-redeploy and reboot -- so treat it as a within-deploy convenience, not
-durable long-term history, unless/until it's backed by an external
-database (see the module docstring in `telemetry/storage.py` for the
-tradeoff and options if you need real cross-redeploy persistence).
+**Important caveat:** by default, this storage lives on the app's local
+disk. On Streamlit Community Cloud specifically, that disk is wiped on
+every redeploy and reboot -- so treat it as a within-deploy convenience,
+not durable long-term history, unless `SUPABASE_DB_URL`/`DATABASE_URL` is
+set (see "Migrating the database layer to Supabase" below), in which case
+this same storage is backed by Postgres instead and survives redeploys.
 
 Ingest files from the command line -- e.g. from a script triggered after a
 race-day upload -- with:
@@ -690,6 +697,111 @@ python scripts/ingest.py session1.tsv session2.tsv \
     --driver "Your Name" --track "Track Name" --session-type practice \
     --db data/sessions.db
 ```
+
+## Migrating the database layer to Supabase
+
+Every table this app uses (`sessions`, `laps`, `kart_setups`,
+`corner_metrics`, `pattern_instances`, `users`, `driver_profiles`,
+attribution/claim tables, `auth_tokens`/`auth_sessions`, `email_outbox`) has
+a Postgres-backed sibling implementation (`Supabase*` classes in
+`telemetry/storage.py`, `accounts.py`, `auth.py`, `mailer.py`), selected
+automatically over the local SQLite classes whenever `SUPABASE_DB_URL` (or
+`DATABASE_URL`) is set -- see `telemetry/db.py` and each module's
+`*_from_env` factory. Nothing about this is opt-in per-feature: setting
+that one environment variable moves the whole storage layer, not just
+telemetry or just accounts.
+
+**Why**: this app's SQLite file (`data/sessions.db`) lives on the app's
+own local disk, which is wiped on every redeploy/reboot on a platform
+without persistent storage (Streamlit Community Cloud, notably). A Supabase
+Postgres database is the durable alternative -- and, unlike a bespoke
+database only this app's Python code can reach, it's also directly queryable
+over Supabase's REST API (PostgREST) with an official Swift client, which
+matters if a native mobile app is ever built against the same data (see
+"Row Level Security" below for what that implies).
+
+### Setting it up
+
+1. Create a Supabase project (free tier is fine to start).
+2. Apply `supabase/migrations/0001_init.sql` to it -- either
+   `supabase db push` (Supabase CLI, linked to the project), or paste the
+   file into the project's SQL Editor and run it once. This is the single
+   source of truth for the schema; the Postgres-backed Python classes do
+   **not** create tables themselves (unlike their SQLite counterparts) --
+   see the migration file's own header comment for why.
+3. Set `SUPABASE_DB_URL` to the project's Postgres connection string
+   (Project Settings > Database > Connection string -- use the *pooled*
+   connection string in production, since Supabase's pgbouncer sits in
+   front of it).
+4. Optionally also set `SUPABASE_URL`/`SUPABASE_ANON_KEY` (see "Auth and
+   email configuration" above) to move auth over to Supabase Auth (GoTrue)
+   at the same time -- the two are independent switches, so the database
+   layer can move to Supabase first, with auth staying on the local
+   provider, if you'd rather stage it.
+5. If there's existing local data worth keeping, run
+   `SUPABASE_DB_URL=... python scripts/migrate_sqlite_to_supabase.py --sqlite-db data/sessions.db`
+   once, with the schema from step 2 already applied. It preserves row ids
+   across the copy (so every foreign key still points at the right row
+   afterwards) and re-encodes each session's cached raw dataframe from its
+   local pickle file into the new `session_cache` table as Parquet (see
+   below for why not pickle).
+
+### What actually changed, mechanically
+
+- Every SQLite `?` placeholder becomes a Postgres `%s` one, and every
+  `col IS ?` null-safe comparison becomes `col IS NOT DISTINCT FROM %s`
+  (Postgres's bare `IS` only accepts a literal `NULL`/`TRUE`/`FALSE`, not a
+  bound parameter).
+- `INTEGER PRIMARY KEY AUTOINCREMENT` becomes
+  `BIGINT GENERATED ALWAYS AS IDENTITY`, with `RETURNING id` replacing
+  SQLite's `cursor.lastrowid`.
+- **The per-session raw telemetry dataframe no longer lives in a local
+  pickle file.** `SessionLibrary.save_session`/`load_session` wrote/read
+  `session_cache/session_<id>.pkl` on local disk, referenced by
+  `sessions.cache_path` -- exactly the kind of local-disk state that
+  doesn't survive a redeploy, and the actual motivation for this whole
+  migration. The Postgres-backed `SupabaseSessionLibrary` instead stores it
+  directly in a new `session_cache` table, Parquet-encoded rather than
+  pickled: Parquet is a safe, cross-language columnar format a
+  non-Python client could also read, whereas unpickling arbitrary bytes is
+  a code-execution surface once that blob is reachable over a network
+  rather than only ever written by this one process.
+
+### Row Level Security (and why it matters for a future iOS app)
+
+This app's own Postgres connection (`SUPABASE_DB_URL`) is expected to use a
+role that bypasses Row Level Security (Supabase's default service-role/
+`postgres` connection) -- `accounts.PUBLIC_VISIBILITY_SQL` is already
+applied explicitly in every query the Python data-access classes run, so
+RLS would just be a redundant second check for this one process.
+
+It stops being redundant the moment anything *other* than this app talks to
+the database directly -- which is exactly what a native mobile client would
+do, querying Supabase's PostgREST API with a user's own JWT rather than
+going through this Streamlit app at all. `supabase/migrations/0001_init.sql`
+includes a first-pass set of RLS policies for that case (mirroring
+`PUBLIC_VISIBILITY_SQL` for `sessions`, and narrower rules for `laps`,
+`session_cache`, `corner_metrics`, `pattern_instances`, `driver_profiles`,
+and `users`), keyed off a `current_app_user_id()` helper that maps
+Supabase Auth's `auth.uid()` to this schema's internal integer user id via
+`users.external_auth_id`. Treat these as a reasonable starting point to
+review against your actual auth setup before relying on them, not an
+audited security boundary -- in the same spirit as this codebase's other
+"policy decision, revisit with real review" constants (see
+`PARENTAL_CONSENT_AGE`, the invite-email gate).
+
+### What's intentionally not covered here
+
+The local SQLite classes (`SessionLibrary`, `AccountLibrary`, `AuthStore`,
+`OutboxEmailSender`) are untouched and still exist -- this is a second
+backend selected by an environment variable, not a replacement. That
+matters for this project specifically because working with **no network at
+all, at the track**, is an explicit design goal (see `LocalAuthProvider`'s
+docstring) -- a Postgres-only storage layer would break that for a
+single-machine/offline install. Deploying with `SUPABASE_DB_URL` set is the
+recommended production setup; running with neither `SUPABASE_DB_URL`/
+`DATABASE_URL` nor `SUPABASE_URL`/`SUPABASE_ANON_KEY` set still works
+exactly as it did before, fully offline.
 
 ## Known limitations / not yet implemented
 
@@ -708,4 +820,6 @@ python scripts/ingest.py session1.tsv session2.tsv \
   history yet; that GPS track, lap times, and RPM data are visible to
   anyone who can see the repo while it stays public.
 - History/setup persistence is local-disk-only and does not survive a
-  Streamlit Community Cloud redeploy/reboot -- see "Session library" above.
+  Streamlit Community Cloud redeploy/reboot **unless the Postgres/Supabase
+  backend is configured** -- see "Migrating the database layer to Supabase"
+  above.

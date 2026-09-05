@@ -13,6 +13,7 @@ without going through Streamlit.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sqlite3
@@ -21,6 +22,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
+from . import db as pgdb
 from .accounts import VISIBILITY_DEFAULT
 from .laps import flag_outlier_laps, lap_table, summarize_laps
 from .parser import Session
@@ -535,3 +537,333 @@ class SessionLibrary:
         query += " ORDER BY recorded_at"
         with self._connect() as conn:
             return pd.read_sql_query(query, conn, params=params)
+
+
+def _dataframe_to_parquet_bytes(df: pd.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    df.to_parquet(buf, engine="pyarrow")
+    return buf.getvalue()
+
+
+def _dataframe_from_parquet_bytes(data) -> pd.DataFrame:
+    return pd.read_parquet(io.BytesIO(bytes(data)), engine="pyarrow")
+
+
+class SupabaseSessionLibrary:
+    """Postgres/Supabase-backed sibling of `SessionLibrary`, same public
+    interface, connecting via `telemetry.db` instead of `sqlite3`. Selected
+    over the SQLite version by `session_library_from_env` when
+    `SUPABASE_DB_URL`/`DATABASE_URL` is configured -- see that function's
+    docstring for why a shared Postgres database doesn't bootstrap its own
+    schema the way the SQLite class does.
+
+    The one structural difference from the SQLite version: there is no
+    `cache_path`/local pickle file. Each session's raw dataframe is stored
+    directly in Postgres (`session_cache.dataframe_parquet`, Parquet-encoded)
+    -- see `supabase/migrations/0001_init.sql` for why Parquet rather than a
+    pickle now that this blob is reachable over a network rather than only
+    ever written by this one process.
+    """
+
+    def __init__(self, _unused_db_path: str | None = None):
+        # Accepts (and ignores) a db_path positional argument so it's a
+        # drop-in replacement wherever `SessionLibrary(DB_PATH)` was
+        # constructed directly -- the actual connection target comes from
+        # `telemetry.db.database_url()`, resolved lazily on first use so
+        # constructing this class doesn't require a reachable database.
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def find_session(
+        self, source_file: str, session_index: int, start_time: str | None, driver: str | None = None
+    ) -> int | None:
+        query = (
+            f"SELECT id FROM sessions WHERE source_file = %s AND session_index = %s "
+            f"AND {pgdb.is_not_distinct_from_sql('start_time')}"
+        )
+        params: tuple = (source_file, session_index, start_time)
+        if driver is not None:
+            query += f" AND {pgdb.is_not_distinct_from_sql('driver')}"
+            params += (driver,)
+        with pgdb.connect() as conn:
+            row = pgdb.read_sql(conn, query, params)
+        return int(row.iloc[0]["id"]) if not row.empty else None
+
+    def save_session(
+        self,
+        session: Session,
+        driver: str | None = None,
+        track_name: str | None = None,
+        session_type: str | None = None,
+        track_condition: str | None = None,
+        temperature_c: float | None = None,
+        humidity_pct: float | None = None,
+        pressure_hpa: float | None = None,
+        altitude_m: float | None = None,
+        conditions_source: str | None = None,
+        driver_profile_id: int | None = None,
+        uploaded_by_user_id: int | None = None,
+        kart_class: str | None = None,
+        visibility: str = VISIBILITY_DEFAULT,
+    ) -> int:
+        laps = flag_outlier_laps(lap_table(session))
+        summary = summarize_laps(laps)
+
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO sessions
+                   (source_file, session_index, driver, track_name, session_type,
+                    start_date, start_time, ingested_at, best_lap_s, average_lap_s,
+                    std_dev_s, n_laps, track_condition, temperature_c,
+                    humidity_pct, pressure_hpa, altitude_m, conditions_source,
+                    driver_profile_id, uploaded_by_user_id, kart_class, visibility)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   RETURNING id""",
+                (
+                    session.source_file,
+                    session.session_id,
+                    driver,
+                    track_name,
+                    session_type,
+                    session.start_date,
+                    session.start_time,
+                    datetime.now(timezone.utc),
+                    _safe_float(summary.get("best_lap_s")),
+                    _safe_float(summary.get("average_lap_s")),
+                    _safe_float(summary.get("std_dev_s")),
+                    int(summary["n_laps"]) if summary.get("n_laps") is not None else None,
+                    track_condition,
+                    _safe_float(temperature_c),
+                    _safe_float(humidity_pct),
+                    _safe_float(pressure_hpa),
+                    _safe_float(altitude_m),
+                    conditions_source,
+                    driver_profile_id,
+                    uploaded_by_user_id,
+                    kart_class,
+                    visibility,
+                ),
+            )
+            session_db_id = int(cur.fetchone()["id"])
+
+            cur.execute(
+                "INSERT INTO session_cache (session_db_id, dataframe_parquet) VALUES (%s, %s)",
+                (session_db_id, _dataframe_to_parquet_bytes(session.df)),
+            )
+
+            for _, row in laps.iterrows():
+                cur.execute(
+                    "INSERT INTO laps (session_db_id, lap_number, lap_time_s, is_outlier, outlier_reason) "
+                    "VALUES (%s,%s,%s,%s,%s)",
+                    (session_db_id, int(row["lap_number"]), float(row["lap_time_s"]), bool(row["is_outlier"]), row["outlier_reason"]),
+                )
+
+            conn.commit()
+        return session_db_id
+
+    def list_sessions(self) -> pd.DataFrame:
+        with pgdb.connect() as conn:
+            return pgdb.read_sql(conn, "SELECT * FROM sessions ORDER BY ingested_at")
+
+    def delete_session(self, session_db_id: int) -> None:
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM laps WHERE session_db_id = %s", (session_db_id,))
+            cur.execute("DELETE FROM session_cache WHERE session_db_id = %s", (session_db_id,))
+            cur.execute("DELETE FROM sessions WHERE id = %s", (session_db_id,))
+            conn.commit()
+
+    def load_session(self, session_db_id: int) -> Session:
+        with pgdb.connect() as conn:
+            row = pgdb.read_sql(conn, "SELECT * FROM sessions WHERE id = %s", (session_db_id,))
+            if row.empty:
+                raise KeyError(f"No session with id {session_db_id}")
+            # Fetched via a plain cursor, not pd.read_sql_query: pandas's
+            # generic (non-SQLAlchemy) DBAPI2 fallback path was found to
+            # mangle a `bytea` column's bytes on the way through, which
+            # breaks Parquet decoding below -- a raw cursor fetch hands back
+            # exactly what psycopg2 itself returns for the column.
+            cur = conn.cursor()
+            cur.execute("SELECT dataframe_parquet FROM session_cache WHERE session_db_id = %s", (session_db_id,))
+            cache_row = cur.fetchone()
+        if cache_row is None:
+            raise KeyError(f"No cached dataframe for session {session_db_id}")
+        r = row.iloc[0]
+        df = _dataframe_from_parquet_bytes(cache_row["dataframe_parquet"])
+        return Session(
+            session_id=int(r["session_index"]),
+            source_file=r["source_file"],
+            df=df,
+            start_date=r["start_date"],
+            start_time=r["start_time"],
+            driver=r["driver"] if pd.notna(r["driver"]) else None,
+        )
+
+    def laps_for_session(self, session_db_id: int) -> pd.DataFrame:
+        with pgdb.connect() as conn:
+            return pgdb.read_sql(
+                conn, "SELECT * FROM laps WHERE session_db_id = %s ORDER BY lap_number", (session_db_id,)
+            )
+
+    def save_kart_setup(
+        self, setup, source_file: str, session_index: int, start_time: str | None, driver: str | None = None
+    ) -> int:
+        import psycopg2.extras
+
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO kart_setups (source_file, session_index, start_time, driver, saved_at, setup_json) "
+                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (source_file, session_index, start_time, driver, datetime.now(timezone.utc), psycopg2.extras.Json(setup.to_dict())),
+            )
+            new_id = int(cur.fetchone()["id"])
+            conn.commit()
+            return new_id
+
+    def list_kart_setups(self) -> pd.DataFrame:
+        with pgdb.connect() as conn:
+            return pgdb.read_sql(
+                conn,
+                "SELECT id, source_file, session_index, start_time, driver, saved_at FROM kart_setups ORDER BY saved_at DESC",
+            )
+
+    def load_kart_setup(self, setup_id: int):
+        from .setup_config import KartSetup
+
+        with pgdb.connect() as conn:
+            row = pgdb.read_sql(conn, "SELECT setup_json FROM kart_setups WHERE id = %s", (setup_id,))
+        if row.empty:
+            raise KeyError(f"No kart setup with id {setup_id}")
+        return KartSetup.from_dict(row.iloc[0]["setup_json"])
+
+    def load_latest_kart_setup_for_session(self, source_file: str, session_index: int, start_time: str | None):
+        with pgdb.connect() as conn:
+            row = pgdb.read_sql(
+                conn,
+                f"SELECT id FROM kart_setups WHERE source_file = %s AND session_index = %s "
+                f"AND {pgdb.is_not_distinct_from_sql('start_time')} ORDER BY saved_at DESC LIMIT 1",
+                (source_file, session_index, start_time),
+            )
+        if row.empty:
+            return None
+        return self.load_kart_setup(int(row.iloc[0]["id"]))
+
+    def log_corner_metrics(
+        self,
+        session_db_id: int | None,
+        driver: str | None,
+        track_name: str | None,
+        lap_number: int,
+        corner_points: pd.DataFrame,
+        zone_times: pd.DataFrame,
+        conditions: str | None = None,
+    ) -> None:
+        if corner_points.empty:
+            return
+        merged = corner_points.merge(zone_times, on="corner_label", how="left")
+        now = datetime.now(timezone.utc)
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            for _, row in merged.iterrows():
+                cur.execute(
+                    """INSERT INTO corner_metrics
+                       (session_db_id, driver, track_name, conditions, lap_number, corner_label,
+                        entry_distance_m, entry_speed_kmh, apex_distance_m, apex_speed_kmh,
+                        exit_distance_m, exit_speed_kmh, zone_a_time_s, zone_b_time_s, zone_c_time_s, recorded_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (
+                        session_db_id, driver, track_name, conditions, int(lap_number), row["corner_label"],
+                        _safe_float(row.get("entry_distance_m")), _safe_float(row.get("entry_speed_kmh")),
+                        _safe_float(row.get("apex_distance_m")), _safe_float(row.get("apex_speed_kmh")),
+                        _safe_float(row.get("exit_distance_m")), _safe_float(row.get("exit_speed_kmh")),
+                        _safe_float(row.get("zone_a_time_s")), _safe_float(row.get("zone_b_time_s")),
+                        _safe_float(row.get("zone_c_time_s")), now,
+                    ),
+                )
+            conn.commit()
+
+    def log_pattern_instances(
+        self,
+        driver: str | None,
+        track_name: str | None,
+        session_db_id: int | None,
+        lap_number: int,
+        reference_session_db_id: int | None,
+        reference_lap_number: int,
+        comparisons: pd.DataFrame,
+        conditions: str | None = None,
+    ) -> None:
+        import psycopg2.extras
+
+        if comparisons.empty:
+            return
+        now = datetime.now(timezone.utc)
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            for _, row in comparisons.iterrows():
+                cur.execute(
+                    """INSERT INTO pattern_instances
+                       (driver, track_name, conditions, session_db_id, lap_number, reference_session_db_id,
+                        reference_lap_number, corner_label, pattern_type, confidence, net_time_impact_s,
+                        evidence_json, recorded_at)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (
+                        driver, track_name, conditions, session_db_id, int(lap_number), reference_session_db_id,
+                        int(reference_lap_number), row["corner_label"], row["pattern_type"], row["confidence"],
+                        _safe_float(row.get("net_time_impact_s")), psycopg2.extras.Json(row.get("evidence") or {}), now,
+                    ),
+                )
+            conn.commit()
+
+    def recurring_pattern_summary(self, driver: str | None = None, min_occurrences: int = 2) -> pd.DataFrame:
+        query = """
+            SELECT driver, track_name, corner_label, pattern_type,
+                   COUNT(DISTINCT session_db_id) AS n_sessions,
+                   COUNT(*) AS n_laps,
+                   MIN(recorded_at) AS first_seen, MAX(recorded_at) AS last_seen,
+                   AVG(net_time_impact_s) AS avg_net_time_impact_s,
+                   SUM(net_time_impact_s) AS total_net_time_impact_s
+            FROM pattern_instances
+            WHERE pattern_type NOT IN ('clean_no_significant_delta', 'unclassified_time_delta', 'inconclusive')
+        """
+        params: tuple = ()
+        if driver is not None:
+            query += f" AND {pgdb.is_not_distinct_from_sql('driver')}"
+            params += (driver,)
+        query += (
+            " GROUP BY driver, track_name, corner_label, pattern_type "
+            "HAVING COUNT(DISTINCT session_db_id) >= %s "
+            "ORDER BY n_sessions DESC, total_net_time_impact_s DESC"
+        )
+        params += (min_occurrences,)
+        with pgdb.connect() as conn:
+            return pgdb.read_sql(conn, query, params)
+
+    def pattern_instance_history(self, driver: str | None = None, corner_label: str | None = None) -> pd.DataFrame:
+        query = "SELECT * FROM pattern_instances WHERE 1=1"
+        params: tuple = ()
+        if driver is not None:
+            query += f" AND {pgdb.is_not_distinct_from_sql('driver')}"
+            params += (driver,)
+        if corner_label is not None:
+            query += f" AND {pgdb.is_not_distinct_from_sql('corner_label')}"
+            params += (corner_label,)
+        query += " ORDER BY recorded_at"
+        with pgdb.connect() as conn:
+            return pgdb.read_sql(conn, query, params)
+
+
+def session_library_from_env(sqlite_path: str) -> SessionLibrary | SupabaseSessionLibrary:
+    """Postgres/Supabase-backed library when `SUPABASE_DB_URL`/`DATABASE_URL`
+    is configured, the local SQLite one otherwise -- the same
+    env-var-driven choice `auth.provider_from_env` makes for the identity
+    backend, applied here to the telemetry/session storage layer.
+    `sqlite_path` is only used (and only needs to exist) for the SQLite
+    fallback."""
+    if pgdb.has_postgres_configured():
+        return SupabaseSessionLibrary()
+    return SessionLibrary(sqlite_path)

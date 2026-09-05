@@ -5,6 +5,15 @@ plotly>=5.18
 streamlit>=1.32
 pyyaml>=6.0
 pytest>=7.4
+# Supabase/Postgres-backed data layer (telemetry/db.py and the Supabase*
+# classes in storage.py/accounts.py/auth.py/mailer.py). Only actually
+# connects when SUPABASE_DB_URL/DATABASE_URL is set -- see README's
+# "Migrating the database layer to Supabase" section. Both are required
+# unconditionally (rather than optional-imported) since psycopg2 is used
+# directly in telemetry/db.py and pyarrow backs the Parquet-encoded
+# session-dataframe cache in storage.py.
+psycopg2-binary>=2.9
+pyarrow>=14
 # Optional: only used for the Lap Comparison page's "Use AI phrasing" toggle
 # (telemetry/narrative.py). Not required -- falls back to templated
 # sentences if this isn't installed or ANTHROPIC_API_KEY isn't set.
