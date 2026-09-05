@@ -313,9 +313,44 @@ too:
   for these channels instead of `RECRDATA` -- ruled out, it's a **plain
   ASCII device boot/diagnostic log** (`/Logs/logfile.2.txt`, firmware
   version/serial/build-date strings), not telemetry.
-- `RECRSMRY` (25,604 bytes) was not fully explored beyond the earlier
-  int32-min/max sentinel-pattern observation; a real lead worth returning
-  to specifically for these three channels.
+- `RECRSMRY` (25,604 bytes) was followed up on -- see "SMRY chunk solved"
+  below. It gives per-lap min/max, not a full per-sample trace, so it
+  narrows the gap but doesn't close it.
+- Full rank-based (Spearman) correlation re-run across every
+  offset/width/endianness/signedness for RPM, RPM unfiltered, Steering
+  Angle, Vertical/Longitudinal/Lateral Acceleration, and Temperature 1 --
+  catches monotonic-but-nonlinear relationships that plain linear
+  correlation would miss. Only Temperature 1 showed a moderate (not
+  conclusive) rank correlation (~0.85) at two record types; RPM, Steering,
+  and the three acceleration channels showed nothing above 0.55.
+
+### SMRY chunk solved: per-lap min/max summary (not a full trace)
+
+`RECRSMRY` turned out to be exactly what its name suggests: a per-lap
+summary table, not raw samples. Confirmed by searching it for the real,
+lap-by-lap min/max values computed from the TSV (rather than searching
+`RECRDATA` for a full time series): **found exact matches for Steering
+Angle's real per-lap min and max (×10, int16 BE) at a clean, constant
+**128-byte stride per lap** -- lap 1's block at byte offset 66 (min) /
+70 (max), lap 2's at 194/198, lap 3's at 322/326, lap 4's at 450/454 --
+each exactly 128 bytes after the previous, verified against 4 different
+real laps' actual extremes (not just one lucky match). RPM's real
+session-max (12495) was also found exactly, elsewhere in the same
+lap-9-ish region of the buffer, confirming RPM is stored here as raw
+unscaled units (no divisor) alongside steering's ×10 scale -- useful
+confirmation of the physical unit conventions even where the full
+per-sample trace remains unrecovered. (Lap 0 -- the outlap -- didn't
+match, plausibly excluded from this table the way outlaps often are;
+laps 5-10 in this particular session have a stuck/constant steering
+sensor reading exactly 1.5 the whole lap, which is too common a byte
+pattern to search for reliably and produced noise, not a real negative
+result.)
+
+**Practical implication:** if full per-sample RPM/Steering/G-force never
+gets cracked, `RECRSMRY` is a fallback worth keeping in mind -- it can't
+produce a corner-by-corner trace, but it can give real per-lap "peak
+RPM this lap" / "max steering angle this lap" numbers independent of
+Analyser, which is more than nothing for a first cut of Part 2.
 
 **Working theory for why these three resist the same techniques that
 worked for everything else:** RPM and Steering Angle are the two
@@ -408,37 +443,46 @@ decision to not depend on Analyser:
    enough for a track map, real GPS speed trace, and real lap timing --
    independent of Analyser.
 2. **RPM, steering angle, and the 3-axis accelerometer G-forces remain
-   NOT recovered**, despite the framing being solved and an extensive,
-   systematic search (see above) -- this is a narrower, more specific gap
-   than "the whole format is unsolved," but it's still a real one.
+   NOT recovered as a full per-sample trace**, despite the record framing
+   being solved and a very extensive, systematic search (see above,
+   including the `RECRSMRY` follow-up). This is a narrower, more specific
+   gap than "the whole format is unsolved," but it's still a real one.
    `telemetry/parser.py`'s downstream analysis (corner-causal detection,
    setup suggestions, throttle/braking inference) leans heavily on
    exactly these three channels, so **a no-Analyser sync tool today would
    still feed the pipeline meaningfully less than a `.tsv` export would**
    -- this is a real fidelity trade-off, not a detail, and needs to be a
    conscious decision rather than something this document quietly assumes
-   away.
-3. Next places to look for RPM/steering/G-force, if continuing: (a)
-   `RECRSMRY` (25,604 bytes, not yet fully explored), (b) a proper
-   stateful delta-decoder (track a running per-channel value and apply
-   small signed deltas cumulatively, rather than the naive global cumsum
-   already tried and shown to be spurious), (c) bit-level (not
-   byte-aligned) packing within the still-partially-understood record
-   types, (d) obtaining a second real `.uni`+`.tsv` pair -- ideally from a
-   session with more dramatic RPM/steering variation -- to cross-validate
-   any future candidate formula the same way the channels above were
-   confirmed.
+   away. `RECRSMRY` does give real per-lap min/max for at least RPM and
+   Steering Angle as a fallback (see above) -- not a trace, but not zero
+   either.
+3. Next places to look for RPM/steering/G-force per-sample data, if
+   continuing: (a) a proper stateful delta-decoder (track a running
+   per-channel value and apply small signed deltas cumulatively, rather
+   than the naive global cumsum already tried and shown to be spurious),
+   (b) bit-level (not byte-aligned) packing within the still-partially-
+   understood record types (11/14/18/24/28 bytes), (c) obtaining a second
+   real `.uni`+`.tsv` pair -- ideally from a session with more dramatic
+   RPM/steering variation -- to cross-validate any future candidate
+   formula the same way the channels above were confirmed, (d) a deeper
+   pass on `RECRSMRY` beyond per-lap min/max, in case it also holds a
+   coarser (e.g. per-second) time-bucketed trace rather than just two
+   numbers per lap.
 
 ## Open questions
 
-- **RPM, Steering Angle, and 3-axis accelerometer G-force byte encoding**
-  -- the one major remaining gap. The outer record framing is solved (see
-  "BREAKTHROUGH" above) and 8 other channels are decoded with verified,
-  often-exact formulas, but these three resisted linear/lagged/float32/
-  delta-cumsum search across every record type and offset. Next things
-  worth trying: `RECRSMRY` (not yet fully explored), a proper stateful
-  delta-decoder, bit-level (non-byte-aligned) packing, or a second real
-  file pair to cross-validate candidates against.
+- **RPM, Steering Angle, and 3-axis accelerometer G-force per-sample byte
+  encoding** -- the one major remaining gap. The outer record framing is
+  solved (see "BREAKTHROUGH" above) and 8 other channels are decoded with
+  verified, often-exact formulas; `RECRSMRY` additionally gives real
+  per-lap min/max for RPM and Steering Angle (confirming their physical
+  scale: RPM raw/unscaled, Steering Angle x10). But the full per-sample
+  trace for all three resisted linear/lagged/float32/delta-cumsum/rank
+  correlation search across every record type and offset. Next things
+  worth trying: a proper stateful delta-decoder, bit-level (non-byte-
+  aligned) packing, a deeper `RECRSMRY` pass in case it holds more than
+  per-lap extremes, or a second real file pair to cross-validate
+  candidates against.
 - Exact byte boundaries for the DOP fields (Positional/Horizontal/
   Vertical DOP all decode with R²=1.0 individually, but their offsets --
   38/40/41 -- are close enough together that the precise boundary between
