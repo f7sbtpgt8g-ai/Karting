@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.message import EmailMessage
 
+from . import db as pgdb
+
 MAILER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS email_outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -272,10 +274,111 @@ class SmtpEmailSender(EmailSender):
         return True
 
 
+class SupabaseOutboxEmailSender(EmailSender):
+    """Postgres/Supabase-backed sibling of `OutboxEmailSender`, same public
+    interface, connecting via `telemetry.db`. See
+    `storage.SupabaseSessionLibrary` for why schema creation isn't done
+    here."""
+
+    name = "outbox"
+
+    def __init__(self, _unused_db_path: str | None = None):
+        pass
+
+    def send(self, email: Email) -> bool:
+        suppressed = None
+        if email.kind == "claim_invite" and not invite_emails_enabled():
+            suppressed = "Invite emails are disabled (KARTING_ENABLE_INVITE_EMAILS is not set)."
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO email_outbox (to_email, subject, body, kind, sent, suppressed_reason, created_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                (
+                    email.to_email, email.subject, email.body, email.kind, False, suppressed,
+                    datetime.now(timezone.utc),
+                ),
+            )
+            conn.commit()
+        return False
+
+    def outbox(self, kind: str | None = None) -> list[dict]:
+        query = "SELECT * FROM email_outbox"
+        params: tuple = ()
+        if kind:
+            query += " WHERE kind = %s"
+            params = (kind,)
+        query += " ORDER BY created_at DESC, id DESC"
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(query, params)
+            return [dict(row) for row in cur.fetchall()]
+
+
+class SupabaseSmtpEmailSender(EmailSender):
+    """Postgres/Supabase-backed sibling of `SmtpEmailSender` -- real
+    delivery, recording to the Postgres `email_outbox` table (via
+    `SupabaseOutboxEmailSender`) instead of SQLite either way."""
+
+    name = "smtp"
+
+    def __init__(
+        self, host: str, port: int = 587, username: str | None = None,
+        password: str | None = None, from_email: str = "noreply@example.com", use_tls: bool = True,
+    ):
+        self.outbox_sender = SupabaseOutboxEmailSender()
+        self.host, self.port = host, port
+        self.username, self.password = username, password
+        self.from_email, self.use_tls = from_email, use_tls
+
+    def send(self, email: Email) -> bool:
+        if email.kind == "claim_invite" and not invite_emails_enabled():
+            self.outbox_sender.send(email)
+            return False
+
+        message = EmailMessage()
+        message["Subject"] = email.subject
+        message["From"] = self.from_email
+        message["To"] = email.to_email
+        message.set_content(email.body)
+        try:
+            with smtplib.SMTP(self.host, self.port, timeout=15) as smtp:
+                if self.use_tls:
+                    smtp.starttls()
+                if self.username:
+                    smtp.login(self.username, self.password or "")
+                smtp.send_message(message)
+        except (smtplib.SMTPException, OSError):
+            self.outbox_sender.send(email)
+            return False
+
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO email_outbox (to_email, subject, body, kind, sent, created_at)
+                   VALUES (%s,%s,%s,%s,TRUE,%s)""",
+                (email.to_email, email.subject, email.body, email.kind, datetime.now(timezone.utc)),
+            )
+            conn.commit()
+        return True
+
+
 def sender_from_env(db_path: str) -> EmailSender:
     """SMTP when `SMTP_HOST` is configured, outbox otherwise -- so nothing
-    is ever sent from a machine that hasn't been deliberately set up to."""
+    is ever sent from a machine that hasn't been deliberately set up to.
+    Backed by Postgres/Supabase when `SUPABASE_DB_URL`/`DATABASE_URL` is
+    configured, the local SQLite outbox otherwise -- see
+    `storage.session_library_from_env`, which makes the same choice for
+    the telemetry/session store this shares a database with."""
     host = os.environ.get("SMTP_HOST")
+    if pgdb.has_postgres_configured():
+        if not host:
+            return SupabaseOutboxEmailSender()
+        return SupabaseSmtpEmailSender(
+            host=host, port=int(os.environ.get("SMTP_PORT", "587")),
+            username=os.environ.get("SMTP_USERNAME"), password=os.environ.get("SMTP_PASSWORD"),
+            from_email=os.environ.get("SMTP_FROM", "noreply@example.com"),
+        )
     if not host:
         return OutboxEmailSender(db_path)
     return SmtpEmailSender(

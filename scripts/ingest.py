@@ -18,7 +18,7 @@ import argparse
 import sys
 
 from telemetry.parser import load_sessions
-from telemetry.storage import SessionLibrary
+from telemetry.storage import session_library_from_env
 
 
 def main(argv=None) -> int:
@@ -27,10 +27,15 @@ def main(argv=None) -> int:
     parser.add_argument("--driver", default=None, help="Driver name to tag these sessions with")
     parser.add_argument("--track", default=None, help="Track name to tag these sessions with")
     parser.add_argument("--session-type", default=None, choices=["practice", "qualifying", "race"])
-    parser.add_argument("--db", default="data/sessions.db", help="Path to the SQLite session library")
+    parser.add_argument(
+        "--db", default="data/sessions.db",
+        help="Path to the local SQLite session library. Ignored if SUPABASE_DB_URL/DATABASE_URL "
+        "is set in the environment, in which case sessions are ingested into that Postgres/Supabase "
+        "database instead.",
+    )
     args = parser.parse_args(argv)
 
-    library = SessionLibrary(args.db)
+    library = session_library_from_env(args.db)
     total = 0
     for path in args.files:
         try:

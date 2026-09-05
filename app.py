@@ -36,11 +36,13 @@ from telemetry.accounts import (
     VISIBILITY_PRIVATE,
     VISIBILITY_SHARED,
     AccountLibrary,
+    account_library_from_env,
     is_minor,
 )
-from telemetry.auth import AuthStore, LocalAuthProvider, provider_from_env
+from telemetry.auth import AuthStore, LocalAuthProvider, auth_store_from_env, provider_from_env
 from telemetry.mailer import (
     OutboxEmailSender,
+    SupabaseOutboxEmailSender,
     attribution_request_email,
     claim_invite_email,
     claim_notification_email,
@@ -77,7 +79,7 @@ from telemetry.simulation import (
     fit_speed_rpm_scale,
     simulate_gearing_change,
 )
-from telemetry.storage import SessionLibrary
+from telemetry.storage import SessionLibrary, session_library_from_env
 
 st.set_page_config(page_title="Karting Telemetry", layout="wide", page_icon="🏎️")
 
@@ -106,15 +108,21 @@ APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:8501").rstrip("/
 
 
 @st.cache_resource(show_spinner=False)
-def get_account_library() -> AccountLibrary:
+def get_account_library():
+    """Postgres/Supabase-backed when SUPABASE_DB_URL/DATABASE_URL is set,
+    the local SQLite AccountLibrary otherwise -- see
+    `telemetry.accounts.account_library_from_env`."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    return AccountLibrary(DB_PATH)
+    return account_library_from_env(DB_PATH)
 
 
 @st.cache_resource(show_spinner=False)
-def get_auth_store() -> AuthStore:
+def get_auth_store():
+    """Postgres/Supabase-backed when SUPABASE_DB_URL/DATABASE_URL is set,
+    the local SQLite AuthStore otherwise -- see
+    `telemetry.auth.auth_store_from_env`."""
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    return AuthStore(DB_PATH)
+    return auth_store_from_env(DB_PATH)
 
 
 @st.cache_resource(show_spinner=False)
@@ -132,7 +140,7 @@ def email_delivery_configured() -> bool:
     (the default local setup, which records to an outbox instead), the
     email-verification step is skipped rather than leaving accounts stuck
     behind a link that will never arrive -- see `complete_registration`."""
-    return not isinstance(get_email_sender(), OutboxEmailSender)
+    return not isinstance(get_email_sender(), (OutboxEmailSender, SupabaseOutboxEmailSender))
 
 
 def dev_show_email_links() -> bool:
@@ -146,13 +154,17 @@ def dev_show_email_links() -> bool:
 
 
 @st.cache_resource(show_spinner=False)
-def get_session_library() -> SessionLibrary:
-    """One SQLite connection reused across reruns. Local disk only --
-    resets whenever this app's container reboots or redeploys (Streamlit
-    Community Cloud's filesystem isn't persistent across those), which is a
-    known, accepted limitation for now rather than an oversight."""
+def get_session_library():
+    """Postgres/Supabase-backed when SUPABASE_DB_URL/DATABASE_URL is set --
+    the recommended production setup, since it survives a container
+    reboot/redeploy. Falls back to the local-SQLite-file SessionLibrary
+    otherwise, which does NOT survive a redeploy on a platform without
+    persistent disk (e.g. Streamlit Community Cloud) -- a within-run/
+    within-deploy convenience in that mode, not durable history. See
+    `telemetry.storage.session_library_from_env`.
+    """
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    return SessionLibrary(DB_PATH)
+    return session_library_from_env(DB_PATH)
 
 
 # ---------------------------------------------------------------------------
