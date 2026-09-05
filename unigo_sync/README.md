@@ -63,15 +63,49 @@ Windows-only; the CLI above works identically on Linux/Mac for testing or
 non-Windows use, since all the actual sync/decode logic lives in the
 portable core, not the tray wrapper.
 
-To package as a double-clickable `.exe`:
+### Installing on an end user's Windows PC (no Python needed)
+
+For someone who just wants to plug in and go -- no Python, no pip, no
+terminal -- download and run **`UniGoSyncSetup.exe`** instead:
+
+1. Go to the repo's
+   [Actions tab](../../actions/workflows/build-windows-installer.yml),
+   open the latest successful run of "Build UniGo Sync Windows installer",
+   and download the `UniGoSyncSetup` artifact (a zip containing the one
+   `.exe`).
+2. Run `UniGoSyncSetup.exe`. It installs per-user (no admin rights or UAC
+   prompt needed), adds a Start Menu entry, and offers optional checkboxes
+   for a desktop shortcut and starting automatically with Windows.
+3. Launch "UniGo Sync" from the Start Menu -- it's the same tray app
+   described above (Sync now / auto-sync toggle), just with the Python
+   runtime and all dependencies bundled in.
+
+`config.yaml` is installed as a plain, editable text file next to
+`UniGoSync.exe` (under `%LocalAppData%\Programs\UniGoSync\`) -- edit it
+there directly if an endpoint ever needs to change; it won't be
+overwritten by a reinstall/upgrade.
+
+This has been built and verified end-to-end on a real Windows GitHub
+Actions runner (see the workflow linked above), not just written and
+assumed to work.
+
+### Building the installer yourself
 
 ```bash
-pyinstaller --onefile --name UniGoSync -m unigo_sync.platform_windows.tray_app
+pip install -r unigo_sync/requirements.txt -r unigo_sync/requirements-windows.txt
+python unigo_sync/packaging/make_icon.py unigo_sync/packaging/icon.ico
+pyinstaller --distpath dist --workpath build unigo_sync/packaging/UniGoSync.spec
+# then, with Inno Setup (https://jrsoftware.org/isinfo.php) installed:
+iscc unigo_sync/packaging/installer.iss
 ```
 
-(not yet verified against a real Windows machine in this environment --
-`pyinstaller` is listed in `requirements-windows.txt` but the build itself
-needs to be run and smoke-tested on Windows.)
+Produces `unigo_sync/packaging/Output/UniGoSyncSetup.exe`. All of this
+must run on Windows (PyInstaller freezes for the OS it runs on, and
+`ISCC.exe` is Windows-only) -- see
+[`.github/workflows/build-windows-installer.yml`](../.github/workflows/build-windows-installer.yml)
+for the exact, CI-verified sequence, including installing Inno Setup via
+Chocolatey. That workflow runs automatically on any push touching
+`unigo_sync/**`, or on demand via the Actions tab's "Run workflow" button.
 
 ## Configuration
 
@@ -116,6 +150,11 @@ unigo_sync/
   platform_windows/            <- Windows-only, thin: wraps core/ for a human on Windows
     wifi.py                        <- netsh-based current-SSID detection
     tray_app.py                      <- pystray tray icon front end
+  packaging/                   <- turns tray_app.py into an installable Windows .exe
+    run_tray.py                     <- tiny PyInstaller entry point (imports + calls tray_app.main)
+    UniGoSync.spec                    <- PyInstaller spec: onefile, windowed, icon
+    make_icon.py                       <- generates icon.ico matching the tray icon's look
+    installer.iss                       <- Inno Setup script: per-user install, shortcuts, uninstaller
   discovery/                   <- Part 1: capture-and-inspect harness (see discovery/README.md)
   tests/                        <- pytest suite for everything above except tray_app.py's live pystray loop
 ```
@@ -181,9 +220,14 @@ completing.
   a merged-lap boundary in the one real multi-track validation run) --
   lap *boundaries* mid-session were consistently accurate, only the tail
   end showed this.
-- The PyInstaller `.exe` packaging step is untested against a real Windows
-  machine in this environment -- the command above is the expected
-  invocation, not yet verified.
+- **`config.yaml`'s default lookup path depends on `sys.frozen`**
+  (`core/config.py`'s `_default_config_path`): in a normal source checkout
+  it resolves relative to the package, but in the packaged `.exe` it looks
+  next to `sys.executable` instead, since PyInstaller's onefile builds
+  extract to an ephemeral temp directory that `__file__` would otherwise
+  point at. This is why the installer places `config.yaml` beside
+  `UniGoSync.exe` as a plain file rather than bundling it inside the
+  archive.
 
 ## If a firmware update breaks sync
 
