@@ -956,9 +956,23 @@ all, so a client cannot mark an unparsed file complete or stall the queue
 ### What exists in `web/` so far
 
 `/` (Home -- sessions grouped by driver, filters, sortable columns, inline
-edit of type/track/conditions/visibility, delete), `/upload`, and
-`/login`. Everything else on the parity list is still Streamlit's, and the
-nav deliberately links only to routes that exist.
+edit of type/track/conditions/visibility, delete), `/sessions/[id]` (Lap
+Analysis), `/upload`, and `/login`. Everything else on the parity list is
+still Streamlit's, and the nav deliberately links only to routes that exist.
+
+**Lap Analysis** reads the tables 0005 added, not the Parquet blob -- which
+is what makes it possible in a browser at all. Summary cards, a lap table
+with per-sector splits, per-lap exclusion, and lap selection for the
+comparison charts that come next.
+
+The sector count is the driver's choice, 3 to 8, defaulting to 4, and it
+drives the theoretical best. Sectors are built by grouping whole
+corner/straight segments (`src/lib/sectors.ts`), never by cutting the lap
+into equal distances: a split halfway round a corner makes a driver who
+takes a different line look slower in one sector and quicker in the next,
+for no reason. Where there is a choice, boundaries prefer the start of a
+straight, so each corner stays whole inside one sector. `npm test` in
+`web/` covers that partitioning.
 
 Home's scope is narrower than what RLS permits, on purpose: your own
 sessions, plus the whole roster's if you manage or admin a team. RLS would

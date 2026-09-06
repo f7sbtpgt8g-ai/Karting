@@ -567,3 +567,55 @@ def test_a_client_cannot_write_stored_analysis(analysis_rows, table):
         f"DELETE FROM {table} WHERE session_db_id = %s", (world["session_shared"],)
     )
     assert not allowed, f"a client deleted from {table}"
+
+
+# --------------------------------------------------- manual lap exclusion (0006)
+#
+# Lap Analysis lets a driver exclude a lap they went off on. That write goes
+# browser-to-PostgREST, and `laps.lap_time_s` -- which feeds every leaderboard
+# in the app -- sits in the same row. So the interesting question is not
+# whether the toggle works, it is what else the toggle's permission opens up.
+
+
+def test_a_driver_can_exclude_a_lap_of_their_own_session(world):
+    allowed, err = world["alice"].write(
+        "UPDATE laps SET excluded_by_user = TRUE, exclusion_note = 'went off at 3' "
+        "WHERE session_db_id = %s",
+        (world["session_shared"],),
+    )
+    assert allowed, f"a driver could not exclude a lap of their own session: {err}"
+
+
+def test_a_driver_cannot_exclude_laps_of_someone_elses_session(world):
+    allowed, _ = world["carol"].write(
+        "UPDATE laps SET excluded_by_user = TRUE WHERE session_db_id = %s",
+        (world["session_shared"],),
+    )
+    assert not allowed, "a stranger excluded a lap from another driver's session"
+
+
+def test_a_teammate_cannot_exclude_laps_they_can_merely_see(world):
+    allowed, _ = world["bob"].write(
+        "UPDATE laps SET excluded_by_user = TRUE WHERE session_db_id = %s",
+        (world["session_team"],),
+    )
+    assert not allowed, "a teammate excluded a lap from another member's session"
+
+
+@pytest.mark.parametrize(
+    "column,value",
+    [("lap_time_s", "12.345"), ("is_outlier", "FALSE"), ("lap_number", "99")],
+)
+def test_the_exclusion_grant_does_not_open_up_the_rest_of_the_row(world, column, value):
+    """RLS decides which rows an UPDATE may touch, never which columns -- so
+    the new policy is narrowed by a column-level GRANT instead. Without it,
+    'let me mark this lap excluded' would also mean 'let me rewrite my lap
+    time', on a table every leaderboard reads."""
+    allowed, error = world["alice"].write(
+        f"UPDATE laps SET {column} = {value} WHERE session_db_id = %s",
+        (world["session_shared"],),
+    )
+    assert not allowed, f"a client rewrote laps.{column} on their own session"
+    assert error and "permission denied" in error.lower(), (
+        f"expected a column-level permission error, got: {error}"
+    )

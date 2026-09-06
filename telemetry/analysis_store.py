@@ -133,6 +133,17 @@ def store_session_analysis(
                 )
                 for name, column in _BOOL_COLUMNS.items()
             }
+            # The summary cards want peak speed and RPM. Derivable from the
+            # arrays above, but only by shipping every lap's full trace to a
+            # browser to render two numbers.
+            peak = {
+                name: (
+                    float(trace[column].max())
+                    if column in trace.columns and trace[column].notna().any()
+                    else None
+                )
+                for name, column in (("speed", "GPS Speed"), ("rpm", "RPM"))
+            }
             trace_rows.append(
                 (
                     session_db_id,
@@ -146,6 +157,8 @@ def store_session_analysis(
                     values["longitude"],
                     booleans["braking"],
                     booleans["power_on"],
+                    peak["speed"],
+                    peak["rpm"],
                 )
             )
 
@@ -199,8 +212,8 @@ def store_session_analysis(
         cur.executemany(
             "INSERT INTO lap_traces "
             "(session_db_id, lap_number, sample_count, distance_m, lap_time_s, speed_kmh, "
-            " rpm, latitude, longitude, braking, power_on) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            " rpm, latitude, longitude, braking, power_on, max_speed_kmh, max_rpm) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             trace_rows,
         )
         conn.commit()

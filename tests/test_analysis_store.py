@@ -319,3 +319,32 @@ def test_the_blob_can_be_cleared_once_analysis_is_stored(analyzed):
     with analyzed["conn"].cursor() as cur:
         cur.execute("SELECT count(*) FROM lap_traces WHERE session_db_id=%s", (analyzed["id"],))
         assert cur.fetchone()[0] > 0
+
+
+def test_per_lap_peaks_are_stored_for_the_summary_cards(analyzed):
+    """Speed and RPM are derivable from the trace arrays, but only by
+    shipping every lap's full trace to a browser to render two numbers."""
+    from telemetry.analysis import analyze_lap
+
+    best = analyzed["analysis"].best_lap
+    trace = analyze_lap(analyzed["session"], analyzed["analysis"], best).metric_trace
+
+    with analyzed["conn"].cursor() as cur:
+        cur.execute(
+            "SELECT max_speed_kmh, max_rpm FROM lap_traces "
+            "WHERE session_db_id=%s AND lap_number=%s",
+            (analyzed["id"], best),
+        )
+        speed, rpm = cur.fetchone()
+
+    assert speed == pytest.approx(float(trace["GPS Speed"].max()))
+    assert rpm == pytest.approx(float(trace["RPM"].max()))
+
+    # And they have to be present on every lap, not just the best one --
+    # the cards take a max across the session.
+    with analyzed["conn"].cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM lap_traces WHERE session_db_id=%s AND max_speed_kmh IS NULL",
+            (analyzed["id"],),
+        )
+        assert cur.fetchone()[0] == 0
