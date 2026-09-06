@@ -57,6 +57,15 @@ class App:
     def __init__(self, config: SyncConfig | None = None):
         self.config = config or load_config()
         configure_logging(self.config)
+        # First lines of every run: which database this install actually
+        # talks to and where its local state lives. Without them the log
+        # can't answer "unreachable -- what was it even trying to reach?",
+        # which is the first question asked of any upload that won't go.
+        logger.info(
+            "UniGo Sync starting -- %s; sessions_db=%s; staging=%s; queue=%s",
+            auth_session.describe_backend(self.config.sessions_db),
+            self.config.sessions_db, self.config.output_dir, self.config.pending_uploads_db,
+        )
 
         self.root = tk.Tk()
         self.root.title("UniGo Sync")
@@ -85,6 +94,15 @@ class App:
         # ingest the same queued session before either removes it from the
         # queue, saving it into the database twice.
         self._flush_lock = threading.Lock()
+        # Plain-Python mirrors of the two tk variables the background loop
+        # needs. Reading a tk variable from another thread is not safe --
+        # depending on how Tcl was built it either raises outright or
+        # marshals back to the main thread and can block on it -- and an
+        # exception there would end the loop, silently stopping the
+        # pending-upload flush for the rest of the session. Written on the
+        # main thread by _snapshot_ui_state, read by the loop.
+        self._auto_sync_enabled = False
+        self._selected_driver_snapshot: auth_session.DriverChoice | None = None
 
         self._try_restore_cached_session()
 
@@ -327,8 +345,15 @@ class App:
                 self._refresh_driver_combo(None)
         self._save_settings()
 
+    def _snapshot_ui_state(self) -> None:
+        """Copy the tk variables the background loop needs into plain
+        attributes. Must only be called from the main thread."""
+        self._auto_sync_enabled = bool(self._auto_sync_var.get())
+        self._selected_driver_snapshot = self._selected_driver()
+
     def _save_settings(self) -> None:
         selected = self._selected_driver()
+        self._snapshot_ui_state()
         auth_cache.update_settings(
             self.config.auth_cache_path,
             driver_profile_id=selected.profile_id if selected else None,
@@ -337,9 +362,10 @@ class App:
         )
 
     def _on_auto_sync_toggled(self) -> None:
+        self._snapshot_ui_state()
         self._log_line(
             "Auto-sync enabled -- will sync automatically when this laptop joins the device's WiFi."
-            if self._auto_sync_var.get() else "Auto-sync disabled."
+            if self._auto_sync_enabled else "Auto-sync disabled."
         )
 
     # -- sync ---------------------------------------------------------------
@@ -477,25 +503,35 @@ class App:
         self._background_thread.start()
 
     def _background_loop(self) -> None:
+        # The whole body is guarded: anything escaping here ends the loop,
+        # and this thread is the only thing that ever drains the pending
+        # upload queue. A dead loop looks exactly like a queue that will
+        # not upload -- with nothing in the log to say why.
         while not self._stop_event.wait(_BACKGROUND_POLL_S):
-            # Skipped rather than queued behind a manual flush: another one
-            # is already doing exactly this work, and it will report.
-            if self._flush_lock.acquire(blocking=False):
-                try:
-                    outcome = flush_pending_uploads(self.config)
-                    self._ui(self._on_flush_done, outcome, False)
-                except Exception:  # noqa: BLE001 - keep polling even if one attempt errors
-                    logger.exception("background upload flush failed")
-                finally:
-                    self._flush_lock.release()
+            try:
+                self._background_tick()
+            except Exception:  # noqa: BLE001 - keep polling whatever happened
+                logger.exception("background poll failed")
 
-            if self._auto_sync_var.get() and is_connected_to_unigo(self.config.wifi_ssid_prefix):
-                selected = self._selected_driver()
-                if selected is not None:
-                    self._ui(lambda: self._sync_button.config(state="disabled"))
-                    self._ui(self._set_progress_busy, f"UniGo WiFi detected -- auto-syncing for {selected.display_name}...")
-                    self._ui(self._log_line, f"UniGo WiFi detected -- auto-syncing for {selected.display_name}...")
-                    self._sync_worker(selected)
+    def _background_tick(self) -> None:
+        # Skipped rather than queued behind a manual flush: another one
+        # is already doing exactly this work, and it will report.
+        if self._flush_lock.acquire(blocking=False):
+            try:
+                outcome = flush_pending_uploads(self.config)
+                self._ui(self._on_flush_done, outcome, False)
+            except Exception:  # noqa: BLE001 - keep polling even if one attempt errors
+                logger.exception("background upload flush failed")
+            finally:
+                self._flush_lock.release()
+
+        selected = self._selected_driver_snapshot
+        if self._auto_sync_enabled and selected is not None:
+            if is_connected_to_unigo(self.config.wifi_ssid_prefix):
+                self._ui(lambda: self._sync_button.config(state="disabled"))
+                self._ui(self._set_progress_busy, f"UniGo WiFi detected -- auto-syncing for {selected.display_name}...")
+                self._ui(self._log_line, f"UniGo WiFi detected -- auto-syncing for {selected.display_name}...")
+                self._sync_worker(selected)
 
     def _start_manual_flush(self) -> None:
         self._upload_now_button.config(state="disabled")
