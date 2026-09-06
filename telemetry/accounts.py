@@ -425,6 +425,19 @@ class AccountLibrary:
             row = conn.execute("SELECT * FROM users WHERE external_auth_id = ?", (external_auth_id,)).fetchone()
         return dict(row) if row else None
 
+    def count_users(self) -> int:
+        """How many login accounts exist at all.
+
+        Exists so a caller can tell "wrong password" apart from "this
+        database has no accounts in it" -- which is what a misconfigured
+        database path looks like, given `__init__` creates an empty schema
+        rather than failing on a missing file. Not a substitute for the
+        deliberately vague login error (see `auth.LocalAuthProvider.login`):
+        a count of zero says nothing about any particular address, so it
+        can't be used to enumerate registered emails."""
+        with self._connect() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+
     def set_email_verified(self, user_id: int, verified: bool = True) -> None:
         with self._connect() as conn:
             conn.execute("UPDATE users SET email_verified = ? WHERE id = ?", (int(verified), user_id))
@@ -1296,6 +1309,13 @@ class SupabaseAccountLibrary:
             cur.execute("SELECT * FROM users WHERE external_auth_id = %s", (external_auth_id,))
             row = cur.fetchone()
         return dict(row) if row else None
+
+    def count_users(self) -> int:
+        """Postgres sibling of `AccountLibrary.count_users` -- see there."""
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) AS n FROM users")
+            return int(cur.fetchone()["n"])
 
     def set_email_verified(self, user_id: int, verified: bool = True) -> None:
         with pgdb.connect() as conn:

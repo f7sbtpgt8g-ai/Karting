@@ -135,11 +135,23 @@ class App:
         password_entry = ttk.Entry(form, width=32, show="*")
         password_entry.grid(row=1, column=1, pady=4)
 
-        error_label = ttk.Label(self._login_frame, text="", foreground="red", wraplength=380)
+        error_label = ttk.Label(
+            self._login_frame, text="", foreground="red", wraplength=380, justify="left",
+        )
         error_label.pack(pady=8)
 
         sign_in_button = ttk.Button(self._login_frame, text="Sign in")
         sign_in_button.pack(pady=8)
+
+        # Which database credentials go to is a config.yaml decision with
+        # no other visible trace in the app -- show it, so "signed in fine
+        # on the web app, rejected here" is diagnosable without reading the
+        # config file.
+        ttk.Label(
+            self._login_frame,
+            text=auth_session.describe_backend(self.config.sessions_db),
+            wraplength=380, foreground="gray", justify="left",
+        ).pack(pady=(4, 0))
 
         offline_note = ttk.Label(
             self._login_frame,
@@ -162,7 +174,15 @@ class App:
             threading.Thread(target=login_worker, args=(email, password), daemon=True).start()
 
         def login_worker(email: str, password: str) -> None:
-            result = auth_session.login(email, password, self.config.sessions_db)
+            # Anything escaping here would kill this thread with the button
+            # still disabled and "Signing in..." still on screen -- a hung
+            # app, rather than the unreachable-database problem it usually
+            # is. The sync workers below already catch for the same reason.
+            try:
+                result = auth_session.login(email, password, self.config.sessions_db)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Sign-in failed")
+                result = auth_session.LoginResult(False, error=f"Could not sign in: {exc}")
             self._ui(self._on_login_result, result)
 
         sign_in_button.config(command=do_login)
