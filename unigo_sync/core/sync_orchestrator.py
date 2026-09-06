@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Callable
 
 from telemetry.storage import session_library_from_env
 
@@ -58,13 +59,15 @@ def sync_and_upload(
     session_type: str | None = None,
     uploaded_by_user_id: int | None = None,
     client: DeviceClient | None = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
 ) -> SyncOutcome:
     """One full "Connect & Sync" pass: download/decode whatever's new and
     in the chosen period, then upload each one immediately if the
     database is reachable, or queue it for later if not. `client` is
     exposed mainly for tests -- real callers let `run_sync` build its own
-    from `config`."""
-    sync_result = run_sync(config, client=client, period_cutoff=period_cutoff)
+    from `config`. `on_progress` is passed straight through to `run_sync`
+    -- see its docstring."""
+    sync_result = run_sync(config, client=client, period_cutoff=period_cutoff, on_progress=on_progress)
     outcome = SyncOutcome(sync_result=sync_result)
     if not sync_result.new_synced:
         return outcome

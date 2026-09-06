@@ -89,7 +89,13 @@ It's a small `tkinter` window (no extra GUI dependency) with two screens:
      device is only asked to list what it has, and the date embedded in
      each session's own filename is checked before anything is
      downloaded), `Last 7 days`, `Last 30 days`, or `Everything on the
-     device`.
+     device`. Picking `Everything on the device` first checks the device
+     (`core.sync_engine.preview_sync` -- one cheap listing call, no
+     downloads) and shows a confirmation dialog with how many sessions
+     are new and roughly how many MB that is, so a device that's never
+     been cleared out doesn't kick off a long download by surprise; the
+     other three periods skip this check since they're bounded by
+     definition.
    - **Auto-sync whenever this laptop joins the UniGo device's WiFi**
      (optional, off by default) -- same watcher the old tray app had,
      checking the current SSID via `netsh wlan show interfaces` (see
@@ -99,11 +105,17 @@ It's a small `tkinter` window (no extra GUI dependency) with two screens:
    Clicking **Connect & Sync** downloads and decodes whatever's new and
    in the chosen period into the staging folder (`output_dir`) exactly as
    before, then tries to upload it into the sessions database right away.
-   If the database isn't reachable -- the normal state while connected to
-   the device's own offline AP -- each session is queued locally instead
-   (`pending_uploads_db`) and a background check (every 15s) uploads the
-   whole queue automatically the instant the database becomes reachable
-   again, with no button to click and no re-sync needed.
+   A status line and progress bar track the download/decode phase live
+   (`core.sync_engine.run_sync`'s `on_progress` callback -- "Syncing 3 of
+   12: <session name>"), so a long sync gives visible feedback instead of
+   a frozen-looking window; it starts as a busy/indeterminate bar while
+   connecting to the device (before the total is known) and switches to a
+   real N-of-M bar the moment it is. If the database isn't reachable --
+   the normal state while connected to the device's own offline AP -- each
+   session is queued locally instead (`pending_uploads_db`) and a
+   background check (every 15s) uploads the whole queue automatically the
+   instant the database becomes reachable again, with no button to click
+   and no re-sync needed.
 
 Windows-only (the GUI app lives in `platform_windows/`, same as the wifi
 watcher); the CLI above works identically on Linux/Mac for testing or

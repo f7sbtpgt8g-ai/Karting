@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 
 from ..core import auth_cache, auth_session
 from ..core.config import SyncConfig, load_config
-from ..core.period import DEFAULT_SYNC_PERIOD, SYNC_PERIOD_LABELS, SYNC_PERIODS, cutoff_for
+from ..core.period import DEFAULT_SYNC_PERIOD, SYNC_PERIOD_ALL, SYNC_PERIOD_LABELS, SYNC_PERIODS, cutoff_for
 from ..core.sync_engine import configure_logging
 from ..core.sync_orchestrator import flush_pending_uploads, sync_and_upload
 from .wifi import is_connected_to_unigo
@@ -234,6 +234,11 @@ class App:
         self._sync_button = ttk.Button(self._settings_frame, text="Connect & Sync", command=self._start_sync)
         self._sync_button.pack(fill="x", pady=(0, 8))
 
+        self._sync_status_label = ttk.Label(self._settings_frame, text="Idle", foreground="gray")
+        self._sync_status_label.pack(anchor="w")
+        self._progress = ttk.Progressbar(self._settings_frame, mode="determinate", maximum=1, value=0)
+        self._progress.pack(fill="x", pady=(2, 8))
+
         self._pending_label = ttk.Label(self._settings_frame, text="")
         self._pending_label.pack(anchor="w")
 
@@ -307,6 +312,57 @@ class App:
             self._log_line("Choose a driver before syncing.")
             return
         self._sync_button.config(state="disabled")
+
+        if self._period_var.get() == SYNC_PERIOD_ALL:
+            # "Everything on the device" can mean a long download on a
+            # device that's never been cleared out -- check first and let
+            # the user back out, rather than discover the size of it
+            # partway through (see core.sync_engine.preview_sync).
+            self._set_progress_busy("Checking the device for how much there is to sync...")
+            threading.Thread(target=self._preview_worker, args=(selected,), daemon=True).start()
+        else:
+            self._begin_sync(selected)
+
+    def _preview_worker(self, selected: auth_session.DriverChoice) -> None:
+        from ..core.device_client import DeviceError
+        from ..core.sync_engine import preview_sync
+
+        try:
+            preview = preview_sync(self.config)
+        except DeviceError as exc:
+            self._ui(self._on_sync_error, str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - report, don't crash the app
+            logger.exception("preview failed")
+            self._ui(self._on_sync_error, str(exc))
+            return
+        self._ui(self._on_preview_ready, selected, preview)
+
+    def _on_preview_ready(self, selected: auth_session.DriverChoice, preview) -> None:
+        if preview.new_count == 0:
+            self._reset_progress()
+            self._sync_button.config(state="normal")
+            self._log_line(f"Nothing new to sync -- {preview.total_on_device} session(s) on the device, all already synced.")
+            return
+
+        size_mb = preview.new_bytes / 1_000_000
+        proceed = messagebox.askyesno(
+            "Sync everything on the device?",
+            f"The device has {preview.total_on_device} session(s) in total.\n\n"
+            f"{preview.new_count} of them are new (~{size_mb:.1f} MB) and not yet synced. "
+            "Downloading everything can take a while on a device with a long history.\n\n"
+            "Continue?",
+        )
+        if not proceed:
+            self._reset_progress()
+            self._sync_button.config(state="normal")
+            self._log_line("Sync cancelled.")
+            return
+        self._begin_sync(selected)
+
+    def _begin_sync(self, selected: auth_session.DriverChoice) -> None:
+        self._sync_button.config(state="disabled")
+        self._set_progress_busy(f"Connecting to the UniGo device and syncing for {selected.display_name}...")
         self._log_line(f"Connecting to the UniGo device and syncing for {selected.display_name}...")
         threading.Thread(target=self._sync_worker, args=(selected,), daemon=True).start()
 
@@ -316,6 +372,7 @@ class App:
             outcome = sync_and_upload(
                 self.config, cutoff, selected.profile_id, selected.display_name,
                 uploaded_by_user_id=self.user_id,
+                on_progress=lambda i, t, n: self._ui(self._on_sync_progress, i, t, n),
             )
         except Exception as exc:  # noqa: BLE001 - report, don't crash the app
             logger.exception("sync failed")
@@ -323,13 +380,33 @@ class App:
             return
         self._ui(self._on_sync_done, outcome)
 
+    def _on_sync_progress(self, index: int, total: int, name: str) -> None:
+        if str(self._progress["mode"]) != "determinate":
+            self._progress.stop()
+            self._progress.config(mode="determinate")
+        self._progress.config(maximum=max(total, 1))
+        self._progress["value"] = index
+        self._sync_status_label.config(text=f"Syncing {index} of {total}: {name}")
+
+    def _set_progress_busy(self, status: str) -> None:
+        self._sync_status_label.config(text=status)
+        self._progress.config(mode="indeterminate")
+        self._progress.start(10)
+
+    def _reset_progress(self, status: str = "Idle") -> None:
+        self._progress.stop()
+        self._progress.config(mode="determinate", maximum=1, value=0)
+        self._sync_status_label.config(text=status)
+
     def _on_sync_error(self, message: str) -> None:
         self._sync_button.config(state="normal")
+        self._reset_progress("Failed")
         self._log_line(f"Sync failed: {message}")
 
     def _on_sync_done(self, outcome) -> None:
         self._sync_button.config(state="normal")
         r = outcome.sync_result
+        self._reset_progress(f"Done -- {len(r.new_synced)} new, {len(r.failed)} failed")
         self._log_line(
             f"Sync complete: {len(r.new_synced)} new, {len(r.already_synced)} already synced, "
             f"{len(r.failed)} failed, {len(r.skipped_out_of_period)} outside the selected period."
@@ -365,6 +442,8 @@ class App:
             if self._auto_sync_var.get() and is_connected_to_unigo(self.config.wifi_ssid_prefix):
                 selected = self._selected_driver()
                 if selected is not None:
+                    self._ui(lambda: self._sync_button.config(state="disabled"))
+                    self._ui(self._set_progress_busy, f"UniGo WiFi detected -- auto-syncing for {selected.display_name}...")
                     self._ui(self._log_line, f"UniGo WiFi detected -- auto-syncing for {selected.display_name}...")
                     self._sync_worker(selected)
 
@@ -413,9 +492,9 @@ class App:
 
 
 def main() -> None:
-    global tk, ttk, simpledialog
+    global tk, ttk, simpledialog, messagebox
     import tkinter as tk
-    from tkinter import simpledialog, ttk
+    from tkinter import messagebox, simpledialog, ttk
 
     App().run()
 

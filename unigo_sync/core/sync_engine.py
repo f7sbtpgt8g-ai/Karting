@@ -10,6 +10,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Callable
 
 from .config import SyncConfig
 from .device_client import DeviceClient, DeviceError
@@ -24,6 +25,19 @@ logger = logging.getLogger("unigo_sync.sync_engine")
 # the converted TSV, so it's visually distinct from a manually-exported
 # Analyser TSV sitting in the same folder and never collides with one.
 _OUTPUT_SUFFIX = ".unigo_sync.tsv"
+
+
+@dataclass
+class SyncPreview:
+    """A read-only look at what a sync pass *would* do, without
+    downloading anything -- used to warn before a potentially large
+    "everything on the device" sync (see `preview_sync`)."""
+
+    total_on_device: int = 0
+    in_period: int = 0
+    already_synced: int = 0
+    new_count: int = 0
+    new_bytes: int = 0
 
 
 @dataclass
@@ -66,11 +80,50 @@ def configure_logging(config: SyncConfig) -> None:
     root.addHandler(console_handler)
 
 
+def preview_sync(
+    config: SyncConfig,
+    client: DeviceClient | None = None,
+    state: SyncState | None = None,
+    period_cutoff: datetime | None = None,
+) -> SyncPreview:
+    """Lists what's on the device and reports how much a matching
+    `run_sync` call would actually download, without downloading
+    anything itself -- one `list_sessions()` call plus cheap local
+    `SyncState` lookups. Meant to be shown to the user before a sync that
+    could be large (see `core.period`'s "everything on the device"
+    option) so they can back out first rather than discover the size of
+    it mid-download.
+    """
+    own_state = state is None
+    client = client or DeviceClient(config)
+    state = state or SyncState(config.sync_state_db)
+
+    preview = SyncPreview()
+    try:
+        sessions = client.list_sessions()
+        preview.total_on_device = len(sessions)
+        for entry in sessions:
+            name, size = entry["name"], entry["size"]
+            if not session_in_period(name, period_cutoff):
+                continue
+            preview.in_period += 1
+            if state.is_synced(name, size):
+                preview.already_synced += 1
+            else:
+                preview.new_count += 1
+                preview.new_bytes += size
+    finally:
+        if own_state:
+            state.close()
+    return preview
+
+
 def run_sync(
     config: SyncConfig,
     client: DeviceClient | None = None,
     state: SyncState | None = None,
     period_cutoff: datetime | None = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
 ) -> SyncResult:
     """Run one full sync pass. Safe to call repeatedly (e.g. from a
     background watcher) -- already-synced sessions are skipped cheaply
@@ -82,6 +135,15 @@ def run_sync(
     for why filtering on the filename's embedded date is safe and why an
     unparseable name is kept rather than skipped. None means no filtering
     (sync everything the device has).
+
+    `on_progress(index, total, name)`, if given, is called once per
+    in-period session right before it's processed (`index` is 1-based,
+    `total` is how many are in-period in this pass) -- e.g. a GUI's
+    progress bar, so someone watching a long "everything on the device"
+    sync can see it moving rather than staring at a frozen window. Called
+    synchronously on whatever thread `run_sync` itself runs on; a caller
+    updating actual UI from a background thread needs to marshal it back
+    onto the UI thread itself.
     """
     own_state = state is None
     client = client or DeviceClient(config)
@@ -98,11 +160,18 @@ def run_sync(
 
         logger.info("device reports %d session(s)", len(sessions))
 
+        in_period = []
         for entry in sessions:
+            if session_in_period(entry["name"], period_cutoff):
+                in_period.append(entry)
+            else:
+                result.skipped_out_of_period.append(entry["name"])
+
+        total = len(in_period)
+        for index, entry in enumerate(in_period, start=1):
             name, size = entry["name"], entry["size"]
-            if not session_in_period(name, period_cutoff):
-                result.skipped_out_of_period.append(name)
-                continue
+            if on_progress is not None:
+                on_progress(index, total, name)
             if state.is_synced(name, size):
                 result.already_synced.append(name)
                 continue
