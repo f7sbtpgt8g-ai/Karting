@@ -11,4 +11,6 @@ scipy>=1.10
 pyyaml>=6.0
 psycopg2-binary>=2.9
 pyarrow>=14
-requests>=2.31
+# No HTTP library: Storage and GoTrue are both reached through urllib from
+# the standard library (worker/storage_client.py, telemetry/auth.py). One
+# less package in an image that holds the service-role key.
