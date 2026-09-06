@@ -59,3 +59,32 @@ export const POWERZONE_RPM: [number, number] = [9000, 12500];
 export function hasPowerzone(category: string | null | undefined): boolean {
   return Boolean(category && category.startsWith("Rotax"));
 }
+
+/**
+ * A colour per engine *family*, not per class.
+ *
+ * Sixteen classes would need sixteen hues, and no palette has sixteen a
+ * reader can actually tell apart -- the label would be coloured without
+ * being readable, which is worse than plain text. Five families is a number
+ * that works, and it is also the distinction that matters when scanning a
+ * list: "which of these are Rotax" is the question, "Rotax Junior vs Rotax
+ * Senior" is already written next to it.
+ *
+ * The hues are the ones `SECTOR_COLORS` in trackMap.ts already uses, chosen
+ * to stay distinguishable to a colour-blind reader on this background. Reused
+ * rather than picked afresh so the app has one categorical palette.
+ */
+const ENGINE_FAMILY_COLOR: Array<[string, string]> = [
+  ["Rotax", "#3987e5"],
+  ["X30", "#d95926"],
+  ["IAME", "#199e70"],
+  ["OK", "#9085e9"],
+  ["KZ", "#d55181"],
+];
+
+/** The colour for an engine class, or null when it is unset or unknown. */
+export function engineColor(category: string | null | undefined): string | null {
+  if (!category) return null;
+  const match = ENGINE_FAMILY_COLOR.find(([family]) => category.startsWith(family));
+  return match ? match[1] : null;
+}

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 
+from telemetry.analysis_store import analyze_and_store
 from telemetry.parser import load_sessions
 from telemetry.storage import SessionLibrary, SupabaseSessionLibrary, session_library_from_env
 
@@ -51,6 +52,13 @@ def ingest_one(
             session, driver=driver, track_name=track, session_type=session_type,
             driver_profile_id=driver_profile_id, uploaded_by_user_id=uploaded_by_user_id,
         )
+        # Same step the worker runs behind a web upload. Without it a synced
+        # session is stored but has no `session_analysis` row, and every page
+        # built on one -- Lap Analysis, Engine Analysis -- tells its owner to
+        # go and run a backfill script. Best-effort inside, so a session that
+        # saved but would not analyse is not reported as a failed ingest and
+        # retried into a duplicate.
+        analyze_and_store(db_id, session)
         logger.info("ingested %s session %s -> library id %s", path, session.session_id, db_id)
         ingested += 1
     return ingested

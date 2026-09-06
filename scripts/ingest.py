@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from telemetry.analysis_store import analyze_and_store
 from telemetry.parser import load_sessions
 from telemetry.storage import session_library_from_env
 
@@ -48,6 +49,9 @@ def main(argv=None) -> int:
             db_id = library.save_session(
                 session, driver=args.driver, track_name=args.track, session_type=args.session_type
             )
+            # Analysed here too, so a session is equally usable whichever
+            # way it arrived. No-ops against SQLite, where nothing reads it.
+            analyze_and_store(db_id, session)
             print(f"Ingested {path} session {session.session_id} -> library id {db_id}")
             total += 1
 
