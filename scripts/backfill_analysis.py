@@ -140,6 +140,41 @@ def _clear_blob(session_db_id: int) -> None:
         conn.commit()
 
 
+def _table_sizes() -> dict[str, int]:
+    with pgdb.connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT pg_total_relation_size('session_cache') AS session_cache,
+                      pg_database_size(current_database())    AS database"""
+        )
+        return dict(cur.fetchone())
+
+
+def _vacuum_full() -> None:
+    """Hand the space back to the filesystem.
+
+    Clearing a blob only marks the row version dead; the file on disk stays
+    the same size until the table is rewritten, so without this the whole
+    exercise frees nothing measurable.
+
+    Run here rather than in the Supabase SQL editor because that editor
+    wraps statements in a transaction and VACUUM cannot run inside one
+    ("ERROR: 25001: VACUUM cannot run inside a transaction block"). psycopg2
+    opens a transaction on the first statement too, hence autocommit.
+
+    Takes an ACCESS EXCLUSIVE lock and needs free disk roughly equal to the
+    table's current size, so it belongs in a quiet moment rather than
+    mid-upload.
+    """
+    with pgdb.connect() as conn:
+        conn.autocommit = True
+        cur = conn.cursor()
+        # The multi-MB Parquet values live in this table's TOAST table, not
+        # its heap; VACUUM FULL rewrites both, which is what actually
+        # returns the megabytes.
+        cur.execute("VACUUM (FULL, ANALYZE) session_cache")
+
+
 def main(argv: list[str] | None = None, store=None) -> int:
     """`store` is injectable so the tests can drive --archive against a
     local directory instead of a Supabase project."""
@@ -150,6 +185,11 @@ def main(argv: list[str] | None = None, store=None) -> int:
         "--clear-blobs",
         action="store_true",
         help="NULL the blob for sessions whose raw data is recoverable (implies --analyze)",
+    )
+    parser.add_argument(
+        "--vacuum",
+        action="store_true",
+        help="VACUUM FULL session_cache afterwards, returning freed space to the filesystem",
     )
     parser.add_argument("--limit", type=int, default=None, help="process at most N sessions")
     parser.add_argument("--session-id", type=int, default=None, help="just this one session")
@@ -228,8 +268,22 @@ def main(argv: list[str] | None = None, store=None) -> int:
             f"\nanalyzed {analyzed} · archived {archived} · blobs cleared {cleared} "
             f"({reclaimed / 1e6:.1f} MB) · skipped {skipped} · failed {failed}"
         )
-        if cleared:
-            print("Run VACUUM FULL session_cache to return the space to the filesystem.")
+        if cleared and not args.vacuum:
+            print("Re-run with --vacuum to return the freed space to the filesystem.")
+
+    if args.vacuum:
+        before = _table_sizes()
+        print(
+            f"\nvacuuming session_cache ({before['session_cache'] / 1e6:.1f} MB, "
+            f"database {before['database'] / 1e6:.1f} MB)..."
+        )
+        _vacuum_full()
+        after = _table_sizes()
+        print(
+            f"session_cache {before['session_cache'] / 1e6:.1f} -> "
+            f"{after['session_cache'] / 1e6:.1f} MB · database "
+            f"{before['database'] / 1e6:.1f} -> {after['database'] / 1e6:.1f} MB"
+        )
     return 0
 
 
