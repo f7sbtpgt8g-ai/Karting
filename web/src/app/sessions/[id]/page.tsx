@@ -124,7 +124,7 @@ export default async function SessionPage({ params }: { params: { id: string } }
   if (!analysis) {
     return (
       <main className="mx-auto max-w-6xl px-6 py-8">
-        <AppHeader email={appUser?.email} current="/" />
+        <AppHeader email={appUser?.email} current="/" isAdmin={appUser?.is_admin} />
         <h1 className="mb-2 text-lg font-semibold">Not analysed yet</h1>
         <p className="text-sm text-muted">
           This session is stored, but its analysis has not been computed. New uploads are analysed
@@ -168,7 +168,7 @@ export default async function SessionPage({ params }: { params: { id: string } }
 
   return (
     <main className="mx-auto max-w-[1400px] px-6 py-8">
-      <AppHeader email={appUser?.email} current="/" />
+      <AppHeader email={appUser?.email} current="/" isAdmin={appUser?.is_admin} />
       <LapAnalysis
         sessionId={sessionId}
         driverName={session.driver_profiles?.display_name ?? session.track_name ?? "Session"}

@@ -102,7 +102,7 @@ export default async function EnginePage({ params }: { params: { id: string } })
 
   return (
     <main className="mx-auto max-w-[1400px] px-6 py-8">
-      <AppHeader email={appUser?.email} current="/" />
+      <AppHeader email={appUser?.email} current="/" isAdmin={appUser?.is_admin} />
       <EngineAnalysis
         sessionId={sessionId}
         driverName={session.driver_profiles?.display_name ?? "Session"}

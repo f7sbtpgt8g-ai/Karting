@@ -111,7 +111,7 @@ export default async function HomePage() {
 
   return (
     <main className="mx-auto max-w-6xl px-6 py-8">
-      <AppHeader email={appUser.email} current="/" />
+      <AppHeader email={appUser.email} current="/" isAdmin={appUser?.is_admin} />
 
       {sessions.length === 0 ? (
         <div className="rounded border border-hairline bg-surface p-8 text-center">

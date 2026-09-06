@@ -35,7 +35,7 @@ export default async function UploadPage() {
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-12">
-      <AppHeader email={appUser.email} current="/upload" />
+      <AppHeader email={appUser.email} current="/upload" isAdmin={appUser?.is_admin} />
 
       <h2 className="mb-2 text-lg font-semibold">Upload a session</h2>
       <p className="mb-8 text-sm text-muted">

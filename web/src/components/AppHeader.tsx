@@ -8,11 +8,22 @@ import SignOutButton from "./SignOutButton";
  * set still lives in Streamlit, and a link to a route that 404s reads as a
  * broken app rather than an unfinished one.
  */
-export default function AppHeader({ email, current }: { email?: string | null; current: string }) {
+export default function AppHeader({
+  email,
+  current,
+  isAdmin,
+}: {
+  email?: string | null;
+  current: string;
+  isAdmin?: boolean;
+}) {
   const links = [
     { href: "/", label: "Home" },
     { href: "/upload", label: "Upload" },
     { href: "/settings", label: "Settings" },
+    // Shown only to admins: the page refuses everyone else anyway, and a
+    // link that always says "no" is just noise in the nav.
+    ...(isAdmin ? [{ href: "/admin", label: "Admin" }] : []),
   ];
 
   return (
