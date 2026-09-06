@@ -953,6 +953,20 @@ to fail *before* any session exists. RLS lets a client insert only
 all, so a client cannot mark an unparsed file complete or stall the queue
 (`tests/test_rls_policies.py`, "the upload queue").
 
+### What exists in `web/` so far
+
+`/` (Home -- sessions grouped by driver, filters, sortable columns, inline
+edit of type/track/conditions/visibility, delete), `/upload`, and
+`/login`. Everything else on the parity list is still Streamlit's, and the
+nav deliberately links only to routes that exist.
+
+Home's scope is narrower than what RLS permits, on purpose: your own
+sessions, plus the whole roster's if you manage or admin a team. RLS would
+also let you read every publicly shared session in the app, but showing
+those here would bury your own -- they belong on Leaderboards and Shared
+Laps. The policies are what make it safe; the scoping is what makes it
+useful.
+
 ### Who a signed-in user *is*
 
 Supabase Auth identifies people by UUID; this schema keys everything off an

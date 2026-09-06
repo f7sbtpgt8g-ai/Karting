@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { createClient, getAppUser } from "@/lib/supabase/server";
+import AppHeader from "@/components/AppHeader";
 import SignOutButton from "@/components/SignOutButton";
 import UploadForm from "./UploadForm";
 
@@ -56,16 +57,7 @@ export default async function UploadPage() {
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-12">
-      <header className="mb-10 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="h-4 w-3.5 -skew-x-12 bg-accent" />
-          <h1 className="text-sm font-bold uppercase tracking-[0.14em]">Karting Telemetry</h1>
-        </div>
-        <div className="flex items-center gap-4 text-sm text-muted">
-          <span className="font-mono text-xs">{appUser.email}</span>
-          <SignOutButton />
-        </div>
-      </header>
+      <AppHeader email={appUser.email} current="/upload" />
 
       <h2 className="mb-2 text-lg font-semibold">Upload a session</h2>
       <p className="mb-8 text-sm text-muted">
