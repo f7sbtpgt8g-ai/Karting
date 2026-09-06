@@ -435,6 +435,20 @@ class AccountLibrary:
             conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id))
             conn.commit()
 
+    def set_external_auth_id(self, user_id: int, external_auth_id: str) -> None:
+        """Link a local account to its managed-auth (Supabase) identity.
+
+        Load-bearing for Row Level Security, not bookkeeping: every policy
+        resolves the caller through `current_app_user_id()`, which maps
+        `auth.uid()` to this column. An account without it authenticates
+        fine through the Python app (which connects on a role that bypasses
+        RLS) while every direct PostgREST query it makes returns nothing --
+        a silent, confusing failure. See `auth.SupabaseAuthProvider._mirror_user`.
+        """
+        with self._connect() as conn:
+            conn.execute("UPDATE users SET external_auth_id = ? WHERE id = ?", (external_auth_id, user_id))
+            conn.commit()
+
     def set_guardian_consent(self, user_id: int, status: str, guardian_email: str | None = None) -> None:
         with self._connect() as conn:
             if guardian_email is not None:
@@ -1293,6 +1307,16 @@ class SupabaseAccountLibrary:
         with pgdb.connect() as conn:
             cur = conn.cursor()
             cur.execute("UPDATE users SET password_hash = %s WHERE id = %s", (password_hash, user_id))
+            conn.commit()
+
+    def set_external_auth_id(self, user_id: int, external_auth_id: str) -> None:
+        """See `AccountLibrary.set_external_auth_id` -- this column is what
+        every RLS policy resolves the caller through."""
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE users SET external_auth_id = %s WHERE id = %s", (external_auth_id, user_id)
+            )
             conn.commit()
 
     def set_guardian_consent(self, user_id: int, status: str, guardian_email: str | None = None) -> None:

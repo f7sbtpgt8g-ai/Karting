@@ -135,7 +135,10 @@ telemetry/            Parsing + analysis core (independently testable, no UI cod
   mailer.py                                Email templates + pluggable delivery
   storage.py                     Session library (history + corner/pattern trend logging) -- SQLite locally, Postgres/Supabase when configured
   db.py                           Shared Postgres/Supabase connection helper (see "Migrating the database layer to Supabase")
+  analysis.py                     UI-agnostic façade: analyze_session()/analyze_lap()/compare_laps()
 app.py                Streamlit UI (thin orchestration layer over telemetry/*)
+web/                  Next.js frontend (Vercel) -- see "Splitting the app" below
+worker/               Ingest worker: claims upload_batches, parses, persists
 scripts/ingest.py     CLI ingestion into the session library (automation-friendly)
 tests/                pytest suite + synthetic fixture generator
 config/               Example kart setup YAML
@@ -829,11 +832,58 @@ includes a first-pass set of RLS policies for that case (mirroring
 `session_cache`, `corner_metrics`, `pattern_instances`, `driver_profiles`,
 and `users`), keyed off a `current_app_user_id()` helper that maps
 Supabase Auth's `auth.uid()` to this schema's internal integer user id via
-`users.external_auth_id`. Treat these as a reasonable starting point to
-review against your actual auth setup before relying on them, not an
-audited security boundary -- in the same spirit as this codebase's other
-"policy decision, revisit with real review" constants (see
-`PARENTAL_CONSENT_AGE`, the invite-email gate).
+`users.external_auth_id`.
+
+**Those policies are now tested rather than assumed.** They shipped with
+0001 but had never gated a single real request -- the Python app connects on
+a role that bypasses RLS, and no account had an `external_auth_id`, so
+`current_app_user_id()` always returned NULL and every policy silently
+evaluated to "deny". `tests/test_rls_policies.py` exercises each one as a
+real client would (the `authenticated` role, a real JWT claim, Supabase's own
+default grants reproduced by `supabase/testing/simulate_supabase.sql`), and
+found two classes of problem that `0002_rls_hardening.sql` fixes:
+
+- **Six tables had no RLS at all** -- including `auth_tokens`
+  (password-reset and email-verification tokens), `auth_sessions` (live
+  login tokens) and `email_outbox` (every message body, reset links
+  included). In Supabase that is not "closed by default": `anon` and
+  `authenticated` hold default grants on every table in `public`, and RLS
+  only ever *restricts* an existing grant. Any authenticated user could
+  have read every other account's reset token the moment a browser client
+  pointed at PostgREST. Those three are now RLS-enabled with no policy at
+  all (deny-all) plus an explicit `REVOKE`, so they are reachable only from
+  the service-role connection the app and worker use.
+- **Every policy was `FOR SELECT`**, so no client write was possible --
+  a driver could not change their own session's visibility, nor ask to join
+  a team. 0002 adds exactly the writes the app performs and no more;
+  creating sessions stays server-side, and a client cannot grant itself
+  active team membership.
+
+Two operational notes:
+
+- **Migrations are append-only from here.** Editing `0001_init.sql` in place
+  is what broke logins once already (commit `82e3dba`). Apply the whole
+  `supabase/migrations/` directory in filename order -- re-running `0001`
+  *alone* would revert 0002's hardened `sessions_select`.
+- **Verify against your own project**, since the tests can only prove this
+  against a simulated one: `python scripts/verify_supabase_auth.py` signs a
+  throwaway account in through real GoTrue, confirms the local `users` row
+  gets linked, and checks RLS answers correctly for that account's own JWT.
+
+### Moving accounts from local auth to Supabase Auth
+
+`SupabaseAuthProvider` populates `users.external_auth_id`, and that column is
+the only thing connecting a Supabase identity to this schema. An account
+without it authenticates perfectly happily -- the Python app bypasses RLS, so
+nothing complains -- while every policy keeps resolving it to NULL and denies
+it everything. The symptom is a client that is definitely signed in and
+definitely sees no data, with no error raised anywhere.
+
+So the first Supabase sign-in of an account created under the old local
+provider **backfills** that column (`_mirror_user`), which is what carries
+existing accounts across. A second Supabase identity claiming an
+already-linked account is refused rather than resolved (`AuthMirrorConflict`)
+-- either outcome would silently hand one driver's telemetry to another.
 
 ### What's intentionally not covered here
 
@@ -847,6 +897,132 @@ single-machine/offline install. Deploying with `SUPABASE_DB_URL` set is the
 recommended production setup; running with neither `SUPABASE_DB_URL`/
 `DATABASE_URL` nor `SUPABASE_URL`/`SUPABASE_ANON_KEY` set still works
 exactly as it did before, fully offline.
+
+## Splitting the app: Next.js frontend + background worker
+
+The Streamlit app is one process that does everything: it serves the UI,
+parses uploads, and talks to the database. That works, and it still runs --
+but it puts an ~18-second CPU-bound parse inside a web request, which is the
+one thing a serverless frontend host cannot do. The migration splits it into
+three pieces that each do one job:
+
+| Piece | Where | Holds |
+| --- | --- | --- |
+| `web/` -- Next.js app | Vercel | Supabase URL + publishable/anon key (both client-safe) |
+| Supabase project | unchanged | schema, auth, storage |
+| `worker/` -- ingest worker | any container host (Railway/Render/Fly) | **service-role key** |
+
+The split is drawn along the service-role key: the frontend never has one,
+so every query it makes runs as `authenticated` and is bounded by the RLS
+policies in `supabase/migrations/0002_rls_hardening.sql`. The worker has
+one, bypasses RLS, and is never reachable from a browser.
+
+### The upload path
+
+Streamlit could hand `st.file_uploader`'s bytes straight to
+`load_sessions()`. Once the frontend is serverless that handoff has to be
+explicit, because a real Unipro export is tens of MB and ~900k rows -- past
+typical serverless request-body limits, and far past a sensible function
+timeout:
+
+```
+browser                     Vercel                Storage            worker
+   |  POST /api/uploads/presign  |                   |                  |
+   |---------------------------->| createSignedUploadUrl                |
+   |<-- path + token ------------|                   |                  |
+   |  PUT the file (direct) ----------------------->|                  |
+   |  POST /api/uploads/confirm  |                   |                  |
+   |---------------------------->| INSERT upload_batches (pending)      |
+   |  GET  /api/uploads/confirm?batchId=  (poll)     |                  |
+   |                             |          claim (FOR UPDATE SKIP LOCKED)
+   |                             |                   |<-- download -----|
+   |                             |            parse + write sessions/laps
+   |<-- complete | failed -------|                   |     mark complete|
+```
+
+The file never passes through a Vercel function. The server, not the
+client, chooses the storage path (`<auth uid>/<uuid>.tsv`), and the storage
+policy independently enforces that the first path segment is the caller's
+own uid -- so a client that invents its own path still cannot write into
+someone else's folder.
+
+`upload_batches` is a queue table, not a status field on `sessions`: one
+uploaded file legitimately produces 11 sessions, and it has to be possible
+to fail *before* any session exists. RLS lets a client insert only
+`status='pending'` rows owned by itself and gives it no `UPDATE` policy at
+all, so a client cannot mark an unparsed file complete or stall the queue
+(`tests/test_rls_policies.py`, "the upload queue").
+
+### Who a signed-in user *is*
+
+Supabase Auth identifies people by UUID; this schema keys everything off an
+integer `users.id` and bridges the two with `users.external_auth_id`. Every
+RLS policy resolves the caller through that bridge
+(`current_app_user_id()`), so an account without it authenticates perfectly
+and is invisible to every policy -- signed in, sees nothing, no error
+anywhere.
+
+That mirroring used to live in Python (`telemetry/auth.py`), which meant it
+only happened if the signup went through Streamlit.
+`0004_mirror_auth_users.sql` moves it to a trigger on `auth.users`, so it
+happens for every client -- Streamlit, the Next.js app, and the iOS app
+later -- and creates the driver profile alongside it. Registration details
+(display name, date of birth, guardian email) travel as GoTrue user
+metadata, which is also how the under-16 guardian-consent rule keeps
+applying to signups that never touch Python.
+
+Accounts created *before* that trigger existed still have a NULL
+`external_auth_id`. They repair themselves on their next Streamlit sign-in
+(`_mirror_user` backfills the column), or can be linked in one go with
+`supabase/manual/0004_backfill_external_auth_id.sql`. That script is
+deliberately **not** a migration: it is the one part of this work that
+writes to rows already in the live app's tables, so it is opt-in and shows
+you what it would do before it does it.
+
+### Running it locally
+
+```bash
+# Frontend
+cd web && cp .env.local.example .env.local   # fill in URL + publishable key
+npm install && npm run dev                   # http://localhost:3000
+
+# Worker (needs the service-role key; never put it in web/.env.local)
+export SUPABASE_DB_URL=postgresql://...      # pooled connection string
+export SUPABASE_URL=https://<project>.supabase.co
+export SUPABASE_SERVICE_ROLE_KEY=sb_secret_...
+python -m worker.main                        # or WORKER_ONCE=1 to drain and exit
+```
+
+The worker deploys from `worker/Dockerfile`, built with the **repo root** as
+context (it needs `telemetry/` as well as `worker/`). Its dependency list is
+deliberately separate from the app's `requirements.txt` and contains neither
+streamlit nor plotly -- so if a UI import ever creeps back into
+`telemetry/`, the image stops building rather than the worker quietly
+shipping a Streamlit install.
+
+### Deploying
+
+1. **Supabase** -- apply `supabase/migrations/`. `0003` adds the queue table
+   and the private `telemetry` bucket; `0004` adds the signup trigger. Both
+   are additive. The one thing that touches existing rows,
+   `supabase/manual/0004_backfill_external_auth_id.sql`, is deliberately
+   *not* in `migrations/` -- run it by hand once you've looked at what it
+   would link.
+2. **Vercel** -- import the repo with **Root Directory `web`**, and set
+   `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Nothing
+   else. If you ever find yourself adding a service-role key here, stop:
+   that key bypasses RLS and `NEXT_PUBLIC_`-prefixed variables are inlined
+   into the browser bundle.
+3. **Worker** -- deploy `worker/Dockerfile` with the repo root as build
+   context, and set `SUPABASE_DB_URL` (pooled), `SUPABASE_URL` and
+   `SUPABASE_SERVICE_ROLE_KEY`. One instance is enough; claiming is atomic
+   (`FOR UPDATE SKIP LOCKED`) so a second one needs no coordination.
+
+`tests/test_worker.py` runs the whole loop against a local Postgres using
+the bundled 82 MB export, and asserts the 11 real sessions land with their
+laps and cached dataframes -- including the failure paths (missing object,
+wrong file, one bad batch not stopping the queue) and re-upload
+deduplication.
 
 ## Known limitations / not yet implemented
 

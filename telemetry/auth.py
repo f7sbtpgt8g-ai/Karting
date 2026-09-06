@@ -105,6 +105,13 @@ class AuthResult:
     token: str | None = None
 
 
+class AuthMirrorConflict(ValueError):
+    """A managed-auth identity tried to adopt a local account that is
+    already linked to a different one. Refused rather than resolved: either
+    outcome silently hands one person's telemetry to another, so this
+    surfaces as an error the caller turns into a failed sign-in."""
+
+
 def validate_password(password: str) -> str | None:
     """Returns an error message, or None if acceptable. Length only, per
     current NIST guidance -- composition rules ("must contain a symbol")
@@ -467,13 +474,38 @@ class SupabaseAuthProvider(AuthProvider):
     def _mirror_user(self, external_id: str, email: str, **profile) -> int:
         """Find or create the local `users` row for a Supabase account.
         Registration also creates the linked driver profile, matching the
-        local provider's behavior so the common case stays invisible."""
+        local provider's behavior so the common case stays invisible.
+
+        The account matched by email is **backfilled** with `external_id`
+        rather than just returned. That line is the whole reason this method
+        needs care: an account carrying a NULL `external_auth_id` signs in
+        through Supabase perfectly happily -- the Python app connects on a
+        role that bypasses RLS, so nothing complains -- while every policy,
+        which resolves the caller via `current_app_user_id()` ->
+        `external_auth_id`, keeps seeing NULL and denies it everything. The
+        symptom is a browser client that is definitely logged in and
+        definitely sees no data, with no error anywhere. It is also exactly
+        the state every existing local-auth account is in today, so the
+        backfill is what carries them across to Supabase Auth.
+        """
         existing = self.accounts.get_user_by_external_auth_id(external_id)
         if existing is not None:
             return int(existing["id"])
+
         by_email = self.accounts.get_user_by_email(email)
         if by_email is not None:
+            linked = by_email.get("external_auth_id")
+            if linked and linked != external_id:
+                # This local account already belongs to a different Supabase
+                # identity. Adopting it would hand one account's telemetry to
+                # another, so refuse rather than guess.
+                raise AuthMirrorConflict(
+                    "That email address is already linked to a different account."
+                )
+            if not linked:
+                self.accounts.set_external_auth_id(int(by_email["id"]), external_id)
             return int(by_email["id"])
+
         user_id, _ = self.accounts.register_user_with_profile(
             email, external_auth_id=external_id, **profile
         )
@@ -490,17 +522,39 @@ class SupabaseAuthProvider(AuthProvider):
             return AuthResult(
                 False, error="A parent or guardian's email address is required to register under 16.",
             )
-        status, body = self._post("/signup", {"email": email, "password": password})
+        # Registration details go to GoTrue as user metadata, not just into
+        # the local mirror afterwards, because the mirror row is now created
+        # by a trigger on `auth.users`
+        # (supabase/migrations/0004_mirror_auth_users.sql) -- it fires inside
+        # the signup and reads exactly these keys. Sending them here is what
+        # keeps the guardian-consent rule applying to every client rather
+        # than only to the ones that happen to be this Python app.
+        metadata = {
+            key: value
+            for key, value in (
+                ("display_name", display_name),
+                ("date_of_birth", date_of_birth),
+                ("guardian_email", guardian_email),
+            )
+            if value
+        }
+        payload = {"email": email, "password": password}
+        if metadata:
+            payload["data"] = metadata
+        status, body = self._post("/signup", payload)
         if status not in (200, 201):
             return AuthResult(False, error=self._error_text(body, "Registration failed."))
 
         external_id = (body.get("user") or body).get("id")
         if not external_id:
             return AuthResult(False, error="Authentication service returned an unexpected response.")
-        user_id = self._mirror_user(
-            external_id, email, display_name=display_name,
-            date_of_birth=date_of_birth, guardian_email=guardian_email,
-        )
+        try:
+            user_id = self._mirror_user(
+                external_id, email, display_name=display_name,
+                date_of_birth=date_of_birth, guardian_email=guardian_email,
+            )
+        except AuthMirrorConflict as exc:
+            return AuthResult(False, error=str(exc))
         # Supabase sends its own verification email; no local token.
         return AuthResult(True, user_id=user_id)
 
@@ -513,7 +567,10 @@ class SupabaseAuthProvider(AuthProvider):
         external_id = user.get("id")
         if not external_id:
             return AuthResult(False, error="Authentication service returned an unexpected response.")
-        user_id = self._mirror_user(external_id, email)
+        try:
+            user_id = self._mirror_user(external_id, email)
+        except AuthMirrorConflict as exc:
+            return AuthResult(False, error=str(exc))
         # Supabase is the source of truth for verification state.
         if user.get("email_confirmed_at") or user.get("confirmed_at"):
             self.accounts.set_email_verified(user_id, True)

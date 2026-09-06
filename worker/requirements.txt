@@ -1,0 +1,14 @@
+# The worker's dependencies -- deliberately not the app's requirements.txt.
+#
+# It runs the same `telemetry/` package the Streamlit app does, but none of
+# the UI: no streamlit, no plotly. Keeping the lists apart is what makes the
+# "the analysis module is UI-agnostic" claim checkable rather than assumed --
+# if an `import streamlit` ever creeps back into telemetry/, this image stops
+# building.
+pandas>=2.0
+numpy>=1.24
+scipy>=1.10
+pyyaml>=6.0
+psycopg2-binary>=2.9
+pyarrow>=14
+requests>=2.31

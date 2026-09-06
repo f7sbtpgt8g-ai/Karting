@@ -23,6 +23,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 import streamlit.components.v1 as components
 
+from telemetry.analysis import SessionAnalysis, analyze_lap, analyze_session, compute_clean_laps
 from telemetry.comparison import corner_comparison_across_sessions, cross_session_delta_trace, session_progression
 from telemetry.corner_causal import corner_points_for_lap, three_zone_times
 from telemetry.corner_engine import calibrate_thresholds, compare_corners
@@ -61,14 +62,7 @@ from telemetry.mailer import (
 )
 from telemetry.narrative import rank_headline_findings
 from telemetry.weather import CONDITION_OPTIONS, fetch_track_conditions
-from telemetry.laps import (
-    clean_lap_table,
-    detect_anomalous_laps,
-    flag_outlier_laps,
-    lap_table,
-    lap_time_with_deltas,
-    summarize_laps,
-)
+from telemetry.laps import clean_lap_table, lap_time_with_deltas
 from telemetry.metrics import (
     add_braking_throttle_estimates,
     braking_zones,
@@ -80,7 +74,6 @@ from telemetry.metrics import (
 )
 from telemetry.parser import Session, load_sessions
 from telemetry.setup_config import KartSetup
-from telemetry.setup_engine import all_setup_suggestions
 from telemetry.simulation import (
     build_accel_rpm_curve,
     estimate_lap_time_delta,
@@ -413,13 +406,28 @@ def session_cache_key(session: Session) -> tuple:
     return (session.source_file, session.session_id, len(session.df))
 
 
-def compute_clean_laps(session: Session) -> pd.DataFrame:
-    """Not cached: cheap (ms-scale, verified on a 117k-row real session) to
-    recompute from the already-parsed dataframe, so it's not worth the
-    complexity of a cache-key scheme here."""
-    laps = flag_outlier_laps(lap_table(session))
-    laps = detect_anomalous_laps(laps)
-    return laps
+# `compute_clean_laps` now lives in telemetry/analysis.py (imported above)
+# alongside the rest of the orchestration this file used to own -- it is
+# still uncached for the same reason it always was: cheap (ms-scale,
+# verified on a 117k-row real session) to recompute from the already-parsed
+# dataframe, so a cache-key scheme isn't worth the complexity.
+
+
+@st.cache_resource(show_spinner=False)
+def analyze_session_cached(_session: Session, _key: tuple, setup: KartSetup) -> SessionAnalysis:
+    """`telemetry.analysis.analyze_session`, memoized per (session, setup).
+
+    Strictly less work than what this file did before the extraction: only
+    the setup suggestions were cached then, so corner segmentation,
+    theoretical-best and the best lap's GPS trace were all recomputed on
+    every single Streamlit rerun -- i.e. on every widget interaction, on
+    every page. Now the whole session-level analysis is cached together.
+
+    `_key` (see `session_cache_key`) stands in for the session's identity;
+    `setup` is hashed by Streamlit so editing a kart setup correctly
+    invalidates the suggestions derived from it.
+    """
+    return analyze_session(_session, setup)
 
 
 def session_best_lap_times(sessions_with_labels: list[tuple[str, Session]]) -> dict[str, float | None]:
@@ -440,18 +448,6 @@ def fastest_lap_session_label(session_best_times: dict[str, float | None]) -> st
     manually hunt for their best session out of a multi-session file."""
     valid = {label: t for label, t in session_best_times.items() if t is not None}
     return min(valid, key=valid.get) if valid else None
-
-
-@st.cache_resource(show_spinner=False)
-def compute_setup_suggestions_cached(
-    _session: Session, _key: tuple, clean_lap_numbers: tuple, segments: pd.DataFrame, setup: KartSetup
-) -> list[dict]:
-    """The setup correlation engine loops over every clean lap several times
-    over (~1s on a real 18-lap session) -- caching it means other widget
-    interactions elsewhere in the app don't re-run it every time, since
-    that's a full-script rerun in Streamlit regardless of which view is open.
-    """
-    return all_setup_suggestions(_session, list(clean_lap_numbers), segments, setup)
 
 
 @st.cache_resource(show_spinner=False)
@@ -4780,20 +4776,24 @@ if all_sessions:
     # is selected -- unlike before this page loaded sessions from a live
     # upload widget each rerun, uploading is now the only thing that saves.
 
-    laps = compute_clean_laps(active_session)
-    clean = clean_lap_table(laps)
+    # One call, replacing the sequence this file used to inline here -- see
+    # telemetry/analysis.py. The variables unpacked below keep their old
+    # names because ~20 page functions read them as globals.
+    _analysis = analyze_session_cached(active_session, session_cache_key(active_session), setup)
+    laps = _analysis.laps
+    clean = _analysis.clean
 
-    if clean.empty:
-        data_error_message = "No clean laps found in this session after outlier filtering -- check the file."
+    if not _analysis.ok:
+        data_error_message = _analysis.data_error
     else:
-        clean_lap_numbers = clean["lap_number"].tolist()
-        best_lap = int(clean.loc[clean["lap_time_s"].idxmin(), "lap_number"])
+        clean_lap_numbers = _analysis.clean_lap_numbers
+        best_lap = _analysis.best_lap
 
         # Shared by every lap-number selectbox/multiselect for the active
         # session (top bar and every page) so a lap is never just a bare
         # number -- picking "which lap" without seeing its time meant
         # opening it first to find out.
-        lap_time_by_number = dict(zip(laps["lap_number"], laps["lap_time_s"]))
+        lap_time_by_number = _analysis.lap_time_by_number
 
         if show_session_controls:
             analyzed_lap = sb2.selectbox(
@@ -4808,21 +4808,23 @@ if all_sessions:
         else:
             analyzed_lap = best_lap
 
-        segments = build_reference_segments(active_session, best_lap)
-        theoretical_best_s, best_segment_times = theoretical_best_lap(active_session, clean_lap_numbers, segments)
-        lap_segment_times = segment_times_for_lap(active_session, analyzed_lap, segments)
-        summary = summarize_laps(laps)
-        setup_suggestions = compute_setup_suggestions_cached(
-            active_session, session_cache_key(active_session), tuple(clean_lap_numbers), segments, setup
-        )
+        segments = _analysis.segments
+        theoretical_best_s = _analysis.theoretical_best_s
+        best_segment_times = _analysis.best_segment_times
+        summary = _analysis.summary
+        setup_suggestions = _analysis.setup_suggestions
 
-        # Some real exports populate Latitude/Longitude/Heading on every GPS
-        # fix but never the GPS Speed channel itself -- lap_gps_trace falls
-        # back to deriving speed from GPS Distance in that case (see
-        # corners.py), which is worth disclosing since it affects every
-        # speed-based chart/metric in this app.
-        _best_lap_trace = lap_gps_trace(active_session, best_lap)
-        speed_is_estimated = bool(_best_lap_trace["gps_speed_is_estimate"].any()) if not _best_lap_trace.empty else False
+        # `speed_is_estimated` covers the real exports that populate
+        # Latitude/Longitude/Heading on every GPS fix but never the GPS
+        # Speed channel itself -- lap_gps_trace derives speed from GPS
+        # Distance in that case (see corners.py), which is worth disclosing
+        # since it affects every speed-based chart/metric in this app.
+        _best_lap_trace = _analysis.best_lap_trace
+        speed_is_estimated = _analysis.speed_is_estimated
+
+        # Depends on `analyzed_lap`, which comes from the widget above, so
+        # it can't be part of the session-level (cached) analysis.
+        lap_segment_times = analyze_lap(active_session, _analysis, analyzed_lap).segment_times
 
         data_ready = True
 
