@@ -294,3 +294,68 @@ def test_a_batch_abandoned_mid_parse_is_requeued(worker_db, uploader):
         )
     assert requeue_stale_processing(older_than_minutes=30) == 1
     assert claim_next_batch() is not None, "requeued batch should be claimable again"
+
+
+def test_ingest_persists_the_analysis_for_every_session(worker_db, uploader, store):
+    """Traces and sector times have to exist as rows by the time the upload
+    reports complete -- the frontend cannot read them out of the Parquet
+    blob, and the blob is meant to be reclaimable afterwards."""
+    from worker.main import run_once
+
+    batch_id = _enqueue(worker_db, uploader)
+    assert run_once(store) == 1
+
+    with worker_db.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM session_analysis a JOIN sessions s ON s.id = a.session_db_id "
+            "WHERE s.upload_batch_id=%s",
+            (batch_id,),
+        )
+        assert cur.fetchone()[0] == 11, "not every session was analyzed at ingest"
+
+        cur.execute(
+            "SELECT count(*) FROM lap_traces t JOIN sessions s ON s.id = t.session_db_id "
+            "WHERE s.upload_batch_id=%s",
+            (batch_id,),
+        )
+        assert cur.fetchone()[0] > 0, "no lap traces stored"
+
+        cur.execute(
+            "SELECT count(*) FROM lap_segment_times l JOIN sessions s ON s.id = l.session_db_id "
+            "WHERE s.upload_batch_id=%s",
+            (batch_id,),
+        )
+        assert cur.fetchone()[0] > 0, "no per-lap segment times stored"
+
+        # A session with no clean laps is a legitimate outcome, and gets a
+        # row carrying its reason rather than no row at all -- otherwise
+        # "not analyzed yet" and "nothing to analyze" look identical.
+        cur.execute(
+            "SELECT count(*) FROM session_analysis a JOIN sessions s ON s.id = a.session_db_id "
+            "WHERE s.upload_batch_id=%s AND a.best_lap IS NOT NULL",
+            (batch_id,),
+        )
+        assert cur.fetchone()[0] > 0
+
+
+def test_a_session_that_cannot_be_analyzed_still_ingests(worker_db, uploader, store, monkeypatch):
+    """Analysis is derived data a backfill can recompute. Failing the whole
+    upload -- and telling the driver their file was bad -- because corner
+    segmentation raised would be the wrong trade."""
+    import worker.processor as processor
+    from worker.main import run_once
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("corner segmentation exploded")
+
+    monkeypatch.setattr(processor, "analyze_session", boom)
+
+    batch_id = _enqueue(worker_db, uploader)
+    assert run_once(store) == 1
+
+    status, error, created = _status(worker_db, batch_id)
+    assert status == "complete", f"a failed analysis failed the whole batch: {error}"
+    assert created == 11
+    with worker_db.cursor() as cur:
+        cur.execute("SELECT count(*) FROM laps")
+        assert cur.fetchone()[0] > 0, "laps should still be stored"

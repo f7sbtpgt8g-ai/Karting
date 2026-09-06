@@ -56,6 +56,27 @@ class SupabaseStorage:
                 raise ObjectNotFound(f"No object at {self.bucket}/{path}") from exc
             raise
 
+    def upload(self, path: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+        """Write an object, replacing any existing one at that path.
+
+        Used to archive a session's Parquet out of the database before its
+        BYTEA blob is cleared (scripts/backfill_analysis.py). Upsert rather
+        than create, so re-running an interrupted archive is safe.
+        """
+        request = urllib.request.Request(
+            f"{self.url}/storage/v1/object/{self.bucket}/{path.lstrip('/')}",
+            data=data,
+            method="POST",
+            headers={
+                "apikey": self.service_key,
+                "Authorization": f"Bearer {self.service_key}",
+                "Content-Type": content_type,
+                "x-upsert": "true",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout_s):
+            return
+
     @classmethod
     def from_env(cls) -> "SupabaseStorage":
         url = os.environ.get("SUPABASE_URL")
@@ -82,3 +103,9 @@ class LocalDirectoryStore:
             raise ObjectNotFound(f"No file at {full}")
         with open(full, "rb") as handle:
             return handle.read()
+
+    def upload(self, path: str, data: bytes, content_type: str = "application/octet-stream") -> None:
+        full = os.path.join(self.root, path.lstrip("/"))
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "wb") as handle:
+            handle.write(data)

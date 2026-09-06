@@ -14,6 +14,8 @@ import os
 import tempfile
 
 from telemetry.accounts import ATTRIBUTION_CONFIRMED, account_library_from_env
+from telemetry.analysis import analyze_session
+from telemetry.analysis_store import store_session_analysis
 from telemetry.parser import load_sessions
 from telemetry.storage import session_library_from_env
 
@@ -94,6 +96,7 @@ def process_batch(batch: UploadBatch, store: ObjectStore) -> int:
                 **batch.conditions,
             )
             _link_to_batch(session_db_id, batch.id)
+            _store_analysis(session_db_id, session)
 
             if batch.driver_profile_id is not None:
                 accounts.attribute_session(
@@ -113,6 +116,23 @@ def _driver_display_name(accounts, batch: UploadBatch) -> str | None:
         return None
     profile = accounts.get_profile(batch.driver_profile_id)
     return profile["display_name"] if profile else None
+
+
+def _store_analysis(session_db_id: int, session) -> None:
+    """Run the analysis and persist it as rows, so the frontend can query
+    traces and sector times without reading the Parquet blob.
+
+    Best-effort, and deliberately so: the session, its laps and its raw
+    dataframe are already saved by this point, and analysis is derived data
+    that a backfill can recompute at any time. Failing the whole batch --
+    and telling the uploader their file didn't work -- because one session's
+    corner segmentation raised would be the wrong trade.
+    """
+    try:
+        analysis = analyze_session(session)
+        store_session_analysis(session_db_id, session, analysis)
+    except Exception:  # noqa: BLE001
+        logger.warning("could not store analysis for session %s", session_db_id, exc_info=True)
 
 
 def _link_to_batch(session_db_id: int, batch_id: int) -> None:

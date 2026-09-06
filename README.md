@@ -967,6 +967,59 @@ those here would bury your own -- they belong on Leaderboards and Shared
 Laps. The policies are what make it safe; the scoping is what makes it
 useful.
 
+### Getting the analysis out of the blob
+
+`session_cache.dataframe_parquet` holds each session's whole parsed
+dataframe as BYTEA -- 3-5 MB per session, ~46 MB per track day, against a
+500 MB database. That caused two problems which turned out to be one
+problem: roughly ten track days fills the database, and **Lap Analysis
+could not be built on the Next.js frontend at all**, because every trace,
+delta and sector time it draws lived inside that blob and a browser cannot
+read Parquet out of BYTEA. `laps` held only lap number, lap time and the
+outlier flag.
+
+`0005_analysis_tables.sql` writes the analysis down as ordinary rows:
+
+| Table | Holds |
+| --- | --- |
+| `session_analysis` | one row per session: best lap, theoretical best, the segment map, per-segment session bests, setup suggestions, lap summary |
+| `lap_segment_times` | every lap's time in every segment |
+| `lap_traces` | every lap's distance / elapsed-time / speed / RPM / lat / lon / braking / power-on, as parallel `float8[]` arrays |
+
+Traces are arrays per lap, not a row per sample: a lap is ~310 GPS fixes,
+so row-per-sample would be ~6k rows per session and tens of millions across
+a season, always read back whole and in order.
+
+`lap_traces.lap_time_s` is elapsed time *within* the lap rather than a
+precomputed delta against some fixed reference. That is what lets the delta
+trace between any two laps be derived by interpolating both onto a common
+distance grid -- so changing the reference lap needs no new data.
+
+Measured on the bundled export: **~335 KB of rows against a 5.4 MB blob,
+6%** -- and `tests/test_analysis_store.py` fails if that ratio ever stops
+being a clear win. The worker now analyzes at ingest, so new uploads land
+with all of this already stored (best-effort: a session whose analysis
+raises is still saved, since a backfill can recompute it).
+
+### Reclaiming the space
+
+```bash
+python -m scripts.backfill_analysis                              # report only
+python -m scripts.backfill_analysis --analyze                    # write the rows
+python -m scripts.backfill_analysis --analyze --archive --clear-blobs
+```
+
+`--clear-blobs` refuses to touch a session whose raw data it cannot account
+for. Raw data survives two ways: an uploaded session's original TSV is
+still in the `telemetry` bucket (uploads are never deleted), so it can be
+re-parsed; and `--archive` copies any other session's Parquet to Storage,
+recording it in `session_cache.raw_storage_path`. A session with neither is
+skipped and reported -- clearing it would make the derived rows the only
+copy, and re-running with a corrected corner threshold (which
+`telemetry/corners.py` documents as likely) would then be impossible.
+
+Run `VACUUM FULL session_cache` afterwards to hand the space back.
+
 ### Who a signed-in user *is*
 
 Supabase Auth identifies people by UUID; this schema keys everything off an

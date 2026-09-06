@@ -500,3 +500,70 @@ def test_a_driver_cannot_attribute_a_session_to_someone_elses_profile(world):
         (world["carol_profile"], world["session_shared"]),
     )
     assert not allowed, "a driver attributed their session to another driver as confirmed"
+
+
+# ------------------------------------------------- the stored analysis (0005)
+#
+# Traces, sector times and session analysis are what Lap Analysis reads, and
+# they exist so the raw blob can be cleared. They must inherit their
+# session's visibility exactly -- and must not be writable by a client, or
+# anyone could forge the numbers a coaching page is built from.
+
+
+@pytest.fixture(scope="module")
+def analysis_rows(db, world):
+    with db.cursor() as cur:
+        for tier in ("private", "team", "shared"):
+            session_id = world[f"session_{tier}"]
+            cur.execute(
+                "INSERT INTO session_analysis (session_db_id, best_lap, theoretical_best_s) "
+                "VALUES (%s, 1, 30.0) ON CONFLICT (session_db_id) DO NOTHING",
+                (session_id,),
+            )
+            cur.execute(
+                "INSERT INTO lap_segment_times "
+                "(session_db_id, lap_number, segment_index, segment_label, segment_kind, time_s) "
+                "VALUES (%s,1,0,'Corner 1','corner',5.0) ON CONFLICT DO NOTHING",
+                (session_id,),
+            )
+            cur.execute(
+                "INSERT INTO lap_traces (session_db_id, lap_number, sample_count, "
+                "distance_m, lap_time_s) VALUES (%s,1,2,'{0,10}','{0,1}') "
+                "ON CONFLICT DO NOTHING",
+                (session_id,),
+            )
+    db.commit()
+    return world
+
+
+@pytest.mark.parametrize("table", ["session_analysis", "lap_segment_times", "lap_traces"])
+def test_stored_analysis_inherits_session_visibility(analysis_rows, table):
+    world = analysis_rows
+    owner = {r[0] for r in world["alice"].query(f"SELECT session_db_id FROM {table}")}
+    teammate = {r[0] for r in world["bob"].query(f"SELECT session_db_id FROM {table}")}
+    outsider = {r[0] for r in world["carol"].query(f"SELECT session_db_id FROM {table}")}
+
+    assert owner == {world["session_private"], world["session_team"], world["session_shared"]}
+    assert teammate == {world["session_team"], world["session_shared"]}, (
+        f"{table} leaked a private session to a teammate"
+    )
+    assert outsider == {world["session_shared"]}, f"{table} leaked to an outsider"
+    assert world["anon"].query(f"SELECT session_db_id FROM {table}") == []
+
+
+@pytest.mark.parametrize("table", ["session_analysis", "lap_segment_times", "lap_traces"])
+def test_a_client_cannot_write_stored_analysis(analysis_rows, table):
+    """Only the worker writes these, on the service-role connection. A
+    client that could edit them could put any lap time, sector or trace in
+    front of a driver -- including on a leaderboard."""
+    world = analysis_rows
+    allowed, _ = world["alice"].write(
+        f"UPDATE {table} SET session_db_id = session_db_id WHERE session_db_id = %s",
+        (world["session_shared"],),
+    )
+    assert not allowed, f"a client updated {table} on their own session"
+
+    allowed, _ = world["alice"].write(
+        f"DELETE FROM {table} WHERE session_db_id = %s", (world["session_shared"],)
+    )
+    assert not allowed, f"a client deleted from {table}"
