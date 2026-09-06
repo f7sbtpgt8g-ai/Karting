@@ -105,6 +105,12 @@ It's a small `tkinter` window (no extra GUI dependency) with two screens:
    Clicking **Connect & Sync** downloads and decodes whatever's new and
    in the chosen period into the staging folder (`output_dir`) exactly as
    before, then tries to upload it into the sessions database right away.
+   Anything it can't upload is queued and retried automatically every 15
+   seconds; the pending count sits under the progress bar, along with the
+   reason it isn't draining when there is one (an unreachable database, or
+   the error from the last upload attempt), and an **Upload now** button
+   retries on demand rather than waiting for the next poll. The same
+   reason is written to `log_path` -- once per change, not once per poll.
    A status line and progress bar track the download/decode phase live
    (`core.sync_engine.run_sync`'s `on_progress` callback -- "Syncing 3 of
    12: <session name>"), so a long sync gives visible feedback instead of
