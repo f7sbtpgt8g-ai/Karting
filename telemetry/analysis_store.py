@@ -31,6 +31,7 @@ import pandas as pd
 from . import db as pgdb
 from .analysis import SessionAnalysis, analyze_lap
 from .metrics import add_engine_temperature
+from .setup_engine import DEFAULT_PEAK_POWER_RPM_BAND
 from .parser import Session
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,13 @@ _TRACE_COLUMNS = {
 # lap in this RPM window" is computed for every lap regardless -- the class
 # decides whether the number is worth showing, not whether it can be
 # measured.
-POWERZONE_RPM = (9000.0, 12000.0)
+#
+# Imported rather than restated: `setup_engine` reads the same band to decide
+# whether the kart is over- or under-geared, and two copies drifting apart
+# would have the engine page and the setup suggestions quietly disagreeing
+# about where the engine makes power. Which is exactly what happened -- this
+# was 9,000-12,000 here and 9,000-12,500 there.
+POWERZONE_RPM = tuple(float(v) for v in DEFAULT_PEAK_POWER_RPM_BAND)
 _BOOL_COLUMNS = {"braking": "braking_estimate", "power_on": "power_on_estimate"}
 
 

@@ -49,10 +49,15 @@ ALTER TABLE lap_traces ADD COLUMN IF NOT EXISTS max_temp_c DOUBLE PRECISION;
 ALTER TABLE lap_traces ADD COLUMN IF NOT EXISTS min_temp_c DOUBLE PRECISION;
 ALTER TABLE lap_traces ADD COLUMN IF NOT EXISTS avg_temp_c DOUBLE PRECISION;
 
--- Share of the lap spent between 9,000 and 12,000 rpm -- the Rotax
--- peak-power band. Stored for every lap regardless of class, because it is
--- just "time in an RPM window" and the class only decides whether the number
--- means anything; the page shows it for Rotax and hides it otherwise.
+-- Share of the lap spent in the Rotax peak-power band. The band itself is
+-- `DEFAULT_PEAK_POWER_RPM_BAND` in telemetry/setup_engine.py -- deliberately
+-- not repeated here, because the gearing suggestions read the same band and
+-- two copies drifting apart would have them disagreeing about where the
+-- engine makes power.
+--
+-- Stored for every lap regardless of class, because it is just "time in an
+-- RPM window" and the class only decides whether the number means anything;
+-- the page shows it for Rotax and hides it otherwise.
 --
 -- Measured over samples rather than over time. The RPM channel logs at a
 -- steady rate, so the two agree closely, and a time-weighted version would

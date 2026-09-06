@@ -427,3 +427,20 @@ def test_the_g_traces_the_charts_plot_are_stored(analyzed):
     assert lat == pytest.approx(trace["GPS Lateral Acceleration"].tolist(), nan_ok=True)
     assert lon == pytest.approx(trace["GPS Longitudinal Acceleration"].tolist(), nan_ok=True)
     assert temp == pytest.approx(trace["Temperature 1"].tolist(), nan_ok=True)
+
+
+def test_the_powerzone_band_is_the_setup_engines_band():
+    """One definition, not two.
+
+    `setup_engine` reads this band to decide whether the kart is over- or
+    under-geared; the engine page reads it to say how much of the lap was
+    spent making power. Two copies drifting apart would have those two
+    quietly disagreeing about where the engine makes power -- which is
+    exactly what happened, at 9,000-12,000 in one and 9,000-12,500 in the
+    other, and neither was wrong on its own terms.
+    """
+    from telemetry.analysis_store import POWERZONE_RPM
+    from telemetry.setup_engine import DEFAULT_PEAK_POWER_RPM_BAND
+
+    assert tuple(POWERZONE_RPM) == tuple(float(v) for v in DEFAULT_PEAK_POWER_RPM_BAND)
+    assert POWERZONE_RPM == (9000.0, 12500.0)
