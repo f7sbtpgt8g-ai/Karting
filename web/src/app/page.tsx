@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { createClient, getAppUser } from "@/lib/supabase/server";
+import { createClient, resolveAppUser } from "@/lib/supabase/server";
+import AccountNotLinked from "@/components/AccountNotLinked";
 import AppHeader from "@/components/AppHeader";
 import HomeClient, { type SessionRow } from "./HomeClient";
 
@@ -18,18 +19,9 @@ export const dynamic = "force-dynamic";
  * what makes it useful.
  */
 export default async function HomePage() {
-  const appUser = await getAppUser();
-  if (!appUser) {
-    return (
-      <main className="mx-auto max-w-2xl px-6 py-16">
-        <h1 className="mb-3 text-lg font-semibold">Account not linked yet</h1>
-        <p className="text-sm text-muted">
-          You are signed in, but this account has no driver record in the telemetry database.
-          This usually means the address is already registered to a different account.
-        </p>
-      </main>
-    );
-  }
+  const resolution = await resolveAppUser();
+  if (resolution.status !== "ok") return <AccountNotLinked resolution={resolution} />;
+  const appUser = resolution.user;
 
   const supabase = await createClient();
 

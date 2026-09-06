@@ -1,5 +1,5 @@
-import Link from "next/link";
-import { getAppUser } from "@/lib/supabase/server";
+import { resolveAppUser } from "@/lib/supabase/server";
+import AccountNotLinked from "@/components/AccountNotLinked";
 import AppHeader from "@/components/AppHeader";
 import SettingsForm from "./SettingsForm";
 
@@ -15,18 +15,9 @@ export const dynamic = "force-dynamic";
  * against a different RPM band.
  */
 export default async function SettingsPage() {
-  const appUser = await getAppUser();
-
-  if (!appUser) {
-    return (
-      <main className="mx-auto max-w-2xl px-6 py-16">
-        <h1 className="mb-3 text-lg font-semibold">Account not linked yet</h1>
-        <Link href="/" className="text-sm text-muted underline">
-          Back to Home
-        </Link>
-      </main>
-    );
-  }
+  const resolution = await resolveAppUser();
+  if (resolution.status !== "ok") return <AccountNotLinked resolution={resolution} />;
+  const appUser = resolution.user;
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-8">
