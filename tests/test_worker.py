@@ -342,13 +342,16 @@ def test_a_session_that_cannot_be_analyzed_still_ingests(worker_db, uploader, st
     """Analysis is derived data a backfill can recompute. Failing the whole
     upload -- and telling the driver their file was bad -- because corner
     segmentation raised would be the wrong trade."""
-    import worker.processor as processor
+    import telemetry.analysis_store as analysis_store
     from worker.main import run_once
 
     def boom(*args, **kwargs):
         raise RuntimeError("corner segmentation exploded")
 
-    monkeypatch.setattr(processor, "analyze_session", boom)
+    # Patched where the analysis is now run -- `analyze_and_store` is shared
+    # by the worker, the sync bridge and scripts/ingest.py, so all three get
+    # the same "a session that will not analyse still ingests" behaviour.
+    monkeypatch.setattr(analysis_store, "analyze_session", boom)
 
     batch_id = _enqueue(worker_db, uploader)
     assert run_once(store) == 1

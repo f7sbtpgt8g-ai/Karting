@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 from . import db as pgdb
-from .analysis import SessionAnalysis, analyze_lap
+from .analysis import SessionAnalysis, analyze_lap, analyze_session
 from .metrics import add_engine_temperature
 from .setup_engine import DEFAULT_PEAK_POWER_RPM_BAND
 from .parser import Session
@@ -286,6 +286,35 @@ def store_session_analysis(
         len(trace_rows),
     )
     return True
+
+
+def analyze_and_store(session_db_id: int, session: Session) -> bool:
+    """Analyse a session that has just been saved, and persist the result.
+
+    Every ingestion path calls this: the worker behind the web upload, the
+    unigo_sync bridge, and `scripts/ingest.py`. It lives here rather than in
+    any one of them because it was in only one of them -- the worker -- and
+    so sessions arriving from the sync tool were stored complete but
+    unanalysed, and every page built on `session_analysis` told their owner
+    to go and run a backfill script.
+
+    Best-effort by design, and that matters more here than it looks: the
+    session, its laps and its dataframe are all saved by the time this runs,
+    so a failure costs derived data a backfill can recompute at any time.
+    Raising instead would fail the upload batch (telling the uploader their
+    file didn't work when it did) or, in the sync tool, push an
+    already-ingested session back onto the retry queue to be ingested a
+    second time.
+
+    Returns True when analysis was written -- False both when there is no
+    Postgres configured (the offline SQLite case, where Streamlit reads the
+    dataframe directly and needs none of this) and when analysis failed.
+    """
+    try:
+        return store_session_analysis(session_db_id, session, analyze_session(session))
+    except Exception:  # noqa: BLE001 - derived data; see the docstring
+        logger.warning("could not store analysis for session %s", session_db_id, exc_info=True)
+        return False
 
 
 def has_stored_analysis(session_db_id: int, version: int = ANALYSIS_VERSION) -> bool:

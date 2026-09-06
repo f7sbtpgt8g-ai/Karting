@@ -75,6 +75,7 @@ export default async function HomePage() {
     best_lap_s: number | null;
     track_condition: string | null;
     kart_class: string | null;
+    engine_category: string | null;
     visibility: string;
     driver_profile_id: number | null;
     driver_profiles: { display_name: string } | null;
@@ -86,7 +87,7 @@ export default async function HomePage() {
           .from("sessions")
           .select(
             "id, track_name, session_type, start_date, start_time, n_laps, best_lap_s, " +
-              "track_condition, kart_class, visibility, driver_profile_id, " +
+              "track_condition, kart_class, engine_category, visibility, driver_profile_id, " +
               "driver_profiles(display_name)",
           )
           .in("driver_profile_id", scopeIds)
@@ -104,6 +105,7 @@ export default async function HomePage() {
     bestLapS: row.best_lap_s,
     trackCondition: row.track_condition,
     kartClass: row.kart_class,
+    engineCategory: row.engine_category,
     visibility: row.visibility,
     driverProfileId: row.driver_profile_id,
     driverName: row.driver_profiles?.display_name ?? "Unknown driver",
