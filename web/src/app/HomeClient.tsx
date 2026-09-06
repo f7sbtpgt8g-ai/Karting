@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { lapTime, parseSessionDate, sessionDate, sessionTime } from "@/lib/format";
@@ -335,9 +336,13 @@ export default function HomeClient({
                     return (
                       <div key={row.id}>
                         <div className="grid grid-cols-[2fr_1fr_0.7fr_0.7fr_1.4fr_1.4fr_1fr_1.6fr] items-center gap-2 border-b border-hairline/60 py-1 hover:bg-rowalt">
-                          <span className="truncate text-xs font-bold">
+                          <Link
+                            href={`/sessions/${row.id}`}
+                            className="truncate text-xs font-bold hover:text-accent hover:underline"
+                            title="Open lap analysis"
+                          >
                             {row.trackName || "Unknown track"}
-                          </span>
+                          </Link>
                           <span className="text-[11px] text-muted">{sessionDate(row.startDate)}</span>
                           <span className="text-[11px] text-muted">{sessionTime(row.startTime)}</span>
                           <span className="text-[11px] text-muted">{row.nLaps ?? 0} laps</span>
@@ -377,6 +382,12 @@ export default function HomeClient({
                           </span>
 
                           <span className="flex justify-end gap-3 text-[11px]">
+                            <Link
+                              href={`/sessions/${row.id}`}
+                              className="text-muted underline hover:text-ink"
+                            >
+                              Open
+                            </Link>
                             {isMine ? (
                               <>
                                 <button
@@ -390,9 +401,7 @@ export default function HomeClient({
                                   {VISIBILITY_LABELS[row.visibility] ?? row.visibility}
                                 </span>
                               </>
-                            ) : (
-                              <span className="text-muted">—</span>
-                            )}
+                            ) : null}
                           </span>
                         </div>
 

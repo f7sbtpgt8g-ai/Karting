@@ -97,6 +97,11 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
 
+      # The sector partitioning is real logic with real failure modes (a
+      # split landing mid-corner, an empty sector reading as a 0.000 split),
+      # and none of it is exercised by a typecheck or a build.
+      - run: npm test
+
       # Placeholders: these are only read at build time to inline into the
       # bundle, and nothing in the build talks to Supabase. Using the real
       # values here would put them in logs for no benefit.
