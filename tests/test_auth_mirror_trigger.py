@@ -247,3 +247,29 @@ def test_a_phone_only_signup_is_left_alone(db):
         cur.execute("INSERT INTO auth.users (id, email) VALUES (gen_random_uuid(), NULL)")
         cur.execute("SELECT count(*) FROM users")
         assert cur.fetchone()[0] == 0
+
+
+def test_the_engine_class_is_carried_through_signup(db):
+    """Registration asks for it, so the trigger has to read it -- otherwise
+    the answer is collected, stored in the identity's metadata, and silently
+    dropped."""
+    _signup(db, "racer@example.com", {"display_name": "Racer", "engine_category": "Rotax Junior"})
+    assert _user(db, "racer@example.com")["engine_category"] == "Rotax Junior"
+
+
+def test_signing_up_without_a_class_is_fine(db):
+    _signup(db, "undecided@example.com", {"display_name": "Undecided"})
+    assert _user(db, "undecided@example.com")["engine_category"] is None
+
+
+def test_adopting_an_account_does_not_overwrite_its_class(db):
+    """A Streamlit-era account crossing over keeps whatever it already has:
+    the driver set that deliberately, and the signup form's blank default
+    must not wipe it."""
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO users (email, password_hash, email_verified, engine_category, created_at) "
+            "VALUES ('veteran@example.com','hash',TRUE,'Rotax DD2',now())"
+        )
+    _signup(db, "veteran@example.com", {"engine_category": ""})
+    assert _user(db, "veteran@example.com")["engine_category"] == "Rotax DD2"

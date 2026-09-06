@@ -1,11 +1,14 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { sessionDate, sessionTime } from "@/lib/format";
 import type { TracePoint } from "@/lib/trackMap";
 import TrackMap from "./TrackMap";
+import { sectorColor } from "@/lib/trackMap";
+import LapCharts from "./LapCharts";
+import type { LapTrace } from "@/lib/lapCharts";
 import {
   DEFAULT_SECTORS,
   MAX_SECTORS,
@@ -81,6 +84,8 @@ export default function LapAnalysis({
   const [sectorCount, setSectorCount] = useState(DEFAULT_SECTORS);
   const [compared, setCompared] = useState<Set<number>>(new Set());
   const [showExcluded, setShowExcluded] = useState(false);
+  const [traces, setTraces] = useState<LapTrace[]>([]);
+  const [referenceLap, setReferenceLap] = useState<number | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -163,6 +168,63 @@ export default function LapAnalysis({
     );
   }
 
+  // Trace arrays are fetched only for the laps actually selected. Loading
+  // every lap's six arrays up front would be ~400 KB to render a table that
+  // needs none of it.
+  const selectedKey = [...compared].sort((a, b) => a - b).join(",");
+  useEffect(() => {
+    const wanted = selectedKey ? selectedKey.split(",").map(Number) : [];
+    if (wanted.length === 0) {
+      setTraces([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data, error: traceError } = await createClient()
+        .from("lap_traces")
+        .select("lap_number, distance_m, lap_time_s, speed_kmh, rpm, lateral_g, longitudinal_g")
+        .eq("session_db_id", sessionId)
+        .in("lap_number", wanted)
+        .order("lap_number");
+      if (cancelled) return;
+      if (traceError) {
+        setError(traceError.message);
+        return;
+      }
+      setTraces(
+        (data ?? []).map((row) => ({
+          lapNumber: row.lap_number as number,
+          distanceM: (row.distance_m as number[]) ?? [],
+          lapTimeS: (row.lap_time_s as number[]) ?? [],
+          speedKmh: (row.speed_kmh as (number | null)[]) ?? [],
+          rpm: (row.rpm as (number | null)[]) ?? [],
+          lateralG: (row.lateral_g as (number | null)[]) ?? [],
+          longitudinalG: (row.longitudinal_g as (number | null)[]) ?? [],
+        })),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedKey, sessionId]);
+
+  // Default the delta reference to the quickest selected lap -- comparing
+  // against your own best is the question being asked most of the time.
+  useEffect(() => {
+    if (traces.length === 0) {
+      setReferenceLap(null);
+      return;
+    }
+    setReferenceLap((current) => {
+      if (current !== null && traces.some((t) => t.lapNumber === current)) return current;
+      const quickest = traces
+        .map((t) => rows.find((r) => r.lapNumber === t.lapNumber))
+        .filter((r): r is LapRow => r != null && r.lapTimeS !== null)
+        .sort((a, b) => (a.lapTimeS as number) - (b.lapTimeS as number))[0];
+      return quickest?.lapNumber ?? traces[0].lapNumber;
+    });
+  }, [traces, rows]);
+
   function toggleCompared(lapNumber: number) {
     setCompared((current) => {
       const next = new Set(current);
@@ -175,7 +237,7 @@ export default function LapAnalysis({
   if (dataError) {
     return (
       <div>
-        <Header {...{ driverName, trackName, startDate, startTime, kartClass, trackCondition }} />
+        <Header {...{ sessionId, driverName, trackName, startDate, startTime, kartClass, trackCondition }} />
         <p className="rounded border border-hairline bg-surface p-6 text-sm text-muted">
           {dataError}
         </p>
@@ -187,7 +249,7 @@ export default function LapAnalysis({
 
   return (
     <div>
-      <Header {...{ driverName, trackName, startDate, startTime, kartClass, trackCondition }} />
+      <Header {...{ sessionId, driverName, trackName, startDate, startTime, kartClass, trackCondition }} />
 
       <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <Card label="Best lap" tone="ink">
@@ -304,7 +366,16 @@ export default function LapAnalysis({
             <span className="label">Lap</span>
             <span className="label text-right">Time</span>
             {sectors.map((sector) => (
-              <span key={sector.index} className="label text-right" title={`${Math.round(sector.startM)}–${Math.round(sector.endM)} m`}>
+              // Centred over its column, and in the colour that stretch of
+              // tarmac is drawn in on the track map beside it -- so "S3" in
+              // the table and the green stretch on the map are visibly the
+              // same thing without having to count.
+              <span
+                key={sector.index}
+                className="label text-center"
+                style={{ color: sectorColor(sector.index) }}
+                title={`${Math.round(sector.startM)}–${Math.round(sector.endM)} m`}
+              >
                 S{sector.index + 1}
               </span>
             ))}
@@ -327,8 +398,16 @@ export default function LapAnalysis({
                 {splitClock(best)}
               </span>
             ))}
-            <span className="text-right text-[11px] text-muted">
-              {stats.gain !== null ? `${stats.gain.toFixed(3)}s` : ""}
+            {/* The theoretical best is by definition at or under the best
+                actual lap, so this delta is negative or zero -- shown in the
+                gain colour, in the same mono face as the splits it is read
+                against. */}
+            <span
+              className={`text-right font-mono text-xs ${
+                stats.gain !== null && stats.gain < 0 ? "text-gain" : "text-muted"
+              }`}
+            >
+              {stats.gain !== null ? deltaText(stats.gain) : ""}
             </span>
             <span />
           </div>
@@ -413,11 +492,17 @@ export default function LapAnalysis({
           >
             Clear
           </button>
-          <span className="ml-auto text-xs text-muted">
-            The comparison charts land here next.
-          </span>
         </div>
       )}
+
+      <div className="mt-6">
+        <LapCharts
+          traces={traces}
+          sectors={sectors}
+          referenceLap={referenceLap}
+          onReferenceChange={setReferenceLap}
+        />
+      </div>
     </div>
   );
 }
@@ -556,6 +641,7 @@ function Card({
 }
 
 function Header({
+  sessionId,
   driverName,
   trackName,
   startDate,
@@ -563,6 +649,7 @@ function Header({
   kartClass,
   trackCondition,
 }: {
+  sessionId: number;
   driverName: string;
   trackName: string | null;
   startDate: string | null;
@@ -587,9 +674,18 @@ function Header({
           {badge}
         </span>
       ))}
-      <Link href="/" className="ml-auto text-sm text-muted underline hover:text-ink">
-        All sessions
-      </Link>
+      <div className="ml-auto flex items-center gap-3 text-sm">
+        <span className="border-b-2 border-accent pb-0.5 font-semibold">Lap analysis</span>
+        <Link
+          href={`/sessions/${sessionId}/engine`}
+          className="text-muted underline hover:text-ink"
+        >
+          Engine analysis
+        </Link>
+        <Link href="/" className="text-muted underline hover:text-ink">
+          All sessions
+        </Link>
+      </div>
     </div>
   );
 }

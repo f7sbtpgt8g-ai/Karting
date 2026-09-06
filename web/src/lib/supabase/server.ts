@@ -65,7 +65,7 @@ export async function getAppUser() {
 
   const { data } = await supabase
     .from("users")
-    .select("id, email, display_name, email_verified")
+    .select("id, email, display_name, email_verified, engine_category")
     .eq("external_auth_id", user.id)
     .maybeSingle();
 

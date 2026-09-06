@@ -12,6 +12,7 @@ export default function AppHeader({ email, current }: { email?: string | null; c
   const links = [
     { href: "/", label: "Home" },
     { href: "/upload", label: "Upload" },
+    { href: "/settings", label: "Settings" },
   ];
 
   return (
