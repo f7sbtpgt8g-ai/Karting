@@ -16,6 +16,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.io as pio
 import yaml
 from plotly.offline import get_plotlyjs
 from plotly.subplots import make_subplots
@@ -89,6 +90,183 @@ from telemetry.simulation import (
 from telemetry.storage import SessionLibrary, session_library_from_env
 
 st.set_page_config(page_title="Karting Telemetry", layout="wide", page_icon="🏎️")
+
+# ---------------------------------------------------------------------------
+# App-wide dark theme -- design_handoff_karting_telemetry/README.md's 1a
+# ("channel-stack, pit-wall dark") token palette and type system, applied to
+# every page (not just Lap Analysis, which additionally rebuilds its own
+# layout to match the mockup's specific content). Two parts:
+#   1. `_inject_global_theme_css()` -- one CSS block, injected once here,
+#      re-skinning Streamlit's own chrome (sidebar, buttons, inputs,
+#      dataframes, metrics, expanders, headings) everywhere.
+#   2. `KARTING_DARK_TEMPLATE` -- a Plotly template matching the same
+#      palette, registered as the default so every chart on every page
+#      (most of which build a plain `go.Figure()`/`make_subplots()` with no
+#      per-page styling) picks up the dark look automatically.
+# This is route 1 from that README ("custom CSS + Plotly... expect the
+# chrome to be approximate; the charts can be exact") applied globally
+# rather than to one page -- a from-scratch bespoke layout for all ~20
+# pages the way Lap Analysis got was judged not worth the risk/time for
+# pages whose own content/interactions aren't changing, versus one shared
+# theme layer that make every page consistently look and feel like the
+# design system.
+# ---------------------------------------------------------------------------
+
+_DA1A = {  # design 1a's dark token palette (README "Design tokens" table)
+    "canvas": "#0b0d0f",
+    "surface": "#0d1114",
+    "surface_raised": "#101417",
+    "row_alt": "#0f1316",
+    "row_selected": "#181e22",
+    "ink": "#eef0f1",
+    "ink2": "#c9cfd4",
+    "ink_muted": "#8c959c",
+    "ink_faint": "#6d767d",
+    "ink_faint2": "#565f66",
+    "hairline": "rgba(255,255,255,.10)",
+    "hairline_strong": "rgba(255,255,255,.14)",
+    "neutral_bar": "#22282c",
+    "neutral_bar2": "#2a3136",
+    "accent": "#ff3b1f",
+    "gain": "#2fd07a",
+    "gain_card": "#3ddb85",
+    "loss": "#ff4a3d",
+    "loss_card": "#ff6a58",
+    "reference": "#b06cff",
+    "theoretical": "#ffd23d",
+}
+
+
+def _inject_global_theme_css() -> None:
+    t = _DA1A
+    st.markdown(
+        f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {{
+    background: {t['canvas']};
+    font-family: 'Archivo', sans-serif;
+    color: {t['ink']};
+}}
+[data-testid="stHeader"] {{ background: transparent; }}
+/* No blanket `* {{ font-family }}` override here on purpose: font-family
+   already inherits from the rule above to every descendant that doesn't
+   set its own, and a blanket override was clobbering Streamlit's Material
+   Symbols icon glyphs (they're rendered as literal text -- "keyboard_
+   double_arrow_left" instead of a chevron -- once their icon font is
+   overridden), breaking icons across the whole app (sidebar collapse
+   arrow, expander chevrons, password visibility toggle, file uploader).
+   The .streamlit/config.toml `font`/`headingFont` keys are the supported,
+   icon-safe way this app sets its base typeface. */
+
+h1, h2, h3, h4, h5, h6, [data-testid="stMarkdownContainer"] h1, [data-testid="stMarkdownContainer"] h2,
+[data-testid="stMarkdownContainer"] h3 {{
+    color: {t['ink']} !important; font-family: 'Archivo', sans-serif; font-weight: 700;
+}}
+[data-testid="stCaptionContainer"], .stCaption {{ color: {t['ink_muted']} !important; }}
+[data-testid="stMarkdownContainer"] p {{ color: {t['ink2']}; }}
+hr {{ border-color: {t['hairline']} !important; }}
+
+/* Sidebar */
+[data-testid="stSidebar"] {{
+    background: {t['surface']}; border-right: 1px solid {t['hairline']};
+}}
+[data-testid="stSidebar"] * {{ color: {t['ink2']}; }}
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {{ color: {t['ink']} !important; }}
+[data-testid="stSidebarNav"] a, [data-testid="stSidebarNavLink"] {{
+    border-radius: 3px; font-family: 'Archivo', sans-serif; font-weight: 500;
+}}
+[data-testid="stSidebarNav"] a[aria-current="page"], [data-testid="stSidebarNavLink"][aria-current="page"] {{
+    background: {t['row_selected']}; box-shadow: inset 2px 0 0 {t['accent']};
+}}
+[data-testid="stSidebarNav"] a:hover {{ background: {t['neutral_bar']}; }}
+
+/* Numbers -- tabular mono everywhere a metric/dataframe cell shows one */
+[data-testid="stMetricValue"], [data-testid="stMetricDelta"], .stDataFrame, [data-testid="stTable"] {{
+    font-family: 'JetBrains Mono', monospace;
+}}
+[data-testid="stMetric"] {{
+    background: {t['surface_raised']}; border: 1px solid {t['hairline']}; border-radius: 5px; padding: 10px 14px;
+}}
+[data-testid="stMetricLabel"] {{ color: {t['ink_faint']} !important; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; font-size: 11px !important; }}
+[data-testid="stMetricValue"] {{ color: {t['ink']} !important; }}
+
+/* Buttons */
+.stButton button, .stDownloadButton button, .stFormSubmitButton button {{
+    background: {t['neutral_bar']}; color: {t['ink']}; border: 1px solid {t['hairline']}; border-radius: 3px;
+    font-family: 'Archivo', sans-serif; font-weight: 600;
+}}
+.stButton button:hover, .stDownloadButton button:hover, .stFormSubmitButton button:hover {{
+    border-color: {t['accent']}; color: {t['ink']};
+}}
+.stButton button[kind="primary"], .stFormSubmitButton button[kind="primary"] {{
+    background: {t['accent']}; color: #17100e; border: none;
+}}
+
+/* Inputs / selects / checkboxes */
+.stTextInput input, .stNumberInput input, .stDateInput input, .stTextArea textarea,
+[data-baseweb="select"] > div, [data-baseweb="input"], [data-testid="stTextInputRootElement"] {{
+    background: {t['surface_raised']} !important; color: {t['ink']} !important; border-color: {t['hairline']} !important;
+}}
+/* The built-in show/hide-password icon button renders with the light theme's
+   own background by default -- without this override it shows as a stray
+   white square over a dark input. */
+[data-testid="stTextInputRootElement"] button {{
+    background: transparent !important; color: {t['ink_muted']} !important;
+}}
+[data-testid="stTextInputRootElement"] [data-testid="stIconMaterial"] {{ color: {t['ink_muted']} !important; }}
+[data-testid="stWidgetLabel"] p {{ color: {t['ink_faint']} !important; font-size: 12px; font-weight: 600; }}
+
+/* Containers: expander, tabs, dataframe/table chrome, alerts */
+[data-testid="stExpander"], [data-testid="stDataFrame"], [data-testid="stTable"] {{
+    background: {t['surface_raised']}; border: 1px solid {t['hairline']} !important; border-radius: 5px;
+}}
+[data-testid="stTabs"] [data-baseweb="tab"] {{ color: {t['ink_muted']}; font-weight: 600; }}
+[data-testid="stTabs"] [aria-selected="true"] {{ color: {t['ink']}; box-shadow: inset 0 -2px 0 {t['accent']}; }}
+div[data-testid="stAlertContainer"] {{ border-radius: 5px; }}
+[data-testid="stSuccess"] {{ background: rgba(47,208,122,.12); }}
+[data-testid="stError"] {{ background: rgba(255,74,61,.12); }}
+[data-testid="stWarning"] {{ background: rgba(255,210,61,.10); }}
+[data-testid="stInfo"] {{ background: rgba(176,108,255,.10); }}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+# A Plotly template mirroring the same tokens, registered as the default so
+# every existing `go.Figure()`/`make_subplots()` across every page (most of
+# which apply no per-figure styling of their own) renders dark/tokenized
+# automatically -- the single highest-leverage move for making "every
+# chart in the app" match design 1a without hand-restyling each one.
+KARTING_DARK_TEMPLATE = go.layout.Template(
+    layout=go.Layout(
+        paper_bgcolor=_DA1A["surface"],
+        plot_bgcolor=_DA1A["surface"],
+        font=dict(family="Archivo, sans-serif", size=12, color=_DA1A["ink2"]),
+        title=dict(font=dict(color=_DA1A["ink"])),
+        colorway=[
+            _DA1A["accent"], _DA1A["reference"], _DA1A["gain"], _DA1A["theoretical"],
+            "#4d7cff", _DA1A["loss"], _DA1A["ink_muted"], "#8c564b",
+        ],
+        xaxis=dict(
+            gridcolor=_DA1A["hairline"], zerolinecolor=_DA1A["hairline"], linecolor=_DA1A["hairline_strong"],
+            tickfont=dict(color=_DA1A["ink_muted"]), title=dict(font=dict(color=_DA1A["ink_faint"])),
+        ),
+        yaxis=dict(
+            gridcolor=_DA1A["hairline"], zerolinecolor=_DA1A["hairline"], linecolor=_DA1A["hairline_strong"],
+            tickfont=dict(color=_DA1A["ink_muted"]), title=dict(font=dict(color=_DA1A["ink_faint"])),
+        ),
+        legend=dict(font=dict(color=_DA1A["ink2"]), bgcolor="rgba(0,0,0,0)"),
+        coloraxis=dict(colorbar=dict(tickfont=dict(color=_DA1A["ink_muted"]))),
+        hoverlabel=dict(bgcolor=_DA1A["surface_raised"], font=dict(color=_DA1A["ink"], family="JetBrains Mono, monospace")),
+    )
+)
+pio.templates["karting_dark"] = KARTING_DARK_TEMPLATE
+pio.templates.default = "karting_dark"
+
+_inject_global_theme_css()
 
 DEFAULT_TSV_PATH = os.path.join(os.path.dirname(__file__), "sample_data", "default_session.tsv")
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "sessions.db")
@@ -1163,7 +1341,10 @@ def _render_lap_picker(key_prefix: str, max_laps: int = MAX_COMPARE_LAPS) -> lis
 # Streamlit app (route 1 from that README: custom CSS + Plotly, not a
 # separate frontend). Token values, spacing and type sizes below are taken
 # verbatim from that README's "Design tokens" section -- change the token
-# constant if something needs to change, not a one-off inline value.
+# constant if something needs to change, not a one-off inline value. The
+# token palette itself (`_DA1A`) and the global theme it drives now live near
+# the top of this file (see `_inject_global_theme_css` / `KARTING_DARK_TEMPLATE`)
+# since design 1a's look is applied app-wide, not just on this page.
 #
 # Known, deliberate departures from the literal spec (chrome is expected to
 # be approximate per the README; the numbers/charts are exact):
@@ -1190,30 +1371,6 @@ def _render_lap_picker(key_prefix: str, max_laps: int = MAX_COMPARE_LAPS) -> lis
 #     render_linked_speed_delta's docstring); the crosshair + hover tooltip
 #     still surface the same numbers.
 # ---------------------------------------------------------------------------
-
-_DA1A = {  # design 1a's dark token palette (README "Design tokens" table)
-    "canvas": "#0b0d0f",
-    "surface": "#0d1114",
-    "surface_raised": "#101417",
-    "row_alt": "#0f1316",
-    "row_selected": "#181e22",
-    "ink": "#eef0f1",
-    "ink2": "#c9cfd4",
-    "ink_muted": "#8c959c",
-    "ink_faint": "#6d767d",
-    "ink_faint2": "#565f66",
-    "hairline": "rgba(255,255,255,.10)",
-    "hairline_strong": "rgba(255,255,255,.14)",
-    "neutral_bar": "#22282c",
-    "neutral_bar2": "#2a3136",
-    "accent": "#ff3b1f",
-    "gain": "#2fd07a",
-    "gain_card": "#3ddb85",
-    "loss": "#ff4a3d",
-    "loss_card": "#ff6a58",
-    "reference": "#b06cff",
-    "theoretical": "#ffd23d",
-}
 
 DA1A_N_SECTORS = 4
 
@@ -3995,7 +4152,16 @@ if current_profile is None:
     )
     current_profile = accounts_lib.get_profile(_pid)
 
-st.sidebar.title("🏎️ Karting Telemetry")
+st.sidebar.markdown(
+    f"""
+<div style="display:flex; align-items:center; gap:8px; padding:4px 0 12px 0;">
+  <div style="width:13px; height:15px; background:{_DA1A['accent']}; transform:skewX(-14deg); flex-shrink:0;"></div>
+  <div style="font-family:'Archivo', sans-serif; font-weight:700; font-size:14px; letter-spacing:.14em;
+              text-transform:uppercase; color:{_DA1A['ink']};">Karting Telemetry</div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
 
 page_overview_obj = st.Page(page_overview, title="Top 3 Focus Areas", icon="🎯", default=True)
 page_my_sessions_obj = st.Page(page_my_sessions, title="My Sessions & Sharing", icon="🔒")
