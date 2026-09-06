@@ -85,11 +85,12 @@ export default async function UploadPage() {
       </section>
 
       <p className="mt-10 text-xs text-muted">
-        Analysis still lives in the{" "}
-        <Link href="https://karting.streamlit.app" className="underline">
-          Streamlit app
-        </Link>{" "}
-        while the migration is in progress. Sessions uploaded here appear there.
+        Parsing runs in the background and takes a couple of minutes for a full track day. Once an
+        upload reads <span className="text-gain">complete</span>, its sessions are on{" "}
+        <Link href="/" className="underline">
+          Home
+        </Link>
+        .
       </p>
     </main>
   );
