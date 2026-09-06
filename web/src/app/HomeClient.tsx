@@ -28,9 +28,14 @@ export type SessionRow = {
  *
  * Two copies of a nine-column template is how a table ends up with headers
  * that no longer sit over their own data.
+ *
+ * The left padding is the indent that sets sessions in under their day
+ * heading. It belongs here rather than on the rows alone: the column header
+ * has to move with them, or every heading ends up a step to the left of the
+ * data it names.
  */
 const COLUMNS =
-  "grid grid-cols-[24px_1.7fr_0.6fr_0.6fr_1.3fr_1.9fr_0.8fr_0.5fr_1.2fr] items-center gap-2";
+  "grid grid-cols-[24px_1.7fr_0.6fr_0.6fr_1.3fr_1.9fr_0.8fr_0.5fr_1.2fr] items-center gap-2 pl-8";
 
 // app.py's HOME_SESSION_TYPE_OPTIONS and telemetry/weather.py's
 // CONDITION_OPTIONS -- kept identical so a session typed in one app reads
@@ -477,7 +482,7 @@ export default function HomeClient({
       )}
 
       <div className="overflow-x-auto">
-        <div className="min-w-[880px]">
+        <div className="min-w-[920px]">
           <div className={`${COLUMNS} border-b border-hairline pb-1`}>
             <span className="label" />
             <SortHeader label="Track" column="trackName" />
@@ -517,7 +522,10 @@ export default function HomeClient({
                       selectable.length > 0 && selectable.every((id) => selected.has(id));
                     return (
                       <div key={day || "undated"}>
-                        <div className="mt-2 flex items-center gap-2 py-1 pl-1">
+                        {/* Half a step in from the driver, half a step out
+                            from its sessions, so the nesting reads at a
+                            glance. */}
+                        <div className="mt-2 flex items-center gap-2 py-1 pl-4">
                           {isMine && (
                             <input
                               type="checkbox"
