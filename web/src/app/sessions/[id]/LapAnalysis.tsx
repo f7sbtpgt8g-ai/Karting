@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { sessionDate, sessionTime } from "@/lib/format";
+import type { TracePoint } from "@/lib/trackMap";
+import TrackMap from "./TrackMap";
 import {
   DEFAULT_SECTORS,
   MAX_SECTORS,
@@ -57,6 +59,8 @@ export default function LapAnalysis({
   dataError,
   laps,
   canEdit,
+  trace,
+  peaksMissing,
 }: {
   sessionId: number;
   driverName: string;
@@ -70,6 +74,8 @@ export default function LapAnalysis({
   dataError: string | null;
   laps: LapRow[];
   canEdit: boolean;
+  trace: TracePoint[];
+  peaksMissing: boolean;
 }) {
   const [rows, setRows] = useState(laps);
   const [sectorCount, setSectorCount] = useState(DEFAULT_SECTORS);
@@ -237,6 +243,13 @@ export default function LapAnalysis({
         </p>
       )}
 
+      {peaksMissing && (
+        <p className="mb-4 rounded border border-hairline bg-surface px-3 py-2 text-xs text-muted">
+          Peak speed and RPM were added after this session was analysed, so they are blank.
+          Re-running the analysis backfill fills them in.
+        </p>
+      )}
+
       <div className="mb-3 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="text-sm font-bold">Lap times</h2>
@@ -275,6 +288,7 @@ export default function LapAnalysis({
         </p>
       )}
 
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
       <div className="overflow-x-auto rounded border border-hairline bg-surface">
         <div className="min-w-[900px]">
           <div
@@ -340,6 +354,14 @@ export default function LapAnalysis({
             ))
           )}
         </div>
+      </div>
+
+        <TrackMap
+          trace={trace}
+          sectors={sectors}
+          sectorTimes={fastestPerSector}
+          formatTime={splitClock}
+        />
       </div>
 
       {excluded.length > 0 && (

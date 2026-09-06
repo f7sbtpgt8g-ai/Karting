@@ -37,7 +37,14 @@ logger = logging.getLogger(__name__)
 # Bumped when the stored shape changes or an analysis threshold moves, so a
 # backfill can find rows that predate the change instead of inferring it
 # from a timestamp.
-ANALYSIS_VERSION = 1
+#
+# 2: added lap_traces.max_speed_kmh / max_rpm (0006). Forgetting to bump this
+#    when those columns arrived left every already-analysed session with them
+#    NULL and no way to notice: `has_stored_analysis` reported the rows
+#    current, so the backfill skipped them and the summary cards stayed blank
+#    forever. Adding a stored field without bumping this is the same bug
+#    again -- the version is the only thing that makes old rows findable.
+ANALYSIS_VERSION = 2
 
 # The trace columns Lap Analysis and the track map actually draw. Named here
 # rather than storing the whole metric trace because the parsed dataframe

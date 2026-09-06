@@ -96,6 +96,31 @@ export default async function SessionPage({ params }: { params: { id: string } }
         .returns<{ lap_number: number; max_speed_kmh: number | null; max_rpm: number | null }[]>(),
     ]);
 
+  // Only the best lap's positions, and only three of its eight arrays: the
+  // track map needs one lap's shape, not the whole session's telemetry.
+  const { data: bestTrace } = analysis?.best_lap
+    ? await supabase
+        .from("lap_traces")
+        .select("latitude, longitude, distance_m")
+        .eq("session_db_id", sessionId)
+        .eq("lap_number", analysis.best_lap)
+        .maybeSingle()
+        .returns<{
+          latitude: number[] | null;
+          longitude: number[] | null;
+          distance_m: number[] | null;
+        }>()
+    : { data: null };
+
+  const trace =
+    bestTrace?.latitude && bestTrace.longitude && bestTrace.distance_m
+      ? bestTrace.distance_m.map((distanceM, i) => ({
+          lat: bestTrace.latitude![i],
+          lon: bestTrace.longitude![i],
+          distanceM,
+        }))
+      : [];
+
   if (!analysis) {
     return (
       <main className="mx-auto max-w-6xl px-6 py-8">
@@ -157,6 +182,8 @@ export default async function SessionPage({ params }: { params: { id: string } }
         dataError={analysis.data_error}
         laps={rows}
         canEdit={canEdit}
+        trace={trace}
+        peaksMissing={rows.length > 0 && rows.every((r) => r.maxSpeedKmh === null)}
       />
     </main>
   );
