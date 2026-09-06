@@ -69,7 +69,13 @@ def main() -> int:
         print("Set SUPABASE_URL and SUPABASE_ANON_KEY first.", file=sys.stderr)
         return 2
 
-    email = f"rls-check-{uuid.uuid4().hex[:10]}@example-invalid.com"
+    # example.com specifically: GoTrue validates the domain and rejects
+    # obviously-fake ones (example-invalid.com is refused outright), while
+    # example.com is reserved by RFC 2606 so it can never belong to a real
+    # person. Overridable for a project with stricter domain rules.
+    email = os.environ.get(
+        "VERIFY_EMAIL", f"rls-check-{uuid.uuid4().hex[:10]}@example.com"
+    )
     password = "verify-" + uuid.uuid4().hex
 
     print(f"Project: {url}")
