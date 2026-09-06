@@ -829,11 +829,58 @@ includes a first-pass set of RLS policies for that case (mirroring
 `session_cache`, `corner_metrics`, `pattern_instances`, `driver_profiles`,
 and `users`), keyed off a `current_app_user_id()` helper that maps
 Supabase Auth's `auth.uid()` to this schema's internal integer user id via
-`users.external_auth_id`. Treat these as a reasonable starting point to
-review against your actual auth setup before relying on them, not an
-audited security boundary -- in the same spirit as this codebase's other
-"policy decision, revisit with real review" constants (see
-`PARENTAL_CONSENT_AGE`, the invite-email gate).
+`users.external_auth_id`.
+
+**Those policies are now tested rather than assumed.** They shipped with
+0001 but had never gated a single real request -- the Python app connects on
+a role that bypasses RLS, and no account had an `external_auth_id`, so
+`current_app_user_id()` always returned NULL and every policy silently
+evaluated to "deny". `tests/test_rls_policies.py` exercises each one as a
+real client would (the `authenticated` role, a real JWT claim, Supabase's own
+default grants reproduced by `supabase/testing/simulate_supabase.sql`), and
+found two classes of problem that `0002_rls_hardening.sql` fixes:
+
+- **Six tables had no RLS at all** -- including `auth_tokens`
+  (password-reset and email-verification tokens), `auth_sessions` (live
+  login tokens) and `email_outbox` (every message body, reset links
+  included). In Supabase that is not "closed by default": `anon` and
+  `authenticated` hold default grants on every table in `public`, and RLS
+  only ever *restricts* an existing grant. Any authenticated user could
+  have read every other account's reset token the moment a browser client
+  pointed at PostgREST. Those three are now RLS-enabled with no policy at
+  all (deny-all) plus an explicit `REVOKE`, so they are reachable only from
+  the service-role connection the app and worker use.
+- **Every policy was `FOR SELECT`**, so no client write was possible --
+  a driver could not change their own session's visibility, nor ask to join
+  a team. 0002 adds exactly the writes the app performs and no more;
+  creating sessions stays server-side, and a client cannot grant itself
+  active team membership.
+
+Two operational notes:
+
+- **Migrations are append-only from here.** Editing `0001_init.sql` in place
+  is what broke logins once already (commit `82e3dba`). Apply the whole
+  `supabase/migrations/` directory in filename order -- re-running `0001`
+  *alone* would revert 0002's hardened `sessions_select`.
+- **Verify against your own project**, since the tests can only prove this
+  against a simulated one: `python scripts/verify_supabase_auth.py` signs a
+  throwaway account in through real GoTrue, confirms the local `users` row
+  gets linked, and checks RLS answers correctly for that account's own JWT.
+
+### Moving accounts from local auth to Supabase Auth
+
+`SupabaseAuthProvider` populates `users.external_auth_id`, and that column is
+the only thing connecting a Supabase identity to this schema. An account
+without it authenticates perfectly happily -- the Python app bypasses RLS, so
+nothing complains -- while every policy keeps resolving it to NULL and denies
+it everything. The symptom is a client that is definitely signed in and
+definitely sees no data, with no error raised anywhere.
+
+So the first Supabase sign-in of an account created under the old local
+provider **backfills** that column (`_mirror_user`), which is what carries
+existing accounts across. A second Supabase identity claiming an
+already-linked account is refused rather than resolved (`AuthMirrorConflict`)
+-- either outcome would silently hand one driver's telemetry to another.
 
 ### What's intentionally not covered here
 
