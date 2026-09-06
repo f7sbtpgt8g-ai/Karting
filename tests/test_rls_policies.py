@@ -332,3 +332,80 @@ def test_a_driver_cannot_grant_themselves_active_membership(world):
         (world["team"], world["carol_profile"]),
     )
     assert not allowed, "a driver granted themselves active team membership"
+
+
+# ------------------------------------------------------- the upload queue
+#
+# `POST /api/uploads/confirm` inserts an `upload_batches` row as the caller,
+# under RLS -- there is no service-role key in the Next.js app. So these
+# policies, not the route handler, are what actually stop one driver from
+# enqueueing work as another, or from marking their own unparsed file done.
+
+
+def test_a_driver_can_enqueue_their_own_upload(world):
+    allowed, err = world["alice"].write(
+        "INSERT INTO upload_batches (storage_path, original_filename, uploaded_by_user_id, "
+        "driver_profile_id, track_name, visibility, status) "
+        "VALUES ('uid/one.tsv','one.tsv',%s,%s,'Ring','shared','pending')",
+        (world["alice_user"], world["alice_profile"]),
+    )
+    assert allowed, f"a driver could not queue their own upload: {err}"
+
+
+def test_a_driver_cannot_enqueue_an_upload_as_someone_else(world):
+    """Otherwise Carol could file sessions into Alice's library."""
+    allowed, _ = world["carol"].write(
+        "INSERT INTO upload_batches (storage_path, uploaded_by_user_id, status) "
+        "VALUES ('uid/two.tsv',%s,'pending')",
+        (world["alice_user"],),
+    )
+    assert not allowed, "a driver queued an upload owned by another account"
+
+
+@pytest.mark.parametrize("status", ["complete", "processing", "failed"])
+def test_a_client_can_only_ever_enqueue_pending_work(world, status):
+    """'complete' would mark an unparsed file done and hide it from the
+    worker forever; 'processing' would do the same by stalling the queue."""
+    allowed, _ = world["alice"].write(
+        "INSERT INTO upload_batches (storage_path, uploaded_by_user_id, status) "
+        "VALUES ('uid/three.tsv',%s,%s)",
+        (world["alice_user"], status),
+    )
+    assert not allowed, f"a client inserted a batch already in status {status!r}"
+
+
+def test_a_driver_sees_only_their_own_upload_batches(world, db):
+    """The upload page lists 'recent uploads' with no owner filter of its
+    own -- it relies entirely on this policy."""
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO upload_batches (storage_path, original_filename, uploaded_by_user_id, status) "
+            "VALUES ('alice-uid/secret.tsv','secret.tsv',%s,'complete') RETURNING id",
+            (world["alice_user"],),
+        )
+        alice_batch = cur.fetchone()[0]
+    db.commit()
+
+    assert world["alice"].query("SELECT id FROM upload_batches WHERE id=%s", (alice_batch,))
+    assert not world["carol"].query(
+        "SELECT id FROM upload_batches WHERE id=%s", (alice_batch,)
+    ), "a driver could see another driver's uploads"
+    assert not world["anon"].query("SELECT id FROM upload_batches"), "uploads visible to anon"
+
+
+def test_a_client_cannot_rewrite_a_batchs_outcome(world, db):
+    """There is no UPDATE policy at all: only the worker, on the
+    service-role connection, moves a batch through its states."""
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO upload_batches (storage_path, uploaded_by_user_id, status) "
+            "VALUES ('alice-uid/own.tsv',%s,'pending') RETURNING id",
+            (world["alice_user"],),
+        )
+        batch = cur.fetchone()[0]
+    db.commit()
+
+    allowed, _ = world["alice"].write(
+        "UPDATE upload_batches SET status='complete', sessions_created=99 WHERE id=%s", (batch,)
+    )
+    assert not allowed, "a client rewrote the status of its own upload batch"

@@ -1,0 +1,12 @@
+node_modules/
+.next/
+out/
+.vercel
+next-env.d.ts
+
+# Real project credentials. Only .env.local.example is committed -- and even
+# that holds nothing secret, since both NEXT_PUBLIC_ values are designed to
+# ship in the browser bundle.
+.env.local
+.env*.local
+tsconfig.tsbuildinfo

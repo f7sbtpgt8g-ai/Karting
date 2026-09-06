@@ -1,0 +1,296 @@
+"""The ingest worker, end to end against a real Postgres.
+
+Covers the loop that replaces Streamlit's file uploader: claim a pending
+batch, fetch the raw file, parse it, persist every session in it, and mark
+the batch complete -- plus the failure paths, which are the ones that decide
+whether a stuck upload shows the user something useful or a spinner forever.
+
+Storage is the `LocalDirectoryStore` rather than Supabase Storage, so this
+runs with no network and no project; the seam is `worker.storage_client
+.ObjectStore`, and `SupabaseStorage` is the only other implementation.
+
+Requires a local Postgres, same as tests/test_rls_policies.py:
+    RLS_TEST_ADMIN_DSN=postgresql://postgres:postgres@localhost:5432/postgres
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+
+import pytest
+
+psycopg2 = pytest.importorskip("psycopg2")
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MIGRATIONS = os.path.join(REPO, "supabase", "migrations")
+SIMULATION = os.path.join(REPO, "supabase", "testing", "simulate_supabase.sql")
+SAMPLE_TSV = os.path.join(REPO, "sample_data", "default_session.tsv")
+
+ADMIN_DSN = os.environ.get("RLS_TEST_ADMIN_DSN", "postgresql://postgres:postgres@localhost:5432/postgres")
+WORKER_DB = os.environ.get("WORKER_TEST_DB", "worker_test")
+
+
+def _server_available() -> bool:
+    try:
+        psycopg2.connect(ADMIN_DSN, connect_timeout=3).close()
+        return True
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    not _server_available(), reason="no local Postgres reachable (set RLS_TEST_ADMIN_DSN)"
+)
+
+
+def _psql(dsn: str, path: str) -> None:
+    result = subprocess.run(
+        ["psql", dsn, "-v", "ON_ERROR_STOP=1", "-q", "-f", path], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"applying {os.path.basename(path)} failed:\n{result.stderr}")
+
+
+@pytest.fixture
+def worker_db(monkeypatch):
+    """A fresh database with every migration applied, wired up as the
+    `SUPABASE_DB_URL` the worker's data layer reads from."""
+    admin = psycopg2.connect(ADMIN_DSN)
+    admin.autocommit = True
+    with admin.cursor() as cur:
+        cur.execute(f"DROP DATABASE IF EXISTS {WORKER_DB}")
+        cur.execute(f"CREATE DATABASE {WORKER_DB}")
+    admin.close()
+
+    dsn = ADMIN_DSN.rsplit("/", 1)[0] + "/" + WORKER_DB
+    _psql(dsn, SIMULATION)
+    for name in sorted(os.listdir(MIGRATIONS)):
+        if name.endswith(".sql"):
+            _psql(dsn, os.path.join(MIGRATIONS, name))
+
+    monkeypatch.setenv("SUPABASE_DB_URL", dsn)
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = True
+    yield conn
+    conn.close()
+
+
+@pytest.fixture
+def uploader(worker_db):
+    """A registered driver to own the uploads."""
+    with worker_db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO users (email, external_auth_id, email_verified, display_name, created_at) "
+            "VALUES ('driver@example.com','uid-1',TRUE,'Driver',now()) RETURNING id"
+        )
+        user_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO driver_profiles (display_name, user_id, claim_status, created_at, claimed_at) "
+            "VALUES ('Driver',%s,'claimed',now(),now()) RETURNING id",
+            (user_id,),
+        )
+        profile_id = cur.fetchone()[0]
+    return {"user_id": user_id, "profile_id": profile_id}
+
+
+def _enqueue(conn, uploader, storage_path="uid-1/upload.tsv", filename="default_session.tsv", **overrides):
+    fields = {
+        "storage_path": storage_path,
+        "original_filename": filename,
+        "uploaded_by_user_id": uploader["user_id"],
+        "driver_profile_id": uploader["profile_id"],
+        "track_name": "Test Track",
+        "session_type": "practice",
+        "visibility": "shared",
+        **overrides,
+    }
+    cols = ", ".join(fields)
+    marks = ", ".join(["%s"] * len(fields))
+    with conn.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO upload_batches ({cols}) VALUES ({marks}) RETURNING id", tuple(fields.values())
+        )
+        return cur.fetchone()[0]
+
+
+@pytest.fixture
+def store(tmp_path):
+    """A local stand-in for the Storage bucket, pre-loaded with the real
+    bundled export so the worker parses genuine telemetry."""
+    from worker.storage_client import LocalDirectoryStore
+
+    folder = tmp_path / "uid-1"
+    folder.mkdir()
+    with open(SAMPLE_TSV, "rb") as src, open(folder / "upload.tsv", "wb") as dst:
+        dst.write(src.read())
+    return LocalDirectoryStore(str(tmp_path))
+
+
+def _status(conn, batch_id):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, error_message, sessions_created FROM upload_batches WHERE id=%s", (batch_id,)
+        )
+        return cur.fetchone()
+
+
+# ------------------------------------------------------------- happy path
+
+
+def test_worker_parses_a_real_export_and_stores_every_session(worker_db, uploader, store):
+    """The whole point: a file arrives, and afterwards its sessions are in
+    the database with laps attached, attributed to the uploader."""
+    from worker.main import run_once
+
+    batch_id = _enqueue(worker_db, uploader)
+    assert run_once(store) == 1
+
+    status, error, created = _status(worker_db, batch_id)
+    assert status == "complete", f"batch failed: {error}"
+    # The bundled export really contains 11 sessions.
+    assert created == 11
+
+    with worker_db.cursor() as cur:
+        cur.execute("SELECT count(*) FROM sessions WHERE upload_batch_id=%s", (batch_id,))
+        assert cur.fetchone()[0] == 11
+        cur.execute(
+            "SELECT count(*) FROM laps l JOIN sessions s ON s.id=l.session_db_id "
+            "WHERE s.upload_batch_id=%s",
+            (batch_id,),
+        )
+        assert cur.fetchone()[0] > 0, "sessions stored without any laps"
+        # The raw dataframe must be persisted too, or nothing can re-analyze it.
+        cur.execute(
+            "SELECT count(*) FROM session_cache c JOIN sessions s ON s.id=c.session_db_id "
+            "WHERE s.upload_batch_id=%s",
+            (batch_id,),
+        )
+        assert cur.fetchone()[0] == 11
+
+
+def test_upload_context_is_applied_to_every_session(worker_db, uploader, store):
+    """Track name, conditions and sharing tier are collected once per upload
+    and belong on every session the file produces."""
+    from worker.main import run_once
+
+    batch_id = _enqueue(
+        worker_db, uploader, visibility="team", track_condition="dry", temperature_c=21.5
+    )
+    run_once(store)
+
+    with worker_db.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT track_name, visibility, track_condition, temperature_c, "
+            "driver_profile_id, uploaded_by_user_id FROM sessions WHERE upload_batch_id=%s",
+            (batch_id,),
+        )
+        rows = cur.fetchall()
+    assert len(rows) == 1, "sessions from one upload disagreed about their context"
+    assert rows[0] == ("Test Track", "team", "dry", 21.5, uploader["profile_id"], uploader["user_id"])
+
+
+def test_queue_is_drained_in_order_and_left_empty(worker_db, uploader, store):
+    from worker.main import run_once
+    from worker.queue import claim_next_batch
+
+    _enqueue(worker_db, uploader)
+    _enqueue(worker_db, uploader, filename="second.tsv")
+    assert run_once(store) == 2
+    assert claim_next_batch() is None
+
+
+# ---------------------------------------------------------- failure paths
+
+
+def test_a_missing_object_fails_the_batch_with_a_usable_message(worker_db, uploader, store):
+    """The uploader must be told to re-upload, not left on a spinner."""
+    from worker.main import run_once
+
+    batch_id = _enqueue(worker_db, uploader, storage_path="uid-1/does-not-exist.tsv")
+    run_once(store)
+
+    status, error, _ = _status(worker_db, batch_id)
+    assert status == "failed"
+    assert "upload it again" in error.lower()
+
+
+def test_a_file_that_is_not_telemetry_fails_clearly(worker_db, uploader, tmp_path):
+    """The most likely real user error -- the wrong export from Unipro
+    Analyser -- should say so rather than surface a KeyError."""
+    from worker.main import run_once
+    from worker.storage_client import LocalDirectoryStore
+
+    folder = tmp_path / "uid-1"
+    folder.mkdir()
+    (folder / "upload.tsv").write_text("this is not a unipro export\n")
+
+    batch_id = _enqueue(worker_db, uploader)
+    run_once(LocalDirectoryStore(str(tmp_path)))
+
+    status, error, _ = _status(worker_db, batch_id)
+    assert status == "failed"
+    assert "unipro" in error.lower()
+
+
+def test_one_bad_batch_does_not_stop_the_queue(worker_db, uploader, store):
+    """A worker that dies on one malformed file stops serving everyone."""
+    from worker.main import run_once
+
+    bad = _enqueue(worker_db, uploader, storage_path="uid-1/missing.tsv")
+    good = _enqueue(worker_db, uploader)
+
+    assert run_once(store) == 2
+    assert _status(worker_db, bad)[0] == "failed"
+    assert _status(worker_db, good)[0] == "complete"
+
+
+def test_reuploading_the_same_file_does_not_duplicate_sessions(worker_db, uploader, store):
+    """Duplicate detection is the existing `find_session` identity match --
+    re-uploading the same export must be a no-op, not 11 more sessions."""
+    from worker.main import run_once
+
+    _enqueue(worker_db, uploader)
+    run_once(store)
+    second = _enqueue(worker_db, uploader)
+    run_once(store)
+
+    assert _status(worker_db, second) == ("complete", None, 0)
+    with worker_db.cursor() as cur:
+        cur.execute("SELECT count(*) FROM sessions")
+        assert cur.fetchone()[0] == 11
+
+
+# ------------------------------------------------------------ queue safety
+
+
+def test_claiming_is_atomic(worker_db, uploader):
+    """Two workers must never take the same batch -- otherwise an 80MB file
+    is parsed twice concurrently and both write the same sessions."""
+    from worker.queue import claim_next_batch
+
+    _enqueue(worker_db, uploader)
+    first = claim_next_batch()
+    second = claim_next_batch()
+    assert first is not None
+    assert second is None, "a second worker claimed an already-claimed batch"
+
+
+def test_a_batch_abandoned_mid_parse_is_requeued(worker_db, uploader):
+    """A worker killed by a deploy leaves its row 'processing' forever, and
+    nothing else would ever notice."""
+    from worker.queue import claim_next_batch, requeue_stale_processing
+
+    _enqueue(worker_db, uploader)
+    claimed = claim_next_batch()
+    assert claimed is not None
+
+    assert requeue_stale_processing(older_than_minutes=30) == 0, "should not requeue a fresh claim"
+
+    with worker_db.cursor() as cur:
+        cur.execute(
+            "UPDATE upload_batches SET claimed_at = now() - interval '2 hours' WHERE id=%s",
+            (claimed.id,),
+        )
+    assert requeue_stale_processing(older_than_minutes=30) == 1
+    assert claim_next_batch() is not None, "requeued batch should be claimable again"
