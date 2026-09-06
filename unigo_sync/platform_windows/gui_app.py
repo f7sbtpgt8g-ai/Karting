@@ -57,6 +57,15 @@ class App:
     def __init__(self, config: SyncConfig | None = None):
         self.config = config or load_config()
         configure_logging(self.config)
+        # First lines of every run: which database this install actually
+        # talks to and where its local state lives. Without them the log
+        # can't answer "unreachable -- what was it even trying to reach?",
+        # which is the first question asked of any upload that won't go.
+        logger.info(
+            "UniGo Sync starting -- %s; sessions_db=%s; staging=%s; queue=%s",
+            auth_session.describe_backend(self.config.sessions_db),
+            self.config.sessions_db, self.config.output_dir, self.config.pending_uploads_db,
+        )
 
         self.root = tk.Tk()
         self.root.title("UniGo Sync")
@@ -76,6 +85,24 @@ class App:
 
         self._login_frame: ttk.Frame | None = None
         self._settings_frame: ttk.Frame | None = None
+        self._upload_now_button: ttk.Button | None = None
+        # Last reason the pending queue could not drain, so the background
+        # poll can report a change without repeating itself every 15s.
+        self._last_flush_block_reason: str | None = None
+        # One flush at a time. The background poll and the "Upload now"
+        # button would otherwise be able to run concurrently and both
+        # ingest the same queued session before either removes it from the
+        # queue, saving it into the database twice.
+        self._flush_lock = threading.Lock()
+        # Plain-Python mirrors of the two tk variables the background loop
+        # needs. Reading a tk variable from another thread is not safe --
+        # depending on how Tcl was built it either raises outright or
+        # marshals back to the main thread and can block on it -- and an
+        # exception there would end the loop, silently stopping the
+        # pending-upload flush for the rest of the session. Written on the
+        # main thread by _snapshot_ui_state, read by the loop.
+        self._auto_sync_enabled = False
+        self._selected_driver_snapshot: auth_session.DriverChoice | None = None
 
         self._try_restore_cached_session()
 
@@ -259,8 +286,17 @@ class App:
         self._progress = ttk.Progressbar(self._settings_frame, mode="determinate", maximum=1, value=0)
         self._progress.pack(fill="x", pady=(2, 8))
 
-        self._pending_label = ttk.Label(self._settings_frame, text="")
-        self._pending_label.pack(anchor="w")
+        pending_row = ttk.Frame(self._settings_frame)
+        pending_row.pack(fill="x")
+        self._pending_label = ttk.Label(pending_row, text="", wraplength=340, justify="left")
+        self._pending_label.pack(side="left", anchor="w")
+        # The queue drains on a 15-second background poll, which is
+        # invisible from here -- without a button, a user watching "waiting
+        # to upload" has no way to tell a stuck queue from a slow one.
+        self._upload_now_button = ttk.Button(
+            pending_row, text="Upload now", command=self._start_manual_flush,
+        )
+        self._upload_now_button.pack(side="right")
 
         ttk.Label(self._settings_frame, text="Status").pack(anchor="w", pady=(12, 0))
         log_frame = ttk.Frame(self._settings_frame)
@@ -309,8 +345,15 @@ class App:
                 self._refresh_driver_combo(None)
         self._save_settings()
 
+    def _snapshot_ui_state(self) -> None:
+        """Copy the tk variables the background loop needs into plain
+        attributes. Must only be called from the main thread."""
+        self._auto_sync_enabled = bool(self._auto_sync_var.get())
+        self._selected_driver_snapshot = self._selected_driver()
+
     def _save_settings(self) -> None:
         selected = self._selected_driver()
+        self._snapshot_ui_state()
         auth_cache.update_settings(
             self.config.auth_cache_path,
             driver_profile_id=selected.profile_id if selected else None,
@@ -319,9 +362,10 @@ class App:
         )
 
     def _on_auto_sync_toggled(self) -> None:
+        self._snapshot_ui_state()
         self._log_line(
             "Auto-sync enabled -- will sync automatically when this laptop joins the device's WiFi."
-            if self._auto_sync_var.get() else "Auto-sync disabled."
+            if self._auto_sync_enabled else "Auto-sync disabled."
         )
 
     # -- sync ---------------------------------------------------------------
@@ -433,14 +477,22 @@ class App:
         )
         if outcome.uploaded:
             self._log_line(f"Uploaded {len(outcome.uploaded)} session(s) to the database.")
+        blocked_reason = None
         if outcome.queued:
+            if outcome.offline_reason:
+                blocked_reason = f"database not reachable: {outcome.offline_reason}"
+            elif outcome.upload_errors:
+                blocked_reason = f"upload failed: {outcome.upload_errors[0][1]}"
             self._log_line(
                 f"{len(outcome.queued)} session(s) staged locally, pending upload -- "
-                "will upload automatically once the network is back."
+                "retried automatically every 15 seconds, or press \"Upload now\"."
             )
+            if blocked_reason:
+                self._log_line(f"  Reason: {blocked_reason}")
         for name, error in r.failed:
             self._log_line(f"  FAILED: {name}: {error}")
-        self._refresh_pending_label()
+        self._last_flush_block_reason = blocked_reason
+        self._refresh_pending_label(blocked_reason)
 
     # -- background: connectivity flush + optional wifi auto-sync ----------
 
@@ -451,34 +503,98 @@ class App:
         self._background_thread.start()
 
     def _background_loop(self) -> None:
+        # The whole body is guarded: anything escaping here ends the loop,
+        # and this thread is the only thing that ever drains the pending
+        # upload queue. A dead loop looks exactly like a queue that will
+        # not upload -- with nothing in the log to say why.
         while not self._stop_event.wait(_BACKGROUND_POLL_S):
             try:
+                self._background_tick()
+            except Exception:  # noqa: BLE001 - keep polling whatever happened
+                logger.exception("background poll failed")
+
+    def _background_tick(self) -> None:
+        # Skipped rather than queued behind a manual flush: another one
+        # is already doing exactly this work, and it will report.
+        if self._flush_lock.acquire(blocking=False):
+            try:
                 outcome = flush_pending_uploads(self.config)
-                if outcome.uploaded:
-                    self._ui(self._on_flush_done, outcome)
+                self._ui(self._on_flush_done, outcome, False)
             except Exception:  # noqa: BLE001 - keep polling even if one attempt errors
                 logger.exception("background upload flush failed")
+            finally:
+                self._flush_lock.release()
 
-            if self._auto_sync_var.get() and is_connected_to_unigo(self.config.wifi_ssid_prefix):
-                selected = self._selected_driver()
-                if selected is not None:
-                    self._ui(lambda: self._sync_button.config(state="disabled"))
-                    self._ui(self._set_progress_busy, f"UniGo WiFi detected -- auto-syncing for {selected.display_name}...")
-                    self._ui(self._log_line, f"UniGo WiFi detected -- auto-syncing for {selected.display_name}...")
-                    self._sync_worker(selected)
+        selected = self._selected_driver_snapshot
+        if self._auto_sync_enabled and selected is not None:
+            if is_connected_to_unigo(self.config.wifi_ssid_prefix):
+                self._ui(lambda: self._sync_button.config(state="disabled"))
+                self._ui(self._set_progress_busy, f"UniGo WiFi detected -- auto-syncing for {selected.display_name}...")
+                self._ui(self._log_line, f"UniGo WiFi detected -- auto-syncing for {selected.display_name}...")
+                self._sync_worker(selected)
 
-    def _on_flush_done(self, outcome) -> None:
-        self._log_line(f"Network back -- uploaded {len(outcome.uploaded)} queued session(s) automatically.")
-        self._refresh_pending_label()
+    def _start_manual_flush(self) -> None:
+        self._upload_now_button.config(state="disabled")
+        self._log_line("Trying to upload queued sessions now...")
+        threading.Thread(target=self._manual_flush_worker, daemon=True).start()
 
-    def _refresh_pending_label(self) -> None:
+    def _manual_flush_worker(self) -> None:
+        # Blocking, unlike the background poll's try-acquire: the user
+        # asked for this, so wait out an in-flight flush rather than
+        # answering "nothing happened".
+        with self._flush_lock:
+            try:
+                outcome = flush_pending_uploads(self.config)
+            except Exception as exc:  # noqa: BLE001 - report, don't crash the app
+                logger.exception("manual upload flush failed")
+                self._ui(self._log_line, f"Upload failed: {exc}")
+                self._ui(self._enable_upload_button)
+                return
+        self._ui(self._on_flush_done, outcome, True)
+
+    def _enable_upload_button(self) -> None:
+        if self._upload_now_button is not None:
+            self._upload_now_button.config(state="normal")
+
+    def _on_flush_done(self, outcome, manual: bool) -> None:
+        """`manual` distinguishes a user pressing "Upload now" -- which
+        deserves an answer either way -- from the 15-second background
+        poll, which must only speak up when something actually changed or
+        it would fill the status box with four identical lines a minute."""
+        if manual:
+            self._enable_upload_button()
+
+        if outcome.uploaded:
+            self._log_line(f"Uploaded {len(outcome.uploaded)} queued session(s).")
+
+        reason = outcome.blocked_reason
+        if reason and (manual or reason != self._last_flush_block_reason):
+            self._log_line(
+                f"{len(outcome.still_pending)} session(s) still waiting -- {reason}"
+            )
+        elif manual and not outcome.uploaded and not reason:
+            self._log_line("Nothing was waiting to upload.")
+        self._last_flush_block_reason = reason
+
+        self._refresh_pending_label(reason)
+
+    def _refresh_pending_label(self, blocked_reason: str | None = None) -> None:
         from ..core.pending_uploads import PendingUploadQueue
 
-        with PendingUploadQueue(self.config.pending_uploads_db) as queue:
-            count = queue.count()
-        self._pending_label.config(
-            text=f"{count} session(s) staged, waiting to upload." if count else "Everything is uploaded."
-        )
+        try:
+            with PendingUploadQueue(self.config.pending_uploads_db) as queue:
+                count = queue.count()
+        except Exception:  # noqa: BLE001 - a locked queue is not worth a crash here
+            logger.exception("could not read the pending-upload queue")
+            return
+
+        if not count:
+            self._pending_label.config(text="Everything is uploaded.")
+            return
+        text = f"{count} session(s) staged, waiting to upload."
+        if blocked_reason:
+            text += f"\nNot uploading: {blocked_reason}"
+        self._pending_label.config(text=text)
 
     # -- misc ---------------------------------------------------------------
 
