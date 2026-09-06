@@ -168,19 +168,15 @@ h1, h2, h3, h4, h5, h6, [data-testid="stMarkdownContainer"] h1, [data-testid="st
 [data-testid="stMarkdownContainer"] p {{ color: {t['ink2']}; }}
 hr {{ border-color: {t['hairline']} !important; }}
 
-/* Sidebar */
-[data-testid="stSidebar"] {{
-    background: {t['surface']}; border-right: 1px solid {t['hairline']};
+/* Top navigation (st.navigation(position="top")) -- no sidebar in this
+   app at all any more; every page's nav lives in this top bar instead. */
+[data-testid="stTopNav"] a[aria-current="page"] {{
+    box-shadow: inset 0 -2px 0 {t['accent']}; color: {t['ink']} !important;
 }}
-[data-testid="stSidebar"] * {{ color: {t['ink2']}; }}
-[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {{ color: {t['ink']} !important; }}
-[data-testid="stSidebarNav"] a, [data-testid="stSidebarNavLink"] {{
-    border-radius: 3px; font-family: 'Archivo', sans-serif; font-weight: 500;
+[data-testid="stTopNav"] a {{ font-family: 'Archivo', sans-serif; font-weight: 600; }}
+.st-key-app_top_bar, .st-key-app_session_bar {{
+    border-bottom: 1px solid {t['hairline']}; padding-bottom: 10px; margin-bottom: 12px;
 }}
-[data-testid="stSidebarNav"] a[aria-current="page"], [data-testid="stSidebarNavLink"][aria-current="page"] {{
-    background: {t['row_selected']}; box-shadow: inset 2px 0 0 {t['accent']};
-}}
-[data-testid="stSidebarNav"] a:hover {{ background: {t['neutral_bar']}; }}
 
 /* Numbers -- tabular mono everywhere a metric/dataframe cell shows one */
 [data-testid="stMetricValue"], [data-testid="stMetricDelta"], .stDataFrame, [data-testid="stTable"] {{
@@ -1881,8 +1877,14 @@ def page_data_analysis() -> None:
         default_selected = analyzed_lap if analyzed_lap in clean_lap_numbers else best_lap
         default_reference = best_lap
         if default_reference == default_selected and len(clean) >= 2:
-            second_fastest = clean.sort_values("lap_time_s")["lap_number"].tolist()[1]
-            default_reference = second_fastest
+            # Picking "the fastest lap that isn't the selected one" rather
+            # than sort_values(...)[1]: with an exact lap-time tie,
+            # sort_values' default quicksort isn't stable, so the tied lap
+            # can land at either position and this can silently pick the
+            # same lap as default_selected again.
+            remaining = clean[clean["lap_number"] != default_selected]
+            if not remaining.empty:
+                default_reference = remaining.loc[remaining["lap_time_s"].idxmin(), "lap_number"]
 
         if st.session_state.get("da1a_context_key") != active_session_key:
             st.session_state["da1a_context_key"] = active_session_key
@@ -4478,17 +4480,6 @@ if current_profile is None:
     )
     current_profile = accounts_lib.get_profile(_pid)
 
-st.sidebar.markdown(
-    f"""
-<div style="display:flex; align-items:center; gap:8px; padding:4px 0 12px 0;">
-  <div style="width:13px; height:15px; background:{_DA1A['accent']}; transform:skewX(-14deg); flex-shrink:0;"></div>
-  <div style="font-family:'Archivo', sans-serif; font-weight:700; font-size:14px; letter-spacing:.14em;
-              text-transform:uppercase; color:{_DA1A['ink']};">Karting Telemetry</div>
-</div>
-""",
-    unsafe_allow_html=True,
-)
-
 page_home_obj = st.Page(page_home, title="Home", icon="🏠", default=True)
 page_overview_obj = st.Page(page_overview, title="Top 3 Focus Areas", icon="🎯")
 page_my_sessions_obj = st.Page(page_my_sessions, title="My Sessions & Sharing", icon="🔒")
@@ -4511,29 +4502,54 @@ page_kart_setup_obj = st.Page(page_kart_setup, title="Kart Setup", icon="🔧")
 page_history_obj = st.Page(page_history, title="History", icon="🗂️")
 page_settings_obj = st.Page(page_settings, title="Settings", icon="⚙️")
 
+# Single top-level "Home" link (an empty-string section is displayed
+# inline, before any collapsible ones -- see st.navigation's docstring)
+# plus every other page folded into one "Debug" dropdown for now, per
+# request -- these existing pages aren't being redesigned yet, just
+# de-emphasized until they are.
 nav = st.navigation(
     {
-        "Home": [page_home_obj],
-        "Analysis": [
+        "": [page_home_obj],
+        "Debug": [
             page_overview_obj, page_lap_times_obj, page_data_analysis_obj, page_data_analysis_mobile_obj, page_track_map_obj,
             page_braking_rpm_obj, page_corner_comparison_obj, page_lap_comparison_obj, page_recurring_patterns_obj,
             page_gearing_simulation_obj, page_consistency_obj, page_progression_obj, page_kart_setup_obj, page_history_obj,
+            page_shared_laps_obj, page_team_obj, page_leaderboards_obj,
+            page_my_sessions_obj, page_find_profile_obj, page_settings_obj,
         ],
-        "Community": [page_shared_laps_obj, page_team_obj, page_leaderboards_obj],
-        "Account": [page_my_sessions_obj, page_find_profile_obj, page_settings_obj],
-    }
+    },
+    position="top",
 )
 
-st.sidebar.divider()
-st.sidebar.caption(f"Signed in as **{current_profile['display_name']}**")
-_active_team_membership = accounts_lib.get_active_membership_for_profile(int(current_profile["id"]))
-if _active_team_membership is not None:
-    _active_team = accounts_lib.get_team(int(_active_team_membership["team_id"]))
+# ---------------------------------------------------------------------------
+# Top bar (replaces the old sidebar entirely): brand mark + account info on
+# every page, plus the global session/lap pickers other (still-sidebar-era)
+# pages read from -- skipped on Home, which does its own session picking via
+# its session list, so nothing here would apply to it anyway.
+# ---------------------------------------------------------------------------
+with st.container(key="app_top_bar"):
+    tb1, tb2, tb3 = st.columns([2, 5, 2])
+    tb1.markdown(
+        f"""
+<div style="display:flex; align-items:center; gap:8px; padding:6px 0;">
+  <div style="width:13px; height:15px; background:{_DA1A['accent']}; transform:skewX(-14deg); flex-shrink:0;"></div>
+  <div style="font-family:'Archivo', sans-serif; font-weight:700; font-size:14px; letter-spacing:.14em;
+              text-transform:uppercase; color:{_DA1A['ink']};">Karting Telemetry</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    _active_team_membership = accounts_lib.get_active_membership_for_profile(int(current_profile["id"]))
+    _active_team = None
+    if _active_team_membership is not None:
+        _active_team = accounts_lib.get_team(int(_active_team_membership["team_id"]))
+    signed_in_line = f"Signed in as **{current_profile['display_name']}**"
     if _active_team is not None:
-        st.sidebar.caption(f"Team: **{_active_team['name']}** ({_active_team_membership['role']})")
-if st.sidebar.button("Sign out"):
-    sign_out()
-    st.rerun()
+        signed_in_line += f" · Team: **{_active_team['name']}** ({_active_team_membership['role']})"
+    tb2.markdown(f'<div style="padding-top:10px;">{signed_in_line}</div>', unsafe_allow_html=True)
+    if tb3.button("Sign out", key="topbar_sign_out", use_container_width=True):
+        sign_out()
+        st.rerun()
 
 library = get_session_library()
 
@@ -4586,6 +4602,13 @@ setup_suggestions: list[dict] = []
 _best_lap_trace = pd.DataFrame()
 speed_is_estimated = False
 
+# The session/lap pickers below aren't needed on Home -- it does its own
+# per-row session picking -- so they're skipped there entirely rather than
+# cluttering the one page that doesn't use them. Every other ("Debug")
+# page still reads the same active_session/analyzed_lap globals these set,
+# same as when they lived in the sidebar.
+show_session_controls = nav is not page_home_obj
+
 if all_sessions:
     session_labels = [label for label, _ in all_sessions]
 
@@ -4607,7 +4630,7 @@ if all_sessions:
     # buttons can jump straight to a specific session. They can't write
     # `active_session_select` directly though -- by the time a button
     # inside a page's own function runs (via nav.run(), which happens
-    # after this sidebar code in the same script run), this widget has
+    # after this top-bar code in the same script run), this widget has
     # already been instantiated this run, and Streamlit forbids writing to
     # an already-instantiated widget's key. So they stash the target label
     # in the plain `_pending_active_session` key instead, consumed here --
@@ -4619,9 +4642,13 @@ if all_sessions:
             st.session_state["active_session_select"] = pending
     if st.session_state.get("active_session_select") not in session_labels:
         st.session_state["active_session_select"] = default_session_label if default_session_label in session_labels else session_labels[0]
-    active_label = st.sidebar.selectbox(
-        "Session to analyze", session_labels, key="active_session_select",
-    )
+
+    if show_session_controls:
+        with st.container(key="app_session_bar"):
+            sb1, sb2, sb3 = st.columns([3, 3, 1.5])
+            active_label = sb1.selectbox("Session to analyze", session_labels, key="active_session_select")
+    else:
+        active_label = st.session_state["active_session_select"]
     active_session = dict(all_sessions)[active_label]
 
     # Kart setup is stored per session, not globally -- different sessions on
@@ -4645,9 +4672,6 @@ if all_sessions:
     # is selected -- unlike before this page loaded sessions from a live
     # upload widget each rerun, uploading is now the only thing that saves.
 
-    if st.sidebar.button("🔧 Edit kart setup"):
-        st.switch_page(page_kart_setup_obj)
-
     laps = compute_clean_laps(active_session)
     clean = clean_lap_table(laps)
 
@@ -4658,17 +4682,23 @@ if all_sessions:
         best_lap = int(clean.loc[clean["lap_time_s"].idxmin(), "lap_number"])
 
         # Shared by every lap-number selectbox/multiselect for the active
-        # session (sidebar and every page) so a lap is never just a bare
+        # session (top bar and every page) so a lap is never just a bare
         # number -- picking "which lap" without seeing its time meant
         # opening it first to find out.
         lap_time_by_number = dict(zip(laps["lap_number"], laps["lap_time_s"]))
 
-        analyzed_lap = st.sidebar.selectbox(
-            "Lap to analyze against theoretical best",
-            clean_lap_numbers,
-            index=clean_lap_numbers.index(best_lap),
-            format_func=format_lap_option,
-        )
+        if show_session_controls:
+            analyzed_lap = sb2.selectbox(
+                "Lap to analyze against theoretical best",
+                clean_lap_numbers,
+                index=clean_lap_numbers.index(best_lap),
+                format_func=format_lap_option,
+            )
+            sb3.markdown('<div style="padding-top:28px;"></div>', unsafe_allow_html=True)
+            if sb3.button("🔧 Edit kart setup", use_container_width=True):
+                st.switch_page(page_kart_setup_obj)
+        else:
+            analyzed_lap = best_lap
 
         segments = build_reference_segments(active_session, best_lap)
         theoretical_best_s, best_segment_times = theoretical_best_lap(active_session, clean_lap_numbers, segments)
