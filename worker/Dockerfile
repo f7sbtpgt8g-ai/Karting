@@ -23,6 +23,14 @@ RUN pip install --no-cache-dir -r worker/requirements.txt
 COPY telemetry/ ./telemetry/
 COPY worker/ ./worker/
 
+# Maintenance commands, run as one-offs against the same database and
+# Storage credentials this container already holds -- notably
+# `python -m scripts.backfill_analysis`, which analyzes sessions ingested
+# before the analysis tables existed and reclaims their Parquet blobs.
+# Included here so that work needs no second deployment target and no copy
+# of the service-role key anywhere else.
+COPY scripts/ ./scripts/
+
 # Not root: this process holds the service-role key, so it gets no more
 # privilege in the container than it needs either.
 RUN useradd --create-home --uid 10001 worker && chown -R worker /app
