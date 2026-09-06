@@ -197,3 +197,29 @@ def test_the_backfill_is_safe_to_rerun(seeded):
     with seeded["conn"].cursor() as cur:
         cur.execute("SELECT count(*) FROM session_analysis")
         assert cur.fetchone()[0] == 2
+
+
+def test_vacuum_actually_returns_the_space(seeded):
+    """Clearing a blob only marks the row version dead -- the file on disk
+    stays the same size until the table is rewritten. Without this step the
+    whole exercise frees nothing you can measure, which is the failure mode
+    most likely to go unnoticed.
+
+    Also a regression test for running VACUUM at all: psycopg2 opens a
+    transaction on the first statement, and VACUUM cannot run inside one
+    (the same reason it fails in the Supabase SQL editor).
+    """
+    from scripts.backfill_analysis import _table_sizes, main
+    from worker.storage_client import LocalDirectoryStore
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as archive:
+        main(["--analyze", "--archive", "--clear-blobs"], store=LocalDirectoryStore(archive))
+        before = _table_sizes()["session_cache"]
+        assert main(["--vacuum"]) == 0
+        after = _table_sizes()["session_cache"]
+
+    assert after < before, (
+        f"session_cache stayed at {after / 1e6:.1f} MB after vacuuming -- "
+        "clearing blobs freed nothing on disk"
+    )

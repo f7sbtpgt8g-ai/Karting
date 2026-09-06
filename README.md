@@ -1006,7 +1006,7 @@ raises is still saved, since a backfill can recompute it).
 ```bash
 python -m scripts.backfill_analysis                              # report only
 python -m scripts.backfill_analysis --analyze                    # write the rows
-python -m scripts.backfill_analysis --analyze --archive --clear-blobs
+python -m scripts.backfill_analysis --analyze --archive --clear-blobs --vacuum
 ```
 
 `--clear-blobs` refuses to touch a session whose raw data it cannot account
@@ -1018,7 +1018,16 @@ skipped and reported -- clearing it would make the derived rows the only
 copy, and re-running with a corrected corner threshold (which
 `telemetry/corners.py` documents as likely) would then be impossible.
 
-Run `VACUUM FULL session_cache` afterwards to hand the space back.
+`--vacuum` is what actually hands the space back: clearing a blob only
+marks the row version dead, and the file on disk keeps its size until the
+table is rewritten. It runs from the script rather than the Supabase SQL
+editor because that editor wraps statements in a transaction, and `VACUUM`
+cannot run inside one (`ERROR: 25001`). It takes an exclusive lock, so run
+it when nothing is uploading.
+
+`scripts/` ships in the worker image, so the whole thing runs as a one-off
+on the worker service, which already holds the database URL and the
+service-role key.
 
 ### Who a signed-in user *is*
 
