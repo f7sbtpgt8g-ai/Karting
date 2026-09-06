@@ -34,6 +34,17 @@ const SESSION_TYPES = [
   "Final",
 ];
 const CONDITIONS = ["Dry", "Wet", "Mixed"];
+
+// Water reads blue, and a mixed track reads as the warning it is. Dry stays
+// plain, because "nothing unusual" should not compete for attention with the
+// two conditions that change how the lap times should be read. The two hues
+// are the validated categorical slots used on the track map, so they are
+// legible on this surface and distinguishable to a colour-blind reader.
+const CONDITION_COLOR: Record<string, string> = {
+  Wet: "#3987e5",
+  Mixed: "#d95926",
+  Dry: "#eef0f1",
+};
 const VISIBILITY_LABELS: Record<string, string> = {
   private: "Private",
   team: "Team",
@@ -363,18 +374,38 @@ export default function HomeClient({
                             ))}
                           </select>
 
-                          <span className="flex gap-1 overflow-hidden">
-                            {[row.kartClass, row.trackCondition].filter(Boolean).map((badge) => (
-                              <span
-                                key={badge}
-                                className="whitespace-nowrap rounded bg-selected px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-ink2"
-                              >
-                                {badge}
+                          <span className="flex items-center gap-1 overflow-hidden">
+                            {row.kartClass && (
+                              <span className="whitespace-nowrap rounded bg-selected px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-ink2">
+                                {row.kartClass}
                               </span>
-                            ))}
-                            {!row.kartClass && !row.trackCondition && (
-                              <span className="text-[11px] text-muted">—</span>
                             )}
+                            <select
+                              value={row.trackCondition ?? ""}
+                              disabled={!isMine || busy === row.id}
+                              onChange={(e) =>
+                                patch(
+                                  row.id,
+                                  { track_condition: e.target.value || null },
+                                  { trackCondition: e.target.value || null },
+                                )
+                              }
+                              style={{
+                                color: row.trackCondition
+                                  ? CONDITION_COLOR[row.trackCondition]
+                                  : undefined,
+                              }}
+                              className="rounded border border-hairline bg-surface px-1 py-0.5 text-[11px] disabled:opacity-60"
+                            >
+                              <option value="" style={{ color: "#8c959c" }}>
+                                —
+                              </option>
+                              {CONDITIONS.map((option) => (
+                                <option key={option} value={option} style={{ color: "#eef0f1" }}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
                           </span>
 
                           <span className="text-right font-mono text-xs font-bold">

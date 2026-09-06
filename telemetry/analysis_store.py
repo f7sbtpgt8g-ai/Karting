@@ -30,6 +30,8 @@ import pandas as pd
 
 from . import db as pgdb
 from .analysis import SessionAnalysis, analyze_lap
+from .metrics import add_engine_temperature
+from .setup_engine import DEFAULT_PEAK_POWER_RPM_BAND
 from .parser import Session
 
 logger = logging.getLogger(__name__)
@@ -44,7 +46,8 @@ logger = logging.getLogger(__name__)
 #    current, so the backfill skipped them and the summary cards stayed blank
 #    forever. Adding a stored field without bumping this is the same bug
 #    again -- the version is the only thing that makes old rows findable.
-ANALYSIS_VERSION = 2
+# 3: added the per-lap engine figures and the G/temperature arrays (0007).
+ANALYSIS_VERSION = 3
 
 # The trace columns Lap Analysis and the track map actually draw. Named here
 # rather than storing the whole metric trace because the parsed dataframe
@@ -57,7 +60,26 @@ _TRACE_COLUMNS = {
     "rpm": "RPM",
     "latitude": "Latitude",
     "longitude": "Longitude",
+    # This logger has no brake or throttle channel, so lateral and
+    # longitudinal G are how cornering load and braking are read at all.
+    "lateral_g": "GPS Lateral Acceleration",
+    "longitudinal_g": "GPS Longitudinal Acceleration",
+    # "Temperature 1" is the engine sensor. "Internal Temperature" is the
+    # logger's own, and is not what an engine page means by temperature.
+    "temp_c": "Temperature 1",
 }
+
+# The Rotax peak-power band. Only meaningful for a Rotax, but "share of the
+# lap in this RPM window" is computed for every lap regardless -- the class
+# decides whether the number is worth showing, not whether it can be
+# measured.
+#
+# Imported rather than restated: `setup_engine` reads the same band to decide
+# whether the kart is over- or under-geared, and two copies drifting apart
+# would have the engine page and the setup suggestions quietly disagreeing
+# about where the engine makes power. Which is exactly what happened -- this
+# was 9,000-12,000 here and 9,000-12,500 there.
+POWERZONE_RPM = tuple(float(v) for v in DEFAULT_PEAK_POWER_RPM_BAND)
 _BOOL_COLUMNS = {"braking": "braking_estimate", "power_on": "power_on_estimate"}
 
 
@@ -128,6 +150,9 @@ def store_session_analysis(
             trace = lap.metric_trace
             if trace.empty or "lap_distance_m" not in trace.columns:
                 continue
+            # Only the engine page reads temperature, so it is merged on here
+            # rather than being carried through the whole analysis pipeline.
+            trace = add_engine_temperature(session, int(lap_number), trace)
             values = {
                 name: _floats(trace[column]) if column in trace.columns else None
                 for name, column in _TRACE_COLUMNS.items()
@@ -140,17 +165,34 @@ def store_session_analysis(
                 )
                 for name, column in _BOOL_COLUMNS.items()
             }
-            # The summary cards want peak speed and RPM. Derivable from the
-            # arrays above, but only by shipping every lap's full trace to a
-            # browser to render two numbers.
+            # Per-lap aggregates. Derivable from the arrays above, but only
+            # by shipping every lap's full trace to a browser to render a
+            # table of numbers.
+            def agg(column: str, how: str) -> float | None:
+                if column not in trace.columns:
+                    return None
+                series = trace[column].dropna()
+                if series.empty:
+                    return None
+                return float(getattr(series, how)())
+
             peak = {
-                name: (
-                    float(trace[column].max())
-                    if column in trace.columns and trace[column].notna().any()
-                    else None
-                )
-                for name, column in (("speed", "GPS Speed"), ("rpm", "RPM"))
+                "max_speed": agg("GPS Speed", "max"),
+                "min_speed": agg("GPS Speed", "min"),
+                "max_rpm": agg("RPM", "max"),
+                "min_rpm": agg("RPM", "min"),
+                "avg_rpm": agg("RPM", "mean"),
+                "max_temp": agg("Temperature 1", "max"),
+                "min_temp": agg("Temperature 1", "min"),
+                "avg_temp": agg("Temperature 1", "mean"),
             }
+
+            powerzone = None
+            if "RPM" in trace.columns:
+                revs = trace["RPM"].dropna()
+                if not revs.empty:
+                    inside = revs.between(*POWERZONE_RPM).sum()
+                    powerzone = float(inside) / float(len(revs)) * 100.0
             trace_rows.append(
                 (
                     session_db_id,
@@ -164,8 +206,18 @@ def store_session_analysis(
                     values["longitude"],
                     booleans["braking"],
                     booleans["power_on"],
-                    peak["speed"],
-                    peak["rpm"],
+                    peak["max_speed"],
+                    peak["max_rpm"],
+                    peak["min_speed"],
+                    peak["min_rpm"],
+                    peak["avg_rpm"],
+                    peak["max_temp"],
+                    peak["min_temp"],
+                    peak["avg_temp"],
+                    powerzone,
+                    values["lateral_g"],
+                    values["longitudinal_g"],
+                    values["temp_c"],
                 )
             )
 
@@ -219,8 +271,10 @@ def store_session_analysis(
         cur.executemany(
             "INSERT INTO lap_traces "
             "(session_db_id, lap_number, sample_count, distance_m, lap_time_s, speed_kmh, "
-            " rpm, latitude, longitude, braking, power_on, max_speed_kmh, max_rpm) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            " rpm, latitude, longitude, braking, power_on, max_speed_kmh, max_rpm, "
+            " min_speed_kmh, min_rpm, avg_rpm, max_temp_c, min_temp_c, avg_temp_c, "
+            " powerzone_pct, lateral_g, longitudinal_g, temp_c) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             trace_rows,
         )
         conn.commit()

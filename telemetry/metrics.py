@@ -59,6 +59,43 @@ def lap_metric_trace(session: Session, lap_number: int) -> pd.DataFrame:
     return trace
 
 
+def add_engine_temperature(session: Session, lap_number: int, trace: pd.DataFrame) -> pd.DataFrame:
+    """Merge the engine temperature channel onto a lap trace.
+
+    Kept out of `lap_metric_trace` so that function keeps the exact shape the
+    extraction was verified against; nothing in the coaching pipeline reads
+    temperature, and only the engine page does.
+
+    "Temperature 1" is the engine sensor. "Internal Temperature" is the
+    logger's own -- it sits around 24-26C and would be a plausible-looking
+    wrong answer on an engine page.
+
+    Merged by nearest timestamp like RPM, because temperature logs on its own
+    cadence and never shares a row with the GPS fix (see the parser's notes on
+    sparse channels).
+    """
+    if trace.empty:
+        return trace
+
+    temperature = session.extract_channel("Temperature 1")
+    temperature = temperature.loc[temperature["Lap Number"] == lap_number].sort_values(
+        "session_time_s"
+    )
+    if temperature.empty:
+        trace = trace.copy()
+        trace["Temperature 1"] = np.nan
+        return trace
+
+    merged = pd.merge_asof(
+        trace.sort_values("session_time_s"),
+        temperature[["session_time_s", "Temperature 1"]],
+        on="session_time_s",
+        direction="nearest",
+        tolerance=1.0,
+    )
+    return merged.sort_values("lap_distance_m").reset_index(drop=True)
+
+
 def add_braking_throttle_estimates(trace: pd.DataFrame) -> pd.DataFrame:
     """Flag inferred braking / power-on phases from longitudinal G and RPM.
 

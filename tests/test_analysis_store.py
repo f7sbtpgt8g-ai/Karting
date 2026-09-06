@@ -348,3 +348,99 @@ def test_per_lap_peaks_are_stored_for_the_summary_cards(analyzed):
             (analyzed["id"],),
         )
         assert cur.fetchone()[0] == 0
+
+
+def test_engine_figures_are_stored_per_lap(analyzed):
+    """The engine page is a table of ten numbers per lap. Computing them in
+    the browser would mean shipping every lap's whole trace to render it."""
+    from telemetry.analysis import analyze_lap
+
+    from telemetry.metrics import add_engine_temperature
+
+    best = analyzed["analysis"].best_lap
+    trace = add_engine_temperature(
+        analyzed["session"],
+        best,
+        analyze_lap(analyzed["session"], analyzed["analysis"], best).metric_trace,
+    )
+
+    with analyzed["conn"].cursor() as cur:
+        cur.execute(
+            "SELECT min_speed_kmh, min_rpm, avg_rpm, max_temp_c, min_temp_c, avg_temp_c "
+            "FROM lap_traces WHERE session_db_id=%s AND lap_number=%s",
+            (analyzed["id"], best),
+        )
+        min_speed, min_rpm, avg_rpm, max_temp, min_temp, avg_temp = cur.fetchone()
+
+    assert min_speed == pytest.approx(float(trace["GPS Speed"].dropna().min()))
+    assert min_rpm == pytest.approx(float(trace["RPM"].dropna().min()))
+    assert avg_rpm == pytest.approx(float(trace["RPM"].dropna().mean()))
+    assert max_temp == pytest.approx(float(trace["Temperature 1"].dropna().max()))
+    assert min_temp == pytest.approx(float(trace["Temperature 1"].dropna().min()))
+    assert avg_temp == pytest.approx(float(trace["Temperature 1"].dropna().mean()))
+    # A real engine temperature, not the logger's own internal one, which
+    # sits around 24-26C and would be a plausible-looking wrong answer.
+    assert max_temp > 30
+
+
+def test_powerzone_is_the_share_of_the_lap_in_the_rotax_band(analyzed):
+    from telemetry.analysis import analyze_lap
+    from telemetry.analysis_store import POWERZONE_RPM
+
+    best = analyzed["analysis"].best_lap
+    revs = analyze_lap(analyzed["session"], analyzed["analysis"], best).metric_trace["RPM"].dropna()
+    expected = float(revs.between(*POWERZONE_RPM).sum()) / len(revs) * 100.0
+
+    with analyzed["conn"].cursor() as cur:
+        cur.execute(
+            "SELECT powerzone_pct FROM lap_traces WHERE session_db_id=%s AND lap_number=%s",
+            (analyzed["id"], best),
+        )
+        stored = cur.fetchone()[0]
+
+    assert stored == pytest.approx(expected)
+    assert 0.0 <= stored <= 100.0
+
+
+def test_the_g_traces_the_charts_plot_are_stored(analyzed):
+    """This logger has no brake or throttle channel, so lateral and
+    longitudinal G are the only read on cornering load and braking."""
+    from telemetry.analysis import analyze_lap
+
+    from telemetry.metrics import add_engine_temperature
+
+    best = analyzed["analysis"].best_lap
+    trace = add_engine_temperature(
+        analyzed["session"],
+        best,
+        analyze_lap(analyzed["session"], analyzed["analysis"], best).metric_trace,
+    )
+
+    with analyzed["conn"].cursor() as cur:
+        cur.execute(
+            "SELECT lateral_g, longitudinal_g, temp_c FROM lap_traces "
+            "WHERE session_db_id=%s AND lap_number=%s",
+            (analyzed["id"], best),
+        )
+        lat, lon, temp = cur.fetchone()
+
+    assert lat == pytest.approx(trace["GPS Lateral Acceleration"].tolist(), nan_ok=True)
+    assert lon == pytest.approx(trace["GPS Longitudinal Acceleration"].tolist(), nan_ok=True)
+    assert temp == pytest.approx(trace["Temperature 1"].tolist(), nan_ok=True)
+
+
+def test_the_powerzone_band_is_the_setup_engines_band():
+    """One definition, not two.
+
+    `setup_engine` reads this band to decide whether the kart is over- or
+    under-geared; the engine page reads it to say how much of the lap was
+    spent making power. Two copies drifting apart would have those two
+    quietly disagreeing about where the engine makes power -- which is
+    exactly what happened, at 9,000-12,000 in one and 9,000-12,500 in the
+    other, and neither was wrong on its own terms.
+    """
+    from telemetry.analysis_store import POWERZONE_RPM
+    from telemetry.setup_engine import DEFAULT_PEAK_POWER_RPM_BAND
+
+    assert tuple(POWERZONE_RPM) == tuple(float(v) for v in DEFAULT_PEAK_POWER_RPM_BAND)
+    assert POWERZONE_RPM == (9000.0, 12500.0)

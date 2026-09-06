@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { ENGINE_CATEGORIES } from "@/lib/engine";
 
 type Mode = "signin" | "signup" | "reset";
 
@@ -37,6 +38,7 @@ export default function LoginForm() {
   const [displayName, setDisplayName] = useState("");
   const [dateOfBirth, setDateOfBirth] = useState("");
   const [guardianEmail, setGuardianEmail] = useState("");
+  const [engineCategory, setEngineCategory] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ kind: "error" | "info"; text: string } | null>(null);
 
@@ -74,6 +76,7 @@ export default function LoginForm() {
               display_name: displayName || email,
               ...(dateOfBirth ? { date_of_birth: dateOfBirth } : {}),
               ...(guardianEmail ? { guardian_email: guardianEmail } : {}),
+              ...(engineCategory ? { engine_category: engineCategory } : {}),
             },
           },
         });
@@ -160,6 +163,29 @@ export default function LoginForm() {
                 placeholder="How you appear to other drivers"
                 className="w-full rounded border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
               />
+            </div>
+
+            <div>
+              <label className="label mb-1 block" htmlFor="engine">
+                Engine class
+              </label>
+              <select
+                id="engine"
+                value={engineCategory}
+                onChange={(e) => setEngineCategory(e.target.value)}
+                className="w-full rounded border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
+              >
+                <option value="">Not sure yet</option>
+                {ENGINE_CATEGORIES.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-muted">
+                Sets the RPM band your engine analysis is read against. Changeable later in
+                Settings.
+              </p>
             </div>
 
             <div>

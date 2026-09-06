@@ -619,3 +619,43 @@ def test_the_exclusion_grant_does_not_open_up_the_rest_of_the_row(world, column,
     assert error and "permission denied" in error.lower(), (
         f"expected a column-level permission error, got: {error}"
     )
+
+
+# ------------------------------------------ a driver's own account (0007)
+
+
+def test_a_driver_can_set_their_own_engine_class(world):
+    allowed, err = world["alice"].write(
+        "UPDATE users SET engine_category='Rotax Senior' WHERE id=%s", (world["alice_user"],)
+    )
+    assert allowed, f"a driver could not set their own engine class: {err}"
+
+
+def test_a_driver_cannot_edit_another_account(world):
+    allowed, _ = world["carol"].write(
+        "UPDATE users SET engine_category='OK-N' WHERE id=%s", (world["alice_user"],)
+    )
+    assert not allowed, "a driver edited someone else's account row"
+
+
+@pytest.mark.parametrize(
+    "column,value",
+    [
+        ("email", "'hijack@example.com'"),
+        ("external_auth_id", "'some-other-identity'"),
+        ("guardian_consent_status", "'granted'"),
+        ("email_verified", "TRUE"),
+    ],
+)
+def test_the_settings_grant_does_not_open_up_the_account_row(world, column, value):
+    """`users` holds the auth link and the guardian-consent state. An UPDATE
+    policy chooses rows, never columns -- so without the column-level GRANT,
+    "let me change my engine class" would also mean "let me grant my own
+    guardian consent" and "let me repoint my account at another identity"."""
+    allowed, error = world["alice"].write(
+        f"UPDATE users SET {column} = {value} WHERE id=%s", (world["alice_user"],)
+    )
+    assert not allowed, f"a client rewrote users.{column} on their own account"
+    assert error and "permission denied" in error.lower(), (
+        f"expected a column-level permission error, got: {error}"
+    )
