@@ -77,13 +77,27 @@ def connect(connect_timeout_s: float | None = None):
     `unigo_sync.core.connectivity`) should pass a short value rather than
     risk the OS's own multi-minute TCP timeout on a network that's simply
     gone, e.g. a laptop joined to a device's own offline WiFi AP.
+
+    It is accepted as a float for callers' convenience but **must** reach
+    libpq as an integer: psycopg2 folds keyword arguments into the
+    connection string verbatim, and libpq parses this option as an integer,
+    so a float fails the connection outright with
+
+        invalid integer value "3.0" for connection option "connect_timeout"
+
+    That failure is indistinguishable from an unreachable database at every
+    call site, so passing 3.0 here meant `connectivity.is_online()` could
+    never return True on a Postgres deployment -- every synced session
+    queued for later and the queue never drained. Rounded rather than
+    truncated so a sub-second value still asks for a real wait; libpq's own
+    minimum is 2 seconds, and it silently treats 1 as 2.
     """
     import psycopg2
     import psycopg2.extras
 
     kwargs = {"cursor_factory": psycopg2.extras.RealDictCursor}
     if connect_timeout_s is not None:
-        kwargs["connect_timeout"] = connect_timeout_s
+        kwargs["connect_timeout"] = max(1, int(round(connect_timeout_s)))
     conn = psycopg2.connect(database_url(), **kwargs)
     try:
         yield conn
