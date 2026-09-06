@@ -1,0 +1,44 @@
+# App-wide theme -- design_handoff_karting_telemetry/README.md's 1a
+# ("channel-stack, pit-wall dark") token palette, applied via Streamlit's
+# native theming so components a plain CSS override can't reach (the
+# glide-data-grid-based st.dataframe, the sidebar nav, canvas-rendered
+# widgets) actually pick it up too -- app.py's `_inject_global_theme_css()`
+# layers bespoke details (hairline widths, label letter-spacing, card
+# treatments) on top of this base, not instead of it.
+#
+# Token values are copied from that README's "Design tokens" table --
+# change them there and here together, not just in one place.
+
+[theme]
+base = "dark"
+primaryColor = "#ff3b1f"
+backgroundColor = "#0b0d0f"
+secondaryBackgroundColor = "#0d1114"
+textColor = "#eef0f1"
+linkColor = "#ff3b1f"
+borderColor = "#22282c"
+dataframeBorderColor = "#22282c"
+dataframeHeaderBackgroundColor = "#101417"
+font = "Archivo:https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&display=swap"
+headingFont = "Archivo:https://fonts.googleapis.com/css2?family=Archivo:wght@700&display=swap"
+codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap"
+baseFontSize = 14
+baseRadius = "6px"
+buttonRadius = "4px"
+showWidgetBorder = true
+showSidebarBorder = true
+
+# Status/semantic colors -- mapped to the same gain/loss/theoretical/
+# reference tokens used throughout the app (delta text, sector bars,
+# coach-note cards), so st.success/st.error/st.warning/st.info read as
+# part of the same system instead of Streamlit's stock palette.
+greenColor = "#2fd07a"
+redColor = "#ff4a3d"
+orangeColor = "#ffd23d"
+violetColor = "#b06cff"
+
+chartCategoricalColors = ["#ff3b1f", "#b06cff", "#2fd07a", "#ffd23d", "#4d7cff", "#ff4a3d", "#8c959c"]
+
+[theme.sidebar]
+backgroundColor = "#0d1114"
+secondaryBackgroundColor = "#101417"
