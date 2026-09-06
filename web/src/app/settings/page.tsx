@@ -21,7 +21,7 @@ export default async function SettingsPage() {
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-8">
-      <AppHeader email={appUser.email} current="/settings" />
+      <AppHeader email={appUser.email} current="/settings" isAdmin={appUser?.is_admin} />
       <h1 className="mb-1 text-lg font-semibold">Settings</h1>
       <p className="mb-8 text-sm text-muted">Your account, and what you race.</p>
       <SettingsForm

@@ -64,6 +64,7 @@ export type AppUser = {
   display_name: string | null;
   email_verified: boolean | null;
   engine_category: string | null;
+  is_admin: boolean;
   authId: string;
 };
 
@@ -90,7 +91,7 @@ export async function resolveAppUser(): Promise<AppUserResolution> {
 
   const { data, error } = await supabase
     .from("users")
-    .select("id, email, display_name, email_verified, engine_category")
+    .select("id, email, display_name, email_verified, engine_category, is_admin")
     .eq("external_auth_id", user.id)
     .maybeSingle();
 
