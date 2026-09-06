@@ -223,3 +223,94 @@ def test_vacuum_actually_returns_the_space(seeded):
         f"session_cache stayed at {after / 1e6:.1f} MB after vacuuming -- "
         "clearing blobs freed nothing on disk"
     )
+
+
+# ------------------------------------- re-analysing after the blobs are gone
+#
+# The trap this closes: clearing blobs is the whole point of the script, and
+# a blob-only candidate query means the moment it succeeds it can never
+# analyse anything again. That is not hypothetical -- it happened, when the
+# peak-speed columns arrived after a clearing run and there was nothing left
+# to iterate over to repair them.
+
+
+def test_a_cleared_session_is_still_re_analysable_from_its_archive(seeded, tmp_path):
+    from scripts.backfill_analysis import main
+    from worker.storage_client import LocalDirectoryStore
+
+    store = LocalDirectoryStore(str(tmp_path))
+    main(["--analyze", "--archive", "--clear-blobs"], store=store)
+
+    # Simulate exactly what a bumped ANALYSIS_VERSION does: the stored rows
+    # are now out of date and must be recomputed, with no blobs left.
+    with seeded["conn"].cursor() as cur:
+        cur.execute("UPDATE session_analysis SET analysis_version = 0")
+        cur.execute("DELETE FROM lap_traces")
+        cur.execute("SELECT count(*) FROM session_cache WHERE dataframe_parquet IS NOT NULL")
+        assert cur.fetchone()[0] == 0, "precondition: every blob is cleared"
+
+    assert main(["--analyze"], store=store) == 0
+
+    with seeded["conn"].cursor() as cur:
+        cur.execute("SELECT count(*) FROM lap_traces")
+        assert cur.fetchone()[0] > 0, "could not re-analyse once the blobs were gone"
+        cur.execute("SELECT count(*) FROM session_analysis WHERE analysis_version = 0")
+        assert cur.fetchone()[0] == 0, "stale analysis rows were left behind"
+
+
+def test_a_cleared_session_falls_back_to_re_parsing_its_upload(seeded, tmp_path):
+    """The other recovery route: a session cleared because its original TSV
+    is still in the bucket, with no archived Parquet."""
+    import shutil
+
+    from scripts.backfill_analysis import main
+    from worker.storage_client import LocalDirectoryStore
+
+    # Put the real export in the bucket where the upload batch says it is.
+    bucket = tmp_path / "uid"
+    bucket.mkdir()
+    shutil.copy(SAMPLE_TSV, bucket / "x.tsv")
+    store = LocalDirectoryStore(str(tmp_path))
+
+    main(["--analyze", "--clear-blobs"], store=store)
+
+    with seeded["conn"].cursor() as cur:
+        # Only the uploaded session was clearable; strip its archive so the
+        # TSV is the only copy left.
+        cur.execute(
+            "UPDATE session_cache SET raw_storage_path = NULL WHERE session_db_id = %s",
+            (seeded["uploaded"],),
+        )
+        cur.execute("UPDATE session_analysis SET analysis_version = 0")
+        cur.execute("DELETE FROM lap_traces WHERE session_db_id = %s", (seeded["uploaded"],))
+
+    assert main(["--analyze", "--session-id", str(seeded["uploaded"])], store=store) == 0
+
+    with seeded["conn"].cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM lap_traces WHERE session_db_id = %s", (seeded["uploaded"],)
+        )
+        assert cur.fetchone()[0] > 0, "could not re-parse the session from its uploaded TSV"
+
+
+def test_a_session_with_no_raw_data_anywhere_is_reported_not_crashed(seeded, tmp_path):
+    """One unrecoverable session must not stop the rest of the backfill."""
+    from scripts.backfill_analysis import main
+    from worker.storage_client import LocalDirectoryStore
+
+    with seeded["conn"].cursor() as cur:
+        cur.execute(
+            "UPDATE session_cache SET dataframe_parquet = NULL, raw_storage_path = NULL "
+            "WHERE session_db_id = %s",
+            (seeded["orphan"],),
+        )
+        cur.execute("UPDATE session_analysis SET analysis_version = 0")
+
+    # Returns cleanly; the unrecoverable session is counted as failed, the
+    # other one still gets analysed.
+    assert main(["--analyze"], store=LocalDirectoryStore(str(tmp_path))) == 0
+    with seeded["conn"].cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM lap_traces WHERE session_db_id = %s", (seeded["uploaded"],)
+        )
+        assert cur.fetchone()[0] > 0
