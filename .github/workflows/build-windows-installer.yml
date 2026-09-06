@@ -44,6 +44,19 @@ jobs:
             throw "PyInstaller did not produce dist\UniGoSync.exe"
           }
 
+      # Writes dist\config.yaml -- the package's config.yaml plus this
+      # deployment's Supabase settings, so the installed app points at the
+      # real platform out of the box instead of a local SQLite file the end
+      # user would have to know to change. With the secrets unset (e.g. a
+      # fork) it copies the template through unchanged and the build still
+      # succeeds, producing the previous local-database behaviour.
+      - name: Bake deployment settings into config.yaml
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python unigo_sync/packaging/apply_deployment_config.py unigo_sync/config.yaml dist/config.yaml
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 

@@ -11,8 +11,10 @@ deployment.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
+from telemetry import db as pgdb
 from telemetry.accounts import CLAIM_INVITED, CLAIM_UNCLAIMED, account_library_from_env
 from telemetry.auth import auth_store_from_env, provider_from_env
 
@@ -33,6 +35,53 @@ class DriverChoice:
     is_own: bool
 
 
+def describe_backend(sessions_db_path: str) -> str:
+    """One short line naming the database this laptop will actually check
+    credentials against, for the GUI to show under the sign-in form.
+
+    Worth surfacing because the two backends fail identically from the
+    user's side -- a laptop that was never pointed at the shared platform
+    quietly checks an empty local file and reports bad credentials -- and
+    because which one is active is decided by config.yaml rather than by
+    anything visible in the app."""
+    if pgdb.has_postgres_configured():
+        return "Signing in against the shared UniGo platform database."
+    return f"Signing in against the local file {os.path.abspath(sessions_db_path)}"
+
+
+def _local_database_is_empty(accounts) -> bool:
+    """Whether a *local* accounts database holds no login accounts at all.
+
+    Restricted to the local backend on purpose. The empty-database case is
+    specifically what an unconfigured laptop looks like, and asking the
+    question over Postgres instead would open a connection with no timeout
+    (`telemetry.db.connect`'s default) on the one code path most likely to
+    be running with no route to it -- turning a failed sign-in at the track
+    into a multi-minute hang.
+
+    A database error is reported as False so the caller keeps the
+    provider's own error rather than replacing it with a misleading one.
+    """
+    if pgdb.has_postgres_configured():
+        return False
+    try:
+        return accounts.count_users() == 0
+    except Exception:  # noqa: BLE001 - an unreadable DB is not an empty one
+        return False
+
+
+def _misconfigured_database_error(sessions_db_path: str) -> str:
+    return (
+        "No accounts exist in the database this app is set up to use:\n"
+        f"    {os.path.abspath(sessions_db_path)}\n\n"
+        "Your email and password were not wrong -- they were never checked against "
+        "anything. This laptop has not been pointed at the shared UniGo platform, so "
+        "it fell back to a local database file, and that file is empty.\n\n"
+        "Fix it by setting supabase_url, supabase_anon_key and supabase_db_url in "
+        "config.yaml (all three), next to UniGoSync.exe, then restarting this app."
+    )
+
+
 def login(email: str, password: str, sessions_db_path: str) -> LoginResult:
     """Check credentials against the configured database and, on
     success, mint a server-side session token (same 7-day session
@@ -45,6 +94,14 @@ def login(email: str, password: str, sessions_db_path: str) -> LoginResult:
 
     result = provider.login(email.strip(), password)
     if not result.ok:
+        # A failure against a database with no accounts in it is a
+        # configuration problem, not a credential one, and saying
+        # "incorrect password" there sends people off resetting a password
+        # that was never the issue. Safe to distinguish: "this database is
+        # empty" reveals nothing about whether any particular address is
+        # registered, which is what the vague message exists to protect.
+        if _local_database_is_empty(accounts):
+            return LoginResult(False, error=_misconfigured_database_error(sessions_db_path))
         return LoginResult(False, error=result.error or "Incorrect email or password.")
 
     token = store.start_session(result.user_id)

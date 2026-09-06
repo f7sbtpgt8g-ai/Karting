@@ -42,8 +42,55 @@ def test_empty_file_uses_all_defaults():
     with tempfile.TemporaryDirectory() as tmp:
         path = str(Path(tmp) / "config.yaml")
         Path(path).write_text("")
-        config = load_config(path)
-        assert config == SyncConfig()
+        config = load_config(path, data_root=tmp)
+        # Every non-path field keeps its dataclass default; the path fields
+        # keep their default *values*, just anchored (see the path tests).
+        assert config == config_module.resolve_data_paths(SyncConfig(), tmp)
+
+
+def test_relative_paths_are_anchored_to_the_data_root_not_the_cwd():
+    """The bug this guards: `sessions_db: data/sessions.db` used to resolve
+    against the process working directory, so the installed app read a
+    different (empty, auto-created) accounts database depending on where it
+    was launched from -- surfacing as "Incorrect email or password"."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "config.yaml")
+        Path(path).write_text("sessions_db: 'data/sessions.db'\n")
+        root = os.path.abspath(os.sep + "app")
+        config = load_config(path, data_root=root)
+        assert config.sessions_db == os.path.join(root, "data", "sessions.db")
+
+
+def test_absolute_paths_in_the_config_are_left_alone():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "config.yaml")
+        absolute = str(Path(tmp) / "elsewhere" / "sessions.db")
+        Path(path).write_text(f"sessions_db: '{absolute}'\n")
+        config = load_config(path, data_root=tmp)
+        assert config.sessions_db == absolute
+
+
+def test_every_local_path_field_is_resolved():
+    root = os.path.abspath(os.sep + "app")
+    config = config_module.resolve_data_paths(SyncConfig(), root)
+    for key in config_module._PATH_KEYS:
+        assert os.path.isabs(getattr(config, key)), key
+
+
+def test_data_root_is_the_executable_dir_when_frozen(monkeypatch):
+    monkeypatch.setattr(config_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        config_module.sys, "executable", os.path.join("C:\\", "Apps", "UniGoSync", "UniGoSync.exe"),
+    )
+    assert config_module._default_data_root() == os.path.join("C:\\", "Apps", "UniGoSync")
+
+
+def test_data_root_is_the_repo_root_in_a_source_checkout(monkeypatch):
+    """Matches `app.py`'s own `DB_PATH` anchor, so the GUI and the Streamlit
+    app share one `data/sessions.db` when both run from a checkout."""
+    monkeypatch.delattr(config_module.sys, "frozen", raising=False)
+    root = config_module._default_data_root()
+    assert os.path.isfile(os.path.join(root, "app.py"))
 
 
 def test_filelist_url_joins_base_and_path():

@@ -29,6 +29,30 @@ def _default_config_path() -> str:
     return os.path.join(os.path.dirname(__file__), "..", "config.yaml")
 
 
+def _default_data_root() -> str:
+    """What the relative paths in config.yaml (`output_dir`, `sessions_db`,
+    ...) are resolved against.
+
+    Deliberately *not* the process working directory. Anchoring on the cwd
+    meant the same install read a different `sessions_db` depending on
+    where it happened to be launched from -- and since
+    `AccountLibrary.__init__` creates an empty SQLite file with a fresh
+    schema rather than failing on a missing one, the visible symptom was
+    "Incorrect email or password" against a database that had simply never
+    had any accounts in it. Anchoring instead means the config's default
+    `data/sessions.db` names one file per install, whatever the shortcut's
+    working directory says.
+
+    Frozen: the directory holding the .exe, i.e. the same place the
+    installer puts config.yaml. Source checkout: the repo root, which is
+    what `app.py`'s own `DB_PATH` resolves to, so running the GUI from a
+    checkout shares the Streamlit app's database as the config implies.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
 @dataclass
 class SyncConfig:
     # Device connection. Confirmed against firmware 1.20.002 -- see
@@ -97,10 +121,24 @@ class SyncConfig:
 # real deployment's database, not a manual Windows env-var edit.
 _ENV_CONFIG_KEYS = ("supabase_url", "supabase_anon_key", "supabase_db_url", "database_url")
 
+# Config fields naming a local file or directory. Any of these left
+# relative is resolved against `_default_data_root()` on load -- see there
+# for why the process working directory is the wrong anchor.
+_PATH_KEYS = (
+    "output_dir", "sync_state_db", "log_path", "sessions_db",
+    "auth_cache_path", "pending_uploads_db",
+)
 
-def load_config(path: str | None = None) -> SyncConfig:
+
+def load_config(path: str | None = None, data_root: str | None = None) -> SyncConfig:
     """Load config from YAML, falling back to defaults for anything not
-    present in the file (including a missing file entirely)."""
+    present in the file (including a missing file entirely).
+
+    Relative local paths in the file are made absolute against `data_root`
+    (default `_default_data_root()`), so every consumer of the returned
+    config sees the same files regardless of the working directory it was
+    launched from.
+    """
     path = path or _default_config_path()
     data = {}
     if os.path.exists(path):
@@ -119,4 +157,17 @@ def load_config(path: str | None = None) -> SyncConfig:
         if value and not os.environ.get(key.upper()):
             os.environ[key.upper()] = str(value)
 
-    return SyncConfig(extra=extra, **kwargs)
+    config = SyncConfig(extra=extra, **kwargs)
+    return resolve_data_paths(config, data_root or _default_data_root())
+
+
+def resolve_data_paths(config: SyncConfig, data_root: str) -> SyncConfig:
+    """Make every relative local path in `config` absolute against
+    `data_root`, in place. An already-absolute path is left alone, so a
+    config.yaml that spells out a full path (e.g. pointing a laptop at a
+    checkout's `data/sessions.db`) still wins."""
+    for key in _PATH_KEYS:
+        value = getattr(config, key)
+        if value and not os.path.isabs(value):
+            setattr(config, key, os.path.normpath(os.path.join(data_root, value)))
+    return config

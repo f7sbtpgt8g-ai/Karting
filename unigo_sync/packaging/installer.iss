@@ -4,7 +4,8 @@
 ;
 ; Build with:
 ;   iscc unigo_sync/packaging/installer.iss
-; Expects dist\UniGoSync.exe to already exist (run PyInstaller first) and
+; Expects dist\UniGoSync.exe to already exist (run PyInstaller first),
+; dist\config.yaml to exist (run apply_deployment_config.py first) and
 ; icon.ico to exist alongside this script (run make_icon.py first) -- see
 ; ../../.github/workflows/build-windows-installer.yml for the full,
 ; verified sequence.
@@ -46,10 +47,19 @@ Name: "startupicon"; Description: "Start UniGo Sync automatically when Windows s
 
 [Files]
 Source: "..\..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; dist\config.yaml, not the package's own config.yaml: the build runs
+; packaging\apply_deployment_config.py first, which copies the template
+; through and appends the deployment's Supabase settings when they're
+; present in the environment, so the shipped file already points at the
+; real platform and an end user never has to edit anything.
+;
 ; onlyifdoesntexist: don't clobber a user's edited config.yaml on
 ; reinstall/upgrade. uninsneveruninstall: leave it behind on uninstall
 ; too, in case they reinstall later or just want to keep it for reference.
-Source: "..\config.yaml"; DestDir: "{app}"; Flags: onlyifdoesntexist uninsneveruninstall
+; Note the consequence: an existing install keeps the config.yaml it has,
+; so changed deployment settings reach it only if that file is removed
+; first.
+Source: "..\..\dist\config.yaml"; DestDir: "{app}"; Flags: onlyifdoesntexist uninsneveruninstall
 
 [Icons]
 Name: "{group}\UniGo Sync"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"

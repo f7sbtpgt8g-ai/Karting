@@ -57,6 +57,55 @@ def test_login_fails_with_wrong_password(db_path):
 
     assert result.ok is False
     assert result.session_token is None
+    # A database that *does* have accounts keeps the deliberately vague
+    # message -- distinguishing "no such email" from "wrong password" there
+    # would be an account-enumeration hole.
+    assert result.error == "Incorrect email or password."
+
+
+def test_login_against_an_empty_database_reports_a_configuration_problem(tmp_path):
+    """The database file is created on demand with a fresh schema, so a
+    misconfigured `sessions_db` (or a laptop never pointed at the shared
+    platform) produces a valid but empty database rather than an error.
+    Reporting that as a bad password sends people off resetting a password
+    that was never wrong."""
+    path = os.path.join(tmp_path, "sessions.db")
+
+    result = auth_session.login("austin@example.com", "correct horse battery", path)
+
+    assert result.ok is False
+    assert "No accounts exist" in result.error
+    assert os.path.abspath(path) in result.error
+    assert "supabase_url" in result.error
+    # And it must not claim the credentials themselves were rejected.
+    assert "Incorrect email or password" not in result.error
+
+
+def test_empty_database_check_is_skipped_entirely_when_postgres_is_configured(monkeypatch):
+    """`telemetry.db.connect` has no connect timeout by default, so probing
+    Postgres on a failed sign-in would hang for minutes on exactly the path
+    most likely to have no route to it -- a laptop joined to the device's
+    own offline AP. The check must not even ask."""
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://example/db")
+
+    class ExplodingAccounts:
+        def count_users(self):
+            raise AssertionError("must not query the database")
+
+    assert auth_session._local_database_is_empty(ExplodingAccounts()) is False
+
+
+def test_describe_backend_names_the_local_file_when_supabase_is_not_configured(db_path):
+    assert os.path.abspath(db_path) in auth_session.describe_backend(db_path)
+
+
+def test_describe_backend_names_the_platform_when_supabase_is_configured(db_path, monkeypatch):
+    monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://example/db")
+
+    described = auth_session.describe_backend(db_path)
+
+    assert "shared UniGo platform" in described
+    assert os.path.abspath(db_path) not in described
 
 
 def test_validate_session_round_trips_and_sign_out_revokes_it(db_path):

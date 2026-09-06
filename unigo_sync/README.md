@@ -127,6 +127,11 @@ login, no upload" behaviour, but is no longer what the installer ships.
 
 #### Pointing it at a real deployment
 
+Installers built by CI already carry the deployment's settings (see
+"Baking the deployment settings into the installer" below) -- this
+section is about what those settings are and how to set them by hand for
+a source checkout.
+
 By default the GUI checks credentials against, and uploads sessions into,
 the local `sessions_db` SQLite file (`data/sessions.db`) -- fine for
 trying it out, but a shared file, not a shared database, if more than one
@@ -141,6 +146,54 @@ into the process's own `SUPABASE_URL`/`SUPABASE_ANON_KEY`/
 just no convenient way to set a Windows environment variable on a
 per-user, no-admin install, so `config.yaml` is the place to put them
 instead.
+
+**Set all three or none.** `supabase_url` + `supabase_anon_key` switch
+only the *login* to Supabase (`provider_from_env`), while accounts,
+driver profiles and uploads follow `supabase_db_url` alone
+(`telemetry.db.has_postgres_configured`). Setting the first two without
+the third gives a successful sign-in followed by an empty driver list --
+the installer build refuses to produce that combination
+(`packaging/apply_deployment_config.py`), and it's worth avoiding by hand
+for the same reason.
+
+If the account was originally created while the app ran on local auth, it
+has a local password hash but no Supabase Auth (GoTrue) identity, and
+signing in against Supabase will fail with "Invalid login credentials"
+until it's registered or password-reset through Supabase once.
+
+##### Baking the deployment settings into the installer
+
+So an end user never has to open `config.yaml`,
+`packaging/apply_deployment_config.py` runs during the installer build and
+writes `dist/config.yaml` -- the template above plus whichever of
+`SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_DB_URL` are set in the
+build environment -- and `installer.iss` ships *that* file. In CI they come
+from repository secrets of the same names, so the credentials live in
+GitHub Actions secrets rather than in git history:
+
+> Settings -> Secrets and variables -> Actions -> New repository secret,
+> once for each of `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_DB_URL`.
+
+With none of them set (a fork, or a local build) the template is copied
+through unchanged and the build still succeeds, producing an installer
+that uses the local SQLite database exactly as before. Setting only some
+of them fails the build rather than shipping the half-configured state
+described above.
+
+Two things to know about what this means:
+
+- **`supabase_db_url` is a Postgres connection string with a password in
+  it, and it ends up inside the shipped `.exe`.** That is inherent to the
+  design -- the app talks to Postgres directly rather than through
+  PostgREST, so it needs real database credentials on the laptop -- but it
+  means anyone who can download the installer (or the workflow artifact)
+  can read them. Point it at a restricted role with only the privileges
+  the sync tool needs, not the project owner, and rotate it if an
+  installer leaks.
+- **An existing install keeps the `config.yaml` it already has**, because
+  the installer marks it `onlyifdoesntexist` so a reinstall never clobbers
+  a user's edits. Changing the baked settings therefore reaches an
+  already-installed laptop only if that file is deleted (or edited) first.
 
 ### Installing on an end user's Windows PC (no Python needed)
 
@@ -159,7 +212,10 @@ terminal -- download and run **`UniGoSyncSetup.exe`** instead:
    described above (sign in, then Connect & Sync), just with the Python
    runtime and all dependencies bundled in.
 
-`config.yaml` is installed as a plain, editable text file next to
+Nothing needs configuring: an installer built by CI already points at the
+deployment's own database (see "Baking the deployment settings into the
+installer" below), so signing in uses the same account as the web app.
+`config.yaml` is still installed as a plain, editable text file next to
 `UniGoSync.exe` (under `%LocalAppData%\Programs\UniGoSync\`) -- edit it
 there directly if an endpoint ever needs to change; it won't be
 overwritten by a reinstall/upgrade.
@@ -174,6 +230,10 @@ assumed to work.
 pip install -r unigo_sync/requirements.txt -r unigo_sync/requirements-windows.txt
 python unigo_sync/packaging/make_icon.py unigo_sync/packaging/icon.ico
 pyinstaller --distpath dist --workpath build unigo_sync/packaging/UniGoSync.spec
+# Writes dist\config.yaml, with the deployment's Supabase settings baked in
+# if SUPABASE_URL/SUPABASE_ANON_KEY/SUPABASE_DB_URL are set in the
+# environment -- without them it just copies the template through:
+python unigo_sync/packaging/apply_deployment_config.py unigo_sync/config.yaml dist/config.yaml
 # then, with Inno Setup (https://jrsoftware.org/isinfo.php) installed:
 iscc unigo_sync/packaging/installer.iss
 ```
@@ -245,7 +305,8 @@ unigo_sync/
     run_tray.py                      <- same, for the legacy tray_app.py, kept for anyone building that variant themselves
     UniGoSync.spec                    <- PyInstaller spec: onefile, windowed, icon
     make_icon.py                       <- generates icon.ico matching the tray icon's look
-    installer.iss                       <- Inno Setup script: per-user install, shortcuts, uninstaller
+    apply_deployment_config.py          <- bakes the deployment's Supabase settings into the shipped config.yaml
+    installer.iss                        <- Inno Setup script: per-user install, shortcuts, uninstaller
   discovery/                   <- Part 1: capture-and-inspect harness (see discovery/README.md)
   tests/                        <- pytest suite for everything above except gui_app.py/tray_app.py's live GUI loops
 ```
@@ -341,7 +402,16 @@ above, gated on `core/connectivity.py`'s `is_online()`:
   extract to an ephemeral temp directory that `__file__` would otherwise
   point at. This is why the installer places `config.yaml` beside
   `UniGoSync.exe` as a plain file rather than bundling it inside the
-  archive.
+  archive. The relative paths *inside* it (`output_dir`, `sessions_db`,
+  ...) follow the same split via `_default_data_root`: the `.exe`'s own
+  directory when frozen, the repo root in a checkout -- deliberately not
+  the process working directory, which used to mean the same install read
+  a different accounts database depending on how it was launched. Since
+  `AccountLibrary` creates an empty database rather than failing on a
+  missing one, the symptom was a sign-in rejected as "Incorrect email or
+  password" against a database that had simply never had any accounts in
+  it; `core/auth_session.py` now reports that case as the configuration
+  problem it is, naming the file it actually checked.
 
 ## If a firmware update breaks sync
 
