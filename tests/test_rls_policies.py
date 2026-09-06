@@ -409,3 +409,161 @@ def test_a_client_cannot_rewrite_a_batchs_outcome(world, db):
         "UPDATE upload_batches SET status='complete', sessions_created=99 WHERE id=%s", (batch,)
     )
     assert not allowed, "a client rewrote the status of its own upload batch"
+
+
+# ------------------------------------------------------------ the Home page
+#
+# Home reads sessions scoped to your own driver profile plus, for a team
+# manager/admin, the team roster's -- and writes back session type, track
+# name, conditions and visibility inline. Those writes go straight from the
+# browser to PostgREST under the caller's own JWT, so these policies are the
+# only thing between one driver and another driver's session rows.
+
+
+def test_a_driver_can_edit_their_own_sessions_details(world):
+    """The inline edits Home offers: session type, track name, conditions."""
+    allowed, err = world["alice"].write(
+        "UPDATE sessions SET session_type='Qualifying', track_name='Ring B', "
+        "track_condition='Wet' WHERE id=%s",
+        (world["session_shared"],),
+    )
+    assert allowed, f"a driver could not edit their own session: {err}"
+
+
+def test_a_driver_cannot_edit_another_drivers_session_details(world):
+    """Carol can *see* Alice's shared session on Leaderboards, so "visible"
+    must not imply "editable"."""
+    allowed, _ = world["carol"].write(
+        "UPDATE sessions SET track_name='Hijacked' WHERE id=%s", (world["session_shared"],)
+    )
+    assert not allowed, "a driver edited a session belonging to someone else"
+
+
+def test_a_teammate_cannot_edit_a_team_visible_session(world):
+    """Bob sees Alice's team session, and being on her team is not authority
+    over her data."""
+    allowed, _ = world["bob"].write(
+        "UPDATE sessions SET session_type='Final' WHERE id=%s", (world["session_team"],)
+    )
+    assert not allowed, "a teammate edited another member's session"
+
+
+def test_a_manager_can_read_their_teams_roster(world):
+    """Home widens a manager's scope to the whole roster, which needs this
+    read to resolve the profile ids in the first place."""
+    rows = world["alice"].query(
+        "SELECT driver_profile_id FROM team_memberships WHERE team_id=%s AND status='active'",
+        (world["team"],),
+    )
+    assert {r[0] for r in rows} == {world["alice_profile"], world["bob_profile"]}
+
+
+def test_an_outsider_cannot_read_a_teams_roster(world):
+    """Otherwise the roster is a membership list anyone can enumerate."""
+    rows = world["carol"].query(
+        "SELECT driver_profile_id FROM team_memberships WHERE team_id=%s", (world["team"],)
+    )
+    assert rows == [], "a non-member read a team's roster"
+
+
+def test_driver_names_resolve_for_sessions_home_can_see(world):
+    """Home groups by driver and shows the name, via an embedded join onto
+    driver_profiles. If that policy denied the row the group headers would
+    silently read 'Unknown driver'."""
+    rows = world["bob"].query(
+        "SELECT p.display_name FROM sessions s JOIN driver_profiles p "
+        "ON p.id = s.driver_profile_id WHERE s.id=%s",
+        (world["session_team"],),
+    )
+    assert rows == [("Alice",)]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="KNOWN GAP: an uploader can attribute a session to another driver's "
+    "claimed profile AND mark it 'confirmed' in one PostgREST call, bypassing "
+    "the confirmation step accounts.attribute_session() enforces. Not reachable "
+    "from any screen built so far, but RLS -- not the UI -- is the boundary. "
+    "Fixing it needs a BEFORE UPDATE trigger (WITH CHECK cannot see the old "
+    "row), and touches the worker's attribution too, so it is deliberately not "
+    "patched under a Home-page change. Flip this to a plain assert when fixed.",
+)
+def test_a_driver_cannot_attribute_a_session_to_someone_elses_profile(world):
+    """`attribute_session(requires_confirmation=True)` exists because filing a
+    session under another registered driver puts it in their history and on
+    their leaderboard entry -- every such query filters on
+    `attribution_status = 'confirmed'`. That consent step lives in Python, and
+    Python is no longer on the path now that the browser writes to `sessions`
+    directly."""
+    allowed, _ = world["alice"].write(
+        "UPDATE sessions SET driver_profile_id=%s, attribution_status='confirmed' WHERE id=%s",
+        (world["carol_profile"], world["session_shared"]),
+    )
+    assert not allowed, "a driver attributed their session to another driver as confirmed"
+
+
+# ------------------------------------------------- the stored analysis (0005)
+#
+# Traces, sector times and session analysis are what Lap Analysis reads, and
+# they exist so the raw blob can be cleared. They must inherit their
+# session's visibility exactly -- and must not be writable by a client, or
+# anyone could forge the numbers a coaching page is built from.
+
+
+@pytest.fixture(scope="module")
+def analysis_rows(db, world):
+    with db.cursor() as cur:
+        for tier in ("private", "team", "shared"):
+            session_id = world[f"session_{tier}"]
+            cur.execute(
+                "INSERT INTO session_analysis (session_db_id, best_lap, theoretical_best_s) "
+                "VALUES (%s, 1, 30.0) ON CONFLICT (session_db_id) DO NOTHING",
+                (session_id,),
+            )
+            cur.execute(
+                "INSERT INTO lap_segment_times "
+                "(session_db_id, lap_number, segment_index, segment_label, segment_kind, time_s) "
+                "VALUES (%s,1,0,'Corner 1','corner',5.0) ON CONFLICT DO NOTHING",
+                (session_id,),
+            )
+            cur.execute(
+                "INSERT INTO lap_traces (session_db_id, lap_number, sample_count, "
+                "distance_m, lap_time_s) VALUES (%s,1,2,'{0,10}','{0,1}') "
+                "ON CONFLICT DO NOTHING",
+                (session_id,),
+            )
+    db.commit()
+    return world
+
+
+@pytest.mark.parametrize("table", ["session_analysis", "lap_segment_times", "lap_traces"])
+def test_stored_analysis_inherits_session_visibility(analysis_rows, table):
+    world = analysis_rows
+    owner = {r[0] for r in world["alice"].query(f"SELECT session_db_id FROM {table}")}
+    teammate = {r[0] for r in world["bob"].query(f"SELECT session_db_id FROM {table}")}
+    outsider = {r[0] for r in world["carol"].query(f"SELECT session_db_id FROM {table}")}
+
+    assert owner == {world["session_private"], world["session_team"], world["session_shared"]}
+    assert teammate == {world["session_team"], world["session_shared"]}, (
+        f"{table} leaked a private session to a teammate"
+    )
+    assert outsider == {world["session_shared"]}, f"{table} leaked to an outsider"
+    assert world["anon"].query(f"SELECT session_db_id FROM {table}") == []
+
+
+@pytest.mark.parametrize("table", ["session_analysis", "lap_segment_times", "lap_traces"])
+def test_a_client_cannot_write_stored_analysis(analysis_rows, table):
+    """Only the worker writes these, on the service-role connection. A
+    client that could edit them could put any lap time, sector or trace in
+    front of a driver -- including on a leaderboard."""
+    world = analysis_rows
+    allowed, _ = world["alice"].write(
+        f"UPDATE {table} SET session_db_id = session_db_id WHERE session_db_id = %s",
+        (world["session_shared"],),
+    )
+    assert not allowed, f"a client updated {table} on their own session"
+
+    allowed, _ = world["alice"].write(
+        f"DELETE FROM {table} WHERE session_db_id = %s", (world["session_shared"],)
+    )
+    assert not allowed, f"a client deleted from {table}"
