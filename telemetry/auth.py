@@ -522,7 +522,26 @@ class SupabaseAuthProvider(AuthProvider):
             return AuthResult(
                 False, error="A parent or guardian's email address is required to register under 16.",
             )
-        status, body = self._post("/signup", {"email": email, "password": password})
+        # Registration details go to GoTrue as user metadata, not just into
+        # the local mirror afterwards, because the mirror row is now created
+        # by a trigger on `auth.users`
+        # (supabase/migrations/0004_mirror_auth_users.sql) -- it fires inside
+        # the signup and reads exactly these keys. Sending them here is what
+        # keeps the guardian-consent rule applying to every client rather
+        # than only to the ones that happen to be this Python app.
+        metadata = {
+            key: value
+            for key, value in (
+                ("display_name", display_name),
+                ("date_of_birth", date_of_birth),
+                ("guardian_email", guardian_email),
+            )
+            if value
+        }
+        payload = {"email": email, "password": password}
+        if metadata:
+            payload["data"] = metadata
+        status, body = self._post("/signup", payload)
         if status not in (200, 201):
             return AuthResult(False, error=self._error_text(body, "Registration failed."))
 

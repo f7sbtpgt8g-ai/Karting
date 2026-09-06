@@ -953,6 +953,32 @@ to fail *before* any session exists. RLS lets a client insert only
 all, so a client cannot mark an unparsed file complete or stall the queue
 (`tests/test_rls_policies.py`, "the upload queue").
 
+### Who a signed-in user *is*
+
+Supabase Auth identifies people by UUID; this schema keys everything off an
+integer `users.id` and bridges the two with `users.external_auth_id`. Every
+RLS policy resolves the caller through that bridge
+(`current_app_user_id()`), so an account without it authenticates perfectly
+and is invisible to every policy -- signed in, sees nothing, no error
+anywhere.
+
+That mirroring used to live in Python (`telemetry/auth.py`), which meant it
+only happened if the signup went through Streamlit.
+`0004_mirror_auth_users.sql` moves it to a trigger on `auth.users`, so it
+happens for every client -- Streamlit, the Next.js app, and the iOS app
+later -- and creates the driver profile alongside it. Registration details
+(display name, date of birth, guardian email) travel as GoTrue user
+metadata, which is also how the under-16 guardian-consent rule keeps
+applying to signups that never touch Python.
+
+Accounts created *before* that trigger existed still have a NULL
+`external_auth_id`. They repair themselves on their next Streamlit sign-in
+(`_mirror_user` backfills the column), or can be linked in one go with
+`supabase/manual/0004_backfill_external_auth_id.sql`. That script is
+deliberately **not** a migration: it is the one part of this work that
+writes to rows already in the live app's tables, so it is opt-in and shows
+you what it would do before it does it.
+
 ### Running it locally
 
 ```bash
@@ -973,6 +999,24 @@ deliberately separate from the app's `requirements.txt` and contains neither
 streamlit nor plotly -- so if a UI import ever creeps back into
 `telemetry/`, the image stops building rather than the worker quietly
 shipping a Streamlit install.
+
+### Deploying
+
+1. **Supabase** -- apply `supabase/migrations/`. `0003` adds the queue table
+   and the private `telemetry` bucket; `0004` adds the signup trigger. Both
+   are additive. The one thing that touches existing rows,
+   `supabase/manual/0004_backfill_external_auth_id.sql`, is deliberately
+   *not* in `migrations/` -- run it by hand once you've looked at what it
+   would link.
+2. **Vercel** -- import the repo with **Root Directory `web`**, and set
+   `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Nothing
+   else. If you ever find yourself adding a service-role key here, stop:
+   that key bypasses RLS and `NEXT_PUBLIC_`-prefixed variables are inlined
+   into the browser bundle.
+3. **Worker** -- deploy `worker/Dockerfile` with the repo root as build
+   context, and set `SUPABASE_DB_URL` (pooled), `SUPABASE_URL` and
+   `SUPABASE_SERVICE_ROLE_KEY`. One instance is enough; claiming is atomic
+   (`FOR UPDATE SKIP LOCKED`) so a second one needs no coordination.
 
 `tests/test_worker.py` runs the whole loop against a local Postgres using
 the bundled 82 MB export, and asserts the 11 real sessions land with their

@@ -66,3 +66,19 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO anon, authentic
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO anon, authenticated, service_role;
 GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
+
+-- ---------------------------------------------------------------------------
+-- `auth.users`, enough of it for the signup trigger in
+-- 0004_mirror_auth_users.sql to be created and fired locally.
+--
+-- Only the columns that trigger actually reads. A real project's auth.users
+-- has many more, and is managed by GoTrue -- nothing here is applied to a
+-- real project.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS auth.users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email TEXT UNIQUE,
+    raw_user_meta_data JSONB,
+    email_confirmed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

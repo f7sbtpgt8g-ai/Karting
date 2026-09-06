@@ -169,3 +169,35 @@ def test_under_16_still_requires_a_guardian(accounts, store):
     assert not result.ok
     assert "guardian" in (result.error or "").lower()
     assert provider.calls == []
+
+
+def test_registration_details_are_sent_to_gotrue_as_user_metadata(accounts, store):
+    """The local `users` row is created by a trigger on `auth.users`
+    (supabase/migrations/0004_mirror_auth_users.sql), which fires *inside*
+    the signup and reads these keys. If they aren't sent, an under-16 signs
+    up as 'not_required' and the guardian-consent gate never engages."""
+    provider = StubGoTrue(accounts, store, {"/signup": _signup_ok()})
+    provider.register(
+        "young@example.com",
+        "correct horse battery",
+        display_name="Junior",
+        date_of_birth="2014-05-01",
+        guardian_email="parent@example.com",
+    )
+
+    path, payload = provider.calls[0]
+    assert path == "/signup"
+    assert payload["data"] == {
+        "display_name": "Junior",
+        "date_of_birth": "2014-05-01",
+        "guardian_email": "parent@example.com",
+    }
+
+
+def test_registration_without_details_sends_no_metadata_key(accounts, store):
+    """An empty `data` object is not the same as omitting it -- GoTrue
+    stores whatever it is given, and an empty one would overwrite nothing
+    useful but is still noise in the identity record."""
+    provider = StubGoTrue(accounts, store, {"/signup": _signup_ok()})
+    provider.register("plain@example.com", "correct horse battery")
+    assert "data" not in provider.calls[0][1]

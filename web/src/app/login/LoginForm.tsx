@@ -6,6 +6,26 @@ import { createClient } from "@/lib/supabase/client";
 
 type Mode = "signin" | "signup" | "reset";
 
+// telemetry/accounts.py's PARENTAL_CONSENT_AGE. Under this, a guardian's
+// email is required at registration and sharing stays gated until they
+// consent. Enforced in the database too (the signup trigger in
+// supabase/migrations/0004_mirror_auth_users.sql sets consent to 'pending'),
+// so this check is here to explain the requirement, not to be the rule.
+const PARENTAL_CONSENT_AGE = 16;
+
+function isMinor(dateOfBirth: string): boolean {
+  if (!dateOfBirth) return false;
+  const dob = new Date(dateOfBirth);
+  if (Number.isNaN(dob.getTime())) return false;
+  const now = new Date();
+  let years = now.getFullYear() - dob.getFullYear();
+  const beforeBirthday =
+    now.getMonth() < dob.getMonth() ||
+    (now.getMonth() === dob.getMonth() && now.getDate() < dob.getDate());
+  if (beforeBirthday) years -= 1;
+  return years < PARENTAL_CONSENT_AGE;
+}
+
 export default function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
@@ -15,6 +35,8 @@ export default function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [dateOfBirth, setDateOfBirth] = useState("");
+  const [guardianEmail, setGuardianEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ kind: "error" | "info"; text: string } | null>(null);
 
@@ -34,12 +56,26 @@ export default function LoginForm() {
       }
 
       if (mode === "signup") {
+        if (isMinor(dateOfBirth) && !guardianEmail) {
+          throw new Error(
+            `A parent or guardian's email address is required to register under ${PARENTAL_CONSENT_AGE}.`,
+          );
+        }
         const { error } = await supabase.auth.signUp({
           email,
           password,
-          // Carried into the Supabase user's metadata so the display name
-          // survives to whatever mirrors the account into `users` locally.
-          options: { data: { display_name: displayName || email } },
+          // These exact keys are read by the `auth.users` trigger in
+          // supabase/migrations/0004_mirror_auth_users.sql, which creates
+          // the local `users` row and its driver profile inside the signup.
+          // Without them the account authenticates but resolves to NULL in
+          // every RLS policy -- signed in, sees nothing.
+          options: {
+            data: {
+              display_name: displayName || email,
+              ...(dateOfBirth ? { date_of_birth: dateOfBirth } : {}),
+              ...(guardianEmail ? { guardian_email: guardianEmail } : {}),
+            },
+          },
         });
         if (error) throw error;
         setMessage({
@@ -112,18 +148,53 @@ export default function LoginForm() {
         </div>
 
         {mode === "signup" && (
-          <div>
-            <label className="label mb-1 block" htmlFor="name">
-              Driver name
-            </label>
-            <input
-              id="name"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="How you appear to other drivers"
-              className="w-full rounded border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
-            />
-          </div>
+          <>
+            <div>
+              <label className="label mb-1 block" htmlFor="name">
+                Driver name
+              </label>
+              <input
+                id="name"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="How you appear to other drivers"
+                className="w-full rounded border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
+              />
+            </div>
+
+            <div>
+              <label className="label mb-1 block" htmlFor="dob">
+                Date of birth
+              </label>
+              <input
+                id="dob"
+                type="date"
+                value={dateOfBirth}
+                onChange={(e) => setDateOfBirth(e.target.value)}
+                className="w-full rounded border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
+              />
+            </div>
+
+            {isMinor(dateOfBirth) && (
+              <div>
+                <label className="label mb-1 block" htmlFor="guardian">
+                  Parent or guardian&apos;s email
+                </label>
+                <input
+                  id="guardian"
+                  type="email"
+                  required
+                  value={guardianEmail}
+                  onChange={(e) => setGuardianEmail(e.target.value)}
+                  className="w-full rounded border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
+                />
+                <p className="mt-1 text-xs text-muted">
+                  Under {PARENTAL_CONSENT_AGE}: sessions stay private to you until a guardian
+                  consents.
+                </p>
+              </div>
+            )}
+          </>
         )}
 
         {mode !== "reset" && (
