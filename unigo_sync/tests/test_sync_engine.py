@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import unigo_sync.tests.uni_fixtures as fx  # noqa: E402
 from unigo_sync.core.config import SyncConfig  # noqa: E402
 from unigo_sync.core.device_client import DeviceUnreachable  # noqa: E402
-from unigo_sync.core.sync_engine import run_sync  # noqa: E402
+from unigo_sync.core.sync_engine import preview_sync, run_sync  # noqa: E402
 from unigo_sync.core.sync_state import SyncState  # noqa: E402
 
 
@@ -147,3 +147,96 @@ def test_out_of_period_session_is_not_recorded_in_sync_state():
 
         with SyncState(config.sync_state_db) as state:
             assert state.list_all() == []
+
+
+def test_preview_sync_reports_counts_and_bytes_without_downloading():
+    with tempfile.TemporaryDirectory() as tmp:
+        config = _tmp_config(tmp)
+        data_a, data_b = _valid_uni_bytes(), _valid_uni_bytes()
+        client = FakeClient({"a.uni": data_a, "b.uni": data_b})
+
+        preview = preview_sync(config, client=client)
+
+        assert preview.total_on_device == 2
+        assert preview.in_period == 2
+        assert preview.already_synced == 0
+        assert preview.new_count == 2
+        assert preview.new_bytes == len(data_a) + len(data_b)
+        # preview never downloads anything
+        assert client.download_calls == []
+
+
+def test_preview_sync_excludes_out_of_period_sessions():
+    from datetime import datetime
+
+    with tempfile.TemporaryDirectory() as tmp:
+        config = _tmp_config(tmp)
+        client = FakeClient({
+            "260828_0900_old.uni": _valid_uni_bytes(),
+            "260829_1000_new.uni": _valid_uni_bytes(),
+        })
+
+        preview = preview_sync(config, client=client, period_cutoff=datetime(2026, 8, 29))
+
+        assert preview.total_on_device == 2
+        assert preview.in_period == 1
+        assert preview.new_count == 1
+
+
+def test_preview_sync_counts_already_synced_sessions_separately():
+    with tempfile.TemporaryDirectory() as tmp:
+        config = _tmp_config(tmp)
+        data = _valid_uni_bytes()
+        client = FakeClient({"a.uni": data})
+        run_sync(config, client=client)  # downloads and records it as synced
+
+        preview = preview_sync(config, client=client)
+
+        assert preview.new_count == 0
+        assert preview.already_synced == 1
+        assert preview.new_bytes == 0
+
+
+def test_preview_sync_propagates_device_unreachable():
+    with tempfile.TemporaryDirectory() as tmp:
+        config = _tmp_config(tmp)
+        with pytest.raises(DeviceUnreachable):
+            preview_sync(config, client=FailingListClient())
+
+
+def test_on_progress_called_once_per_in_period_session_with_running_total():
+    with tempfile.TemporaryDirectory() as tmp:
+        config = _tmp_config(tmp)
+        client = FakeClient({"a.uni": _valid_uni_bytes(), "b.uni": _valid_uni_bytes()})
+        calls = []
+
+        run_sync(config, client=client, on_progress=lambda i, t, n: calls.append((i, t, n)))
+
+        assert sorted(calls) == [(1, 2, "a.uni"), (2, 2, "b.uni")]
+
+
+def test_on_progress_excludes_out_of_period_sessions():
+    from datetime import datetime
+
+    with tempfile.TemporaryDirectory() as tmp:
+        config = _tmp_config(tmp)
+        client = FakeClient({
+            "260828_0900_old.uni": _valid_uni_bytes(),
+            "260829_1000_new.uni": _valid_uni_bytes(),
+        })
+        calls = []
+
+        run_sync(
+            config, client=client, period_cutoff=datetime(2026, 8, 29),
+            on_progress=lambda i, t, n: calls.append((i, t, n)),
+        )
+
+        assert calls == [(1, 1, "260829_1000_new.uni")]
+
+
+def test_on_progress_is_optional():
+    with tempfile.TemporaryDirectory() as tmp:
+        config = _tmp_config(tmp)
+        client = FakeClient({"a.uni": _valid_uni_bytes()})
+        result = run_sync(config, client=client)  # no on_progress -- should not raise
+        assert result.new_synced == ["a.uni"]
