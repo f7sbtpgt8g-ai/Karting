@@ -16,7 +16,47 @@ export const CONDITIONS = ["Dry", "Wet", "Mixed"];
 
 type Profile = { id: number; display_name: string };
 
-type Phase = "idle" | "presigning" | "uploading" | "confirming" | "parsing" | "done" | "error";
+type Phase =
+  | "idle"
+  | "compressing"
+  | "presigning"
+  | "uploading"
+  | "confirming"
+  | "parsing"
+  | "done"
+  | "error";
+
+/**
+ * Supabase Storage caps a single file at 50 MB on the free plan, and that is
+ * also the plan's ceiling -- it cannot be raised without upgrading. A full
+ * track day's Unipro export is comfortably past it.
+ *
+ * It is also highly compressible text: about 6x, measured on a real 82 MB
+ * export. So anything of consequence is gzipped in the browser before it is
+ * uploaded, which turns a 45 MB export into roughly 7 MB and leaves headroom
+ * for exports several times larger than the limit.
+ */
+const STORAGE_LIMIT_BYTES = 50 * 1024 * 1024;
+
+/** Below this, compressing costs a second and saves nothing that matters. */
+const COMPRESS_ABOVE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * gzip a file in the browser.
+ *
+ * `CompressionStream` is native -- no library, and it streams rather than
+ * holding the whole file in memory twice. Returns null where it is
+ * unavailable, so an older browser uploads uncompressed rather than failing.
+ */
+async function gzip(file: File): Promise<Blob | null> {
+  if (typeof CompressionStream === "undefined") return null;
+  try {
+    const stream = file.stream().pipeThrough(new CompressionStream("gzip"));
+    return await new Response(stream).blob();
+  } catch {
+    return null;
+  }
+}
 
 type BatchStatus = {
   id: number;
@@ -86,8 +126,31 @@ export default function UploadForm({ profiles }: { profiles: Profile[] }) {
     setProgress(0);
 
     try {
+      // Compressed before anything else, because the size that matters to
+      // Storage is the size after this.
+      let payload: Blob = file;
+      let uploadName = file.name;
+      const alreadyCompressed = /\.(gz|zip)$/i.test(file.name);
+
+      if (!alreadyCompressed && file.size > COMPRESS_ABOVE_BYTES) {
+        setPhase("compressing");
+        const compressed = await gzip(file);
+        if (compressed) {
+          payload = compressed;
+          uploadName = `${file.name}.gz`;
+        }
+      }
+
+      if (payload.size > STORAGE_LIMIT_BYTES) {
+        throw new Error(
+          `This file is ${(payload.size / 1_048_576).toFixed(0)} MB after compression, and ` +
+            "Supabase Storage accepts at most 50 MB per file on the free plan. Split the export " +
+            "in Unipro Analyser, or raise the limit by upgrading the Supabase project.",
+        );
+      }
+
       setPhase("presigning");
-      const presigned = await postJson("/api/uploads/presign", { filename: file.name });
+      const presigned = await postJson("/api/uploads/presign", { filename: uploadName });
 
       // Straight from the browser to Storage. The bytes never touch a Vercel
       // function -- a real export is tens of MB, past the request body limit.
@@ -95,8 +158,9 @@ export default function UploadForm({ profiles }: { profiles: Profile[] }) {
       const supabase = createClient();
       const { error: uploadError } = await supabase.storage
         .from("telemetry")
-        .uploadToSignedUrl(presigned.path, presigned.token, file, {
-          contentType: "text/tab-separated-values",
+        .uploadToSignedUrl(presigned.path, presigned.token, payload, {
+          contentType:
+            payload === file ? "text/tab-separated-values" : "application/gzip",
         });
       if (uploadError) throw new Error(`Upload failed: ${uploadError.message}`);
       setProgress(100);
@@ -105,7 +169,7 @@ export default function UploadForm({ profiles }: { profiles: Profile[] }) {
       const confirmed = await postJson("/api/uploads/confirm", {
         path: presigned.path,
         originalFilename: file.name,
-        sizeBytes: file.size,
+        sizeBytes: payload.size,
         driverProfileId: profileId ? Number(profileId) : null,
         trackName: trackName || null,
         sessionType: sessionType || null,
@@ -134,6 +198,7 @@ export default function UploadForm({ profiles }: { profiles: Profile[] }) {
 
   const phaseLabel: Record<Phase, string> = {
     idle: "",
+    compressing: "Compressing (a large export shrinks about 6x)...",
     presigning: "Preparing upload...",
     uploading: "Uploading to storage...",
     confirming: "Queueing for processing...",
@@ -152,7 +217,7 @@ export default function UploadForm({ profiles }: { profiles: Profile[] }) {
           id="file"
           ref={inputRef}
           type="file"
-          accept=".tsv,.txt,text/plain,text/tab-separated-values"
+          accept=".tsv,.txt,.gz,.zip,text/plain,text/tab-separated-values,application/gzip,application/zip"
           required
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
           disabled={busy}
@@ -161,6 +226,9 @@ export default function UploadForm({ profiles }: { profiles: Profile[] }) {
         {file && (
           <p className="mt-1 font-mono text-xs text-muted">
             {file.name} &middot; {(file.size / 1_048_576).toFixed(1)} MB
+            {file.size > COMPRESS_ABOVE_BYTES && !/\.(gz|zip)$/i.test(file.name) && (
+              <span className="text-gain"> &middot; will be compressed before upload</span>
+            )}
           </p>
         )}
       </div>

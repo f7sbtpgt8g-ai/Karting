@@ -9,9 +9,12 @@ context attached, and attribute it.
 
 from __future__ import annotations
 
+import gzip
+import io
 import logging
 import os
 import tempfile
+import zipfile
 
 from telemetry.accounts import ATTRIBUTION_CONFIRMED, account_library_from_env
 from telemetry.analysis import analyze_session
@@ -30,6 +33,52 @@ class BatchFailed(RuntimeError):
     message is shown to the uploader, so it says what they can do."""
 
 
+# Magic bytes, not the filename. A driver who renames "export.tsv.gz" to
+# "export.tsv" -- or whose browser did the compressing without renaming
+# anything -- still gets the right answer, and a mislabelled file fails on
+# its contents rather than on its extension.
+_GZIP_MAGIC = b"\x1f\x8b"
+_ZIP_MAGIC = b"PK\x03\x04"
+
+
+def decompress_upload(raw: bytes) -> bytes:
+    """The telemetry inside an upload, whatever it arrived wrapped in.
+
+    Supabase Storage caps a single file at 50 MB on the free plan, and a
+    full track day's export is comfortably past that. A Unipro TSV is highly
+    compressible text -- about 6x, measured on the bundled 82 MB export -- so
+    the browser gzips before uploading and this unwraps it. Files compressed
+    by hand (.gz or .zip) work the same way.
+    """
+    if raw[:2] == _GZIP_MAGIC:
+        try:
+            return gzip.decompress(raw)
+        except OSError as exc:
+            raise BatchFailed(f"This file looks gzipped but could not be read ({exc}).") from exc
+
+    if raw[:4] == _ZIP_MAGIC:
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                names = [n for n in archive.namelist() if not n.endswith("/")]
+                # A zip made by right-clicking a folder carries macOS resource
+                # forks and similar; pick the telemetry rather than the first
+                # entry, which may well be one of those.
+                telemetry = [n for n in names if n.lower().endswith((".tsv", ".txt"))]
+                chosen = (telemetry or names)
+                if not chosen:
+                    raise BatchFailed("That zip file is empty.")
+                if len(telemetry) > 1:
+                    raise BatchFailed(
+                        f"That zip contains {len(telemetry)} telemetry files "
+                        f"({', '.join(sorted(telemetry)[:3])}...). Please upload one at a time."
+                    )
+                return archive.read(chosen[0])
+        except zipfile.BadZipFile as exc:
+            raise BatchFailed(f"This file looks like a zip but could not be read ({exc}).") from exc
+
+    return raw
+
+
 def process_batch(batch: UploadBatch, store: ObjectStore) -> int:
     """Parse one uploaded file and persist every session in it.
 
@@ -46,9 +95,16 @@ def process_batch(batch: UploadBatch, store: ObjectStore) -> int:
     if not raw:
         raise BatchFailed("The uploaded file was empty.")
 
+    raw = decompress_upload(raw)
+    if not raw:
+        raise BatchFailed("That archive unpacked to an empty file.")
+
     # `load_sessions` takes a path, not bytes -- the parser streams a file
     # that can be ~80MB, so handing it a path keeps it out of memory twice.
-    suffix = os.path.splitext(batch.original_filename or "upload.tsv")[1] or ".tsv"
+    # Named for what it now contains: the upload may have been "x.tsv.gz",
+    # and the parser is handed plain text either way.
+    name = (batch.original_filename or "upload.tsv").removesuffix(".gz").removesuffix(".zip")
+    suffix = os.path.splitext(name)[1] or ".tsv"
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp.write(raw)
         tmp_path = tmp.name

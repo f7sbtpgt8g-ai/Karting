@@ -55,7 +55,21 @@ export async function POST(request: Request) {
     // No body is fine -- the filename is only used to pick an extension.
   }
 
-  const extension = filename.toLowerCase().endsWith(".txt") ? "txt" : "tsv";
+  // Kept so the stored object is not named for something it is not. The
+  // worker sniffs magic bytes rather than trusting this, but an object whose
+  // name says .tsv while holding gzip is a trap for anyone reading the bucket.
+  const lower = filename.toLowerCase();
+  const extension = lower.endsWith(".tsv.gz")
+    ? "tsv.gz"
+    : lower.endsWith(".txt.gz")
+      ? "txt.gz"
+      : lower.endsWith(".gz")
+        ? "gz"
+        : lower.endsWith(".zip")
+          ? "zip"
+          : lower.endsWith(".txt")
+            ? "txt"
+            : "tsv";
   const path = `${user.id}/${randomUUID()}.${extension}`;
 
   const { data, error } = await supabase.storage
