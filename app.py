@@ -1038,9 +1038,29 @@ def _home_inject_css() -> None:
     display: inline-block; font-size: 9px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
     padding: 2px 7px; border-radius: 3px; background: {t['neutral_bar']}; color: {t['ink2']}; white-space: nowrap;
 }}
-.home-track {{ font-weight: 700; font-size: 13px; color: {t['ink']}; }}
-.home-meta {{ font-size: 11px; color: {t['ink_muted']}; }}
-.home-best-lap {{ font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 15px; color: {t['ink']}; }}
+.home-track {{ font-weight: 700; font-size: 13px; color: {t['ink']}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+.home-meta {{ font-size: 11px; color: {t['ink_muted']}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+.home-best-lap {{ font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 14px; color: {t['ink']}; text-align: right; }}
+.home-badges-cell {{ white-space: nowrap; overflow: hidden; }}
+
+/* Compact 1-row-per-session list -- tight padding on the bordered row
+   container (Streamlit's default has enough vertical padding to make a
+   single-line row look two lines tall) and no visible checkbox label. */
+.st-key-home_root [data-testid="stVerticalBlockBorderWrapper"] {{ margin-bottom: 2px; }}
+.home-row-container [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] {{ margin: 0; }}
+.home-row [data-testid="stHorizontalBlock"] {{ align-items: center; }}
+.home-row {{ padding: 3px 8px; }}
+.home-row [data-testid="stCheckbox"] label {{ min-height: 0; }}
+.home-row [data-testid="stCheckbox"] p {{ font-size: 0; }}  /* hide the "Compare" text, keep the box */
+
+/* Sortable column headers rendered as tertiary buttons -- look like plain
+   labels, not action buttons. */
+.st-key-home_header_row button {{
+    background: transparent !important; border: none !important; padding: 2px 4px !important;
+    font-family: 'Archivo', sans-serif; font-weight: 600; font-size: 10px; letter-spacing: .08em;
+    text-transform: uppercase; color: {t['ink_faint']} !important; box-shadow: none !important;
+}}
+.st-key-home_header_row button:hover {{ color: {t['ink']} !important; }}
 </style>
 """,
         unsafe_allow_html=True,
@@ -1050,6 +1070,23 @@ def _home_inject_css() -> None:
 def _home_badge(text: str, color: str | None = None) -> str:
     style = f' style="color:{color}; border:1px solid {color};background:transparent;"' if color else ""
     return f'<span class="home-badge"{style}>{text}</span>'
+
+
+def _home_sort_header(container, label: str, col_key: str, default_desc: bool) -> None:
+    """One clickable column-header button. Clicking the already-active
+    column flips its direction; clicking a different one switches to it at
+    `default_desc` -- descending for "most recent"/"slowest first"-style
+    defaults (Date), ascending for "fastest first" (Best lap) or
+    alphabetical (Track)."""
+    active = st.session_state.get("home_sort_col") == col_key
+    arrow = ("▼" if st.session_state.get("home_sort_desc") else "▲") if active else "⇅"
+    if container.button(f"{label} {arrow}", key=f"home_sort_btn_{col_key}", type="tertiary"):
+        if active:
+            st.session_state["home_sort_desc"] = not st.session_state["home_sort_desc"]
+        else:
+            st.session_state["home_sort_col"] = col_key
+            st.session_state["home_sort_desc"] = default_desc
+        st.rerun()
 
 
 def _home_seed_lap_comparison(selected_labels: list[str]) -> None:
@@ -1163,10 +1200,6 @@ def page_home() -> None:
         else:
             date_range = None
 
-        s1, s2 = st.columns([2, 1])
-        sort_field = s1.selectbox("Sort by", ["Date", "Track", "Best lap"], key="home_sort_field")
-        sort_desc = s2.checkbox("Descending", value=(sort_field == "Date"), key="home_sort_desc")
-
         filtered = scoped.copy()
         if track_pick != "All tracks":
             filtered = filtered[filtered["track_name"] == track_pick]
@@ -1178,13 +1211,28 @@ def page_home() -> None:
             parsed = pd.to_datetime(filtered["start_date"], errors="coerce")
             filtered = filtered[(parsed.dt.date >= date_range[0]) & (parsed.dt.date <= date_range[1])]
 
-        sort_col = {"Date": "start_date", "Track": "track_name", "Best lap": "best_lap_s"}[sort_field]
-        filtered = filtered.sort_values(sort_col, ascending=not sort_desc, na_position="last")
+        st.session_state.setdefault("home_sort_col", "start_date")
+        st.session_state.setdefault("home_sort_desc", True)
+        filtered = filtered.sort_values(
+            st.session_state["home_sort_col"], ascending=not st.session_state["home_sort_desc"], na_position="last",
+        )
 
         if filtered.empty:
             st.info("No sessions match these filters.")
             render_footer()
             return
+
+        # Column widths shared between the clickable header row and every
+        # session row below it, so the two stay aligned.
+        ROW_WIDTHS = [2.3, 1.6, 1.7, 1.0, 0.4, 0.4, 0.4, 0.4, 1.3]
+
+        header_row = st.container(key="home_header_row")
+        with header_row:
+            hc = st.columns(ROW_WIDTHS)
+            _home_sort_header(hc[0], "Track", "track_name", default_desc=False)
+            _home_sort_header(hc[1], "Date", "start_date", default_desc=True)
+            hc[2].markdown('<div class="da1a-label" style="padding:6px 0;">Type / class / conditions</div>', unsafe_allow_html=True)
+            _home_sort_header(hc[3], "Best lap", "best_lap_s", default_desc=False)
 
         # -- grouped-by-driver session list -----------------------------------
         # `selected_labels` is rebuilt fresh from each checkbox's own return
@@ -1193,11 +1241,15 @@ def page_home() -> None:
         # second, separately-tracked set as well would just be two sources
         # of truth that can drift, e.g. after "Compare" below clears one but
         # not the other).
-        selected_labels: list[str] = []
+        selected_labels: list[tuple[int, str]] = []
         driver_order = sorted(
             filtered["driver_profile_id"].dropna().unique(),
             key=lambda pid: (pid != my_profile_id, str(filtered.loc[filtered["driver_profile_id"] == pid, "driver_display_name"].iloc[0])),
         )
+        on_a_team = accounts_lib.get_active_membership_for_profile(my_profile_id) is not None
+        visibility_options = list(VISIBILITY_CHOICES) if on_a_team else [VISIBILITY_PRIVATE, VISIBILITY_SHARED]
+        visibility_labels = {VISIBILITY_PRIVATE: "Private", VISIBILITY_TEAM: "Team", VISIBILITY_SHARED: "Shared"}
+
         for pid in driver_order:
             group = filtered[filtered["driver_profile_id"] == pid]
             driver_name = group["driver_display_name"].iloc[0] or "Unknown driver"
@@ -1209,59 +1261,69 @@ def page_home() -> None:
                 unsafe_allow_html=True,
             )
             for _, row in group.iterrows():
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([3, 2, 2])
+                row_id = int(row["id"])
+                with st.container(border=True, key=f"home_row_{row_id}"):
+                    st.markdown('<div class="home-row">', unsafe_allow_html=True)
+                    c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(ROW_WIDTHS)
+                    c1.markdown(f'<div class="home-track">{row["track_name"] or "Unknown track"}</div>', unsafe_allow_html=True)
+                    c2.markdown(
+                        f'<div class="home-meta">{row["start_date"] or "?"} · {row["start_time"] or "?"} · '
+                        f'{int(row["n_laps"]) if pd.notna(row["n_laps"]) else 0} laps</div>',
+                        unsafe_allow_html=True,
+                    )
                     badges = _home_badge(row["session_type"] or "unknown", _HOME_SESSION_TYPE_COLORS.get(row["session_type"]))
                     if pd.notna(row.get("kart_class")):
                         badges += " " + _home_badge(row["kart_class"])
                     if pd.notna(row.get("track_condition")):
                         badges += " " + _home_badge(row["track_condition"])
-                    c1.markdown(
-                        f'<div class="home-track">{row["track_name"] or "Unknown track"}</div>'
-                        f'<div class="home-meta">{row["start_date"] or "?"} · {row["start_time"] or "?"} · '
-                        f'{int(row["n_laps"]) if pd.notna(row["n_laps"]) else 0} laps</div>'
-                        f'<div style="margin-top:4px;">{badges}</div>',
-                        unsafe_allow_html=True,
-                    )
-                    c2.markdown(
-                        f'<div class="da1a-label">Best lap</div>'
+                    c3.markdown(f'<div class="home-badges-cell">{badges}</div>', unsafe_allow_html=True)
+                    c4.markdown(
                         f'<div class="home-best-lap">{_da1a_time_str(row["best_lap_s"]) if pd.notna(row["best_lap_s"]) else "—"}</div>',
                         unsafe_allow_html=True,
                     )
-                    checked = c2.checkbox("Compare", key=f"home_compare_{row['id']}")
-                    if checked:
-                        selected_labels.append((row["id"], row["label"]))
 
-                    if c3.button("Open →", key=f"home_open_{row['id']}", type="primary", use_container_width=True):
-                        st.session_state["_pending_active_session"] = row["label"]
-                        st.switch_page(page_data_analysis_obj)
-                    if c3.button("Kart setup", key=f"home_setup_{row['id']}", use_container_width=True):
+                    checked = c5.checkbox("Compare", key=f"home_compare_{row_id}", label_visibility="collapsed")
+                    if checked:
+                        selected_labels.append((row_id, row["label"]))
+
+                    if c6.button("🔧", key=f"home_setup_{row_id}", type="tertiary", help="Kart setup"):
                         st.session_state["_pending_active_session"] = row["label"]
                         st.switch_page(page_kart_setup_obj)
 
                     if is_mine:
-                        vis_col, del_col = c3.columns(2)
-                        on_a_team = accounts_lib.get_active_membership_for_profile(my_profile_id) is not None
-                        visibility_options = list(VISIBILITY_CHOICES) if on_a_team else [VISIBILITY_PRIVATE, VISIBILITY_SHARED]
-                        visibility_labels = {VISIBILITY_PRIVATE: "Private", VISIBILITY_TEAM: "Team", VISIBILITY_SHARED: "Shared"}
-                        current_visibility = row["visibility"] if row["visibility"] in visibility_options else VISIBILITY_PRIVATE
-                        new_visibility = vis_col.selectbox(
-                            "Visibility", visibility_options, index=visibility_options.index(current_visibility),
-                            format_func=lambda v: visibility_labels[v], key=f"home_vis_{row['id']}", label_visibility="collapsed",
-                        )
-                        if new_visibility != row["visibility"]:
-                            accounts_lib.set_session_visibility(int(row["id"]), new_visibility)
-                            st.rerun()
-                        confirm_key = f"_home_confirm_delete_{row['id']}"
-                        if st.session_state.get(confirm_key):
-                            if del_col.button("Confirm", key=f"home_delete_confirm_{row['id']}"):
-                                library.delete_session(int(row["id"]))
-                                del st.session_state[confirm_key]
+                        with c7.popover("✏️", help="Edit session details"):
+                            new_track = st.text_input("Track name", value=row["track_name"] or "", key=f"home_edit_track_{row_id}")
+                            type_choices = ["practice", "qualifying", "race"]
+                            current_type = row["session_type"] if row["session_type"] in type_choices else "practice"
+                            new_type = st.selectbox("Session type", type_choices, index=type_choices.index(current_type), key=f"home_edit_type_{row_id}")
+                            cond_choices = ["Unknown"] + CONDITION_OPTIONS
+                            current_cond = row["track_condition"] if row["track_condition"] in CONDITION_OPTIONS else "Unknown"
+                            new_cond = st.selectbox("Conditions", cond_choices, index=cond_choices.index(current_cond), key=f"home_edit_cond_{row_id}")
+                            current_vis = row["visibility"] if row["visibility"] in visibility_options else VISIBILITY_PRIVATE
+                            new_vis = st.selectbox(
+                                "Visibility", visibility_options, index=visibility_options.index(current_vis),
+                                format_func=lambda v: visibility_labels[v], key=f"home_edit_vis_{row_id}",
+                            )
+                            if st.button("Save", key=f"home_edit_save_{row_id}", type="primary"):
+                                accounts_lib.update_session_details(
+                                    row_id, new_track.strip() or None, new_type, None if new_cond == "Unknown" else new_cond,
+                                )
+                                if new_vis != row["visibility"]:
+                                    accounts_lib.set_session_visibility(row_id, new_vis)
                                 st.rerun()
-                        else:
-                            if del_col.button("🗑️", key=f"home_delete_{row['id']}", help="Delete this session"):
-                                st.session_state[confirm_key] = True
+                        with c8.popover("🗑️", help="Delete this session"):
+                            st.write(f"Delete this session at **{row['track_name'] or 'Unknown track'}**? This can't be undone.")
+                            if st.button("Confirm delete", key=f"home_delete_confirm_{row_id}", type="primary"):
+                                library.delete_session(row_id)
                                 st.rerun()
+                    else:
+                        c7.write("")
+                        c8.write("")
+
+                    if c9.button("Open →", key=f"home_open_{row_id}", type="primary", use_container_width=True):
+                        st.session_state["_pending_active_session"] = row["label"]
+                        st.switch_page(page_data_analysis_obj)
+                    st.markdown("</div>", unsafe_allow_html=True)
 
         if selected_labels:
             st.divider()

@@ -253,6 +253,23 @@ def test_driver_can_unshare_a_session(libs, session1):
     assert accounts.shareable_reference_sessions().empty
 
 
+def test_update_session_details_edits_track_type_and_condition(libs, session1):
+    sessions_lib, accounts = libs
+    user_id, profile_id = accounts.register_user_with_profile("me@example.com")
+    sid = _save(sessions_lib, session1, track_name="Ring", session_type="practice")
+    accounts.attribute_session(sid, profile_id, uploaded_by_user_id=user_id)
+
+    accounts.update_session_details(sid, track_name="Jyllandsringen", session_type="race", track_condition="Wet")
+
+    mine = accounts.sessions_for_profile(profile_id)
+    row = mine[mine["id"] == sid].iloc[0]
+    assert row["track_name"] == "Jyllandsringen"
+    assert row["session_type"] == "race"
+    assert row["track_condition"] == "Wet"
+    # Visibility/attribution are untouched by this call.
+    assert row["visibility"] == VISIBILITY_SHARED
+
+
 def test_upload_can_opt_out_of_sharing_at_save_time(libs, session1):
     sessions_lib, accounts = libs
     user_id, profile_id = accounts.register_user_with_profile("me@example.com")

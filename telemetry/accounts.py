@@ -707,6 +707,20 @@ class AccountLibrary:
             conn.execute("UPDATE sessions SET visibility = ? WHERE id = ?", (visibility, session_db_id))
             conn.commit()
 
+    def update_session_details(
+        self, session_db_id: int, track_name: str | None, session_type: str | None, track_condition: str | None,
+    ) -> None:
+        """Correct a session's track name / session type / weather
+        condition after the fact -- e.g. a typo'd track name, or filling in
+        conditions that weren't set at upload time. Visibility and
+        attribution are untouched; see `set_session_visibility` for that."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE sessions SET track_name = ?, session_type = ?, track_condition = ? WHERE id = ?",
+                (track_name, session_type, track_condition, session_db_id),
+            )
+            conn.commit()
+
     def session_is_publicly_visible(self, session_db_id: int) -> bool:
         """Row-level form of `PUBLIC_VISIBILITY_SQL` -- same predicate, so a
         single session's answer can never disagree with what the list
@@ -1527,6 +1541,17 @@ class SupabaseAccountLibrary:
         with pgdb.connect() as conn:
             cur = conn.cursor()
             cur.execute("UPDATE sessions SET visibility = %s WHERE id = %s", (visibility, session_db_id))
+            conn.commit()
+
+    def update_session_details(
+        self, session_db_id: int, track_name: str | None, session_type: str | None, track_condition: str | None,
+    ) -> None:
+        with pgdb.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE sessions SET track_name = %s, session_type = %s, track_condition = %s WHERE id = %s",
+                (track_name, session_type, track_condition, session_db_id),
+            )
             conn.commit()
 
     def session_is_publicly_visible(self, session_db_id: int) -> bool:
