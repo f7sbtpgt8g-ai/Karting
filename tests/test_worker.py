@@ -359,3 +359,120 @@ def test_a_session_that_cannot_be_analyzed_still_ingests(worker_db, uploader, st
     with worker_db.cursor() as cur:
         cur.execute("SELECT count(*) FROM laps")
         assert cur.fetchone()[0] > 0, "laps should still be stored"
+
+
+# ----------------------------------------------------- compressed uploads
+#
+# Supabase Storage caps a single file at 50 MB on the free plan, which a full
+# track day's export exceeds. The browser gzips before uploading, so the
+# worker has to unwrap whatever arrives -- and has to do it by looking at the
+# bytes, since the name is not reliable.
+
+
+def _write(store_root, name: str, data: bytes) -> None:
+    import os
+
+    folder = os.path.join(str(store_root), "uid-1")
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, name), "wb") as handle:
+        handle.write(data)
+
+
+def test_a_gzipped_export_parses_exactly_like_the_plain_one(worker_db, uploader, tmp_path):
+    """The whole point: the same 11 sessions come out."""
+    import gzip
+
+    from worker.main import run_once
+    from worker.storage_client import LocalDirectoryStore
+
+    with open(SAMPLE_TSV, "rb") as handle:
+        raw = handle.read()
+    _write(tmp_path, "upload.tsv.gz", gzip.compress(raw))
+
+    batch_id = _enqueue(
+        worker_db, uploader, storage_path="uid-1/upload.tsv.gz", filename="default_session.tsv.gz"
+    )
+    assert run_once(LocalDirectoryStore(str(tmp_path))) == 1
+
+    status, error, created = _status(worker_db, batch_id)
+    assert status == "complete", f"a gzipped upload failed: {error}"
+    assert created == 11
+
+
+def test_a_zipped_export_parses_too(worker_db, uploader, tmp_path):
+    """For anyone who compresses by hand rather than letting the browser."""
+    import io
+    import zipfile
+
+    from worker.main import run_once
+    from worker.storage_client import LocalDirectoryStore
+
+    with open(SAMPLE_TSV, "rb") as handle:
+        raw = handle.read()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("default_session.tsv", raw)
+    _write(tmp_path, "upload.zip", buffer.getvalue())
+
+    batch_id = _enqueue(
+        worker_db, uploader, storage_path="uid-1/upload.zip", filename="export.zip"
+    )
+    assert run_once(LocalDirectoryStore(str(tmp_path))) == 1
+    assert _status(worker_db, batch_id)[0] == "complete"
+
+
+def test_compression_is_detected_by_content_not_by_name(worker_db, uploader, tmp_path):
+    """A driver who renames the file, or a browser that compressed without
+    renaming, must still work -- and a mislabelled file should fail on its
+    contents rather than its extension."""
+    import gzip
+
+    from worker.main import run_once
+    from worker.storage_client import LocalDirectoryStore
+
+    with open(SAMPLE_TSV, "rb") as handle:
+        raw = handle.read()
+    # Gzipped bytes under a plain .tsv name.
+    _write(tmp_path, "upload.tsv", gzip.compress(raw))
+
+    batch_id = _enqueue(worker_db, uploader)
+    assert run_once(LocalDirectoryStore(str(tmp_path))) == 1
+    assert _status(worker_db, batch_id)[0] == "complete"
+
+
+def test_a_zip_holding_several_exports_says_so(worker_db, uploader, tmp_path):
+    """Silently picking one of them would file a track day under the wrong
+    session and look like it worked."""
+    import io
+    import zipfile
+
+    from worker.main import run_once
+    from worker.storage_client import LocalDirectoryStore
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("saturday.tsv", b"a")
+        archive.writestr("sunday.tsv", b"b")
+    _write(tmp_path, "upload.zip", buffer.getvalue())
+
+    batch_id = _enqueue(worker_db, uploader, storage_path="uid-1/upload.zip")
+    run_once(LocalDirectoryStore(str(tmp_path)))
+
+    status, error, _ = _status(worker_db, batch_id)
+    assert status == "failed"
+    assert "one at a time" in error.lower()
+
+
+def test_a_corrupt_archive_fails_with_a_usable_message(worker_db, uploader, tmp_path):
+    from worker.main import run_once
+    from worker.storage_client import LocalDirectoryStore
+
+    # Gzip magic bytes, then rubbish.
+    _write(tmp_path, "upload.tsv", b"\x1f\x8b" + b"not actually gzip")
+
+    batch_id = _enqueue(worker_db, uploader)
+    run_once(LocalDirectoryStore(str(tmp_path)))
+
+    status, error, _ = _status(worker_db, batch_id)
+    assert status == "failed"
+    assert "gzip" in error.lower()
