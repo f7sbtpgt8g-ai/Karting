@@ -1010,6 +1010,270 @@ def render_footer() -> None:
 # besides.
 # ---------------------------------------------------------------------------
 
+_HOME_SESSION_TYPE_COLORS = {
+    "practice": _DA1A["ink_muted"], "qualifying": _DA1A["theoretical"], "race": _DA1A["accent"],
+}
+
+
+def _home_inject_css() -> None:
+    t = _DA1A
+    st.markdown(
+        f"""
+<style>
+.st-key-home_root {{ font-family: 'Archivo', sans-serif; }}
+.home-stat-row {{ display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }}
+.home-stat-card {{
+    background: {t['surface_raised']}; border: 1px solid {t['hairline']}; border-radius: 6px;
+    padding: 10px 18px; min-width: 110px;
+}}
+.home-stat-card .da1a-label {{ margin-bottom: 2px; }}
+.home-stat-value {{ font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 22px; color: {t['ink']}; }}
+.home-driver-header {{
+    display: flex; align-items: baseline; gap: 10px; margin: 18px 0 8px 0; padding-bottom: 6px;
+    border-bottom: 1px solid {t['hairline']};
+}}
+.home-driver-header .name {{ font-size: 16px; font-weight: 700; color: {t['ink']}; }}
+.home-driver-header .meta {{ font-size: 11px; color: {t['ink_muted']}; }}
+.home-badge {{
+    display: inline-block; font-size: 9px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 3px; background: {t['neutral_bar']}; color: {t['ink2']}; white-space: nowrap;
+}}
+.home-track {{ font-weight: 700; font-size: 13px; color: {t['ink']}; }}
+.home-meta {{ font-size: 11px; color: {t['ink_muted']}; }}
+.home-best-lap {{ font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 15px; color: {t['ink']}; }}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def _home_badge(text: str, color: str | None = None) -> str:
+    style = f' style="color:{color}; border:1px solid {color};background:transparent;"' if color else ""
+    return f'<span class="home-badge"{style}>{text}</span>'
+
+
+def _home_seed_lap_comparison(selected_labels: list[str]) -> None:
+    """Pre-fills the Lap Comparison page's row picker with one row per
+    selected session (its own fastest clean lap), the same session_state
+    keys `page_lap_comparison` already reads -- see that page's "Laps to
+    compare" expander."""
+    st.session_state["lc_row_ids"] = list(range(len(selected_labels)))
+    st.session_state["lc_next_row_id"] = len(selected_labels)
+    sessions_by_label = dict(all_sessions)
+    for i, label in enumerate(selected_labels):
+        st.session_state[f"lc_session_{i}"] = label
+        session_obj = sessions_by_label.get(label)
+        if session_obj is None:
+            continue
+        numbers, times = _session_clean_laps(session_obj)
+        if numbers:
+            st.session_state[f"lc_lap_{i}"] = min(numbers, key=lambda n: times[n])
+
+
+def page_home() -> None:
+    """Landing page: every session the signed-in account can see, grouped
+    by driver, filterable and sortable -- see the chat request this
+    implements for the reference screenshot (a third-party app's "Driver
+    Database" screen). Recreated in this app's own dark token palette, not
+    that screenshot's colors/chrome.
+
+    Scope, deliberately narrower than `sessions_meta` (which also includes
+    every OTHER driver's publicly-shared session, needed elsewhere for
+    cross-driver comparison pickers): a regular account sees only its own
+    sessions here; a team manager/admin additionally sees every teammate's
+    session already visible to the team (sessions_meta's own team-visibility
+    join already restricts those to 'team'/'shared' ones -- this page does
+    not grant any access `visible_sessions_for_user` didn't already grant).
+    """
+    _home_inject_css()
+    root = st.container(key="home_root")
+    with root:
+        st.title("🏠 Home")
+
+        if sessions_meta.empty:
+            st.info(
+                "No sessions yet. Upload one on the Settings page to get started -- once you have, they'll show up "
+                "here, organized by driver."
+            )
+            render_footer()
+            return
+
+        my_profile_id = int(current_profile["id"])
+        scope_ids = {my_profile_id}
+        is_team_elevated = False
+        if (
+            _active_team_membership is not None
+            and _active_team_membership["status"] == TEAM_MEMBERSHIP_ACTIVE
+            and _active_team_membership["role"] in (TEAM_ROLE_MANAGER, TEAM_ROLE_ADMIN)
+        ):
+            is_team_elevated = True
+            roster = accounts_lib.team_roster(int(_active_team_membership["team_id"]))
+            scope_ids |= {int(x) for x in roster["driver_profile_id"]}
+
+        labels_by_row = [label for label, _ in all_sessions]
+        meta = sessions_meta.reset_index(drop=True).copy()
+        meta["label"] = labels_by_row
+        # `driver_profile_id` reads back as float64 (nullable columns elsewhere
+        # in `sessions` force the whole read to upcast), so compare via a
+        # notna-guarded int cast rather than a plain `.isin(scope_ids)` --
+        # a float/int-set membership check that happened to always match
+        # here isn't something to rely on across pandas/driver versions.
+        scoped = meta[meta["driver_profile_id"].apply(lambda x: pd.notna(x) and int(x) in scope_ids)].copy()
+
+        if scoped.empty:
+            st.info("No sessions in scope yet -- upload one, or (if you manage a team) wait for a teammate to share one.")
+            render_footer()
+            return
+
+        if is_team_elevated:
+            st.caption(f"Showing your sessions plus every teammate's team-or-shared session -- you're this team's {_active_team_membership['role']}.")
+
+        # -- header stat cards (reflect the full in-scope set, before the
+        # filters below are applied) -------------------------------------
+        stat_cells = [
+            ("Drivers", scoped["driver_profile_id"].nunique()),
+            ("Sessions", len(scoped)),
+            ("Total laps", int(scoped["n_laps"].fillna(0).sum())),
+            ("Tracks", scoped["track_name"].nunique()),
+        ]
+        st.markdown(
+            '<div class="home-stat-row">' + "".join(
+                f'<div class="home-stat-card"><div class="da1a-label">{label}</div>'
+                f'<div class="home-stat-value">{value}</div></div>'
+                for label, value in stat_cells
+            ) + "</div>",
+            unsafe_allow_html=True,
+        )
+
+        # -- filters ---------------------------------------------------------
+        f1, f2, f3, f4 = st.columns(4)
+        track_options = ["All tracks"] + sorted(scoped["track_name"].dropna().unique().tolist())
+        track_pick = f1.selectbox("Track", track_options, key="home_filter_track")
+        type_options = ["All types"] + sorted(scoped["session_type"].dropna().unique().tolist())
+        type_pick = f2.selectbox("Session type", type_options, key="home_filter_type")
+        condition_options = ["All conditions"] + [c for c in CONDITION_OPTIONS if c in scoped["track_condition"].dropna().unique()]
+        condition_pick = f3.selectbox("Conditions", condition_options, key="home_filter_condition")
+
+        valid_dates = pd.to_datetime(scoped["start_date"], errors="coerce").dropna()
+        if not valid_dates.empty:
+            date_range = f4.date_input(
+                "Date range", value=(valid_dates.min().date(), valid_dates.max().date()),
+                min_value=valid_dates.min().date(), max_value=valid_dates.max().date(), key="home_filter_dates",
+            )
+        else:
+            date_range = None
+
+        s1, s2 = st.columns([2, 1])
+        sort_field = s1.selectbox("Sort by", ["Date", "Track", "Best lap"], key="home_sort_field")
+        sort_desc = s2.checkbox("Descending", value=(sort_field == "Date"), key="home_sort_desc")
+
+        filtered = scoped.copy()
+        if track_pick != "All tracks":
+            filtered = filtered[filtered["track_name"] == track_pick]
+        if type_pick != "All types":
+            filtered = filtered[filtered["session_type"] == type_pick]
+        if condition_pick != "All conditions":
+            filtered = filtered[filtered["track_condition"] == condition_pick]
+        if date_range and isinstance(date_range, tuple) and len(date_range) == 2:
+            parsed = pd.to_datetime(filtered["start_date"], errors="coerce")
+            filtered = filtered[(parsed.dt.date >= date_range[0]) & (parsed.dt.date <= date_range[1])]
+
+        sort_col = {"Date": "start_date", "Track": "track_name", "Best lap": "best_lap_s"}[sort_field]
+        filtered = filtered.sort_values(sort_col, ascending=not sort_desc, na_position="last")
+
+        if filtered.empty:
+            st.info("No sessions match these filters.")
+            render_footer()
+            return
+
+        # -- grouped-by-driver session list -----------------------------------
+        # `selected_labels` is rebuilt fresh from each checkbox's own return
+        # value on every render (each checkbox already persists its own
+        # checked state across reruns via its `key` -- mirroring that into a
+        # second, separately-tracked set as well would just be two sources
+        # of truth that can drift, e.g. after "Compare" below clears one but
+        # not the other).
+        selected_labels: list[str] = []
+        driver_order = sorted(
+            filtered["driver_profile_id"].dropna().unique(),
+            key=lambda pid: (pid != my_profile_id, str(filtered.loc[filtered["driver_profile_id"] == pid, "driver_display_name"].iloc[0])),
+        )
+        for pid in driver_order:
+            group = filtered[filtered["driver_profile_id"] == pid]
+            driver_name = group["driver_display_name"].iloc[0] or "Unknown driver"
+            is_mine = int(pid) == my_profile_id
+            st.markdown(
+                f'<div class="home-driver-header"><span class="name">{"👤 " if is_mine else "🏁 "}{driver_name}'
+                f'{" (you)" if is_mine else ""}</span>'
+                f'<span class="meta">{len(group)} session(s) · {group["track_name"].nunique()} track(s)</span></div>',
+                unsafe_allow_html=True,
+            )
+            for _, row in group.iterrows():
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([3, 2, 2])
+                    badges = _home_badge(row["session_type"] or "unknown", _HOME_SESSION_TYPE_COLORS.get(row["session_type"]))
+                    if pd.notna(row.get("kart_class")):
+                        badges += " " + _home_badge(row["kart_class"])
+                    if pd.notna(row.get("track_condition")):
+                        badges += " " + _home_badge(row["track_condition"])
+                    c1.markdown(
+                        f'<div class="home-track">{row["track_name"] or "Unknown track"}</div>'
+                        f'<div class="home-meta">{row["start_date"] or "?"} · {row["start_time"] or "?"} · '
+                        f'{int(row["n_laps"]) if pd.notna(row["n_laps"]) else 0} laps</div>'
+                        f'<div style="margin-top:4px;">{badges}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    c2.markdown(
+                        f'<div class="da1a-label">Best lap</div>'
+                        f'<div class="home-best-lap">{_da1a_time_str(row["best_lap_s"]) if pd.notna(row["best_lap_s"]) else "—"}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    checked = c2.checkbox("Compare", key=f"home_compare_{row['id']}")
+                    if checked:
+                        selected_labels.append((row["id"], row["label"]))
+
+                    if c3.button("Open →", key=f"home_open_{row['id']}", type="primary", use_container_width=True):
+                        st.session_state["_pending_active_session"] = row["label"]
+                        st.switch_page(page_data_analysis_obj)
+                    if c3.button("Kart setup", key=f"home_setup_{row['id']}", use_container_width=True):
+                        st.session_state["_pending_active_session"] = row["label"]
+                        st.switch_page(page_kart_setup_obj)
+
+                    if is_mine:
+                        vis_col, del_col = c3.columns(2)
+                        on_a_team = accounts_lib.get_active_membership_for_profile(my_profile_id) is not None
+                        visibility_options = list(VISIBILITY_CHOICES) if on_a_team else [VISIBILITY_PRIVATE, VISIBILITY_SHARED]
+                        visibility_labels = {VISIBILITY_PRIVATE: "Private", VISIBILITY_TEAM: "Team", VISIBILITY_SHARED: "Shared"}
+                        current_visibility = row["visibility"] if row["visibility"] in visibility_options else VISIBILITY_PRIVATE
+                        new_visibility = vis_col.selectbox(
+                            "Visibility", visibility_options, index=visibility_options.index(current_visibility),
+                            format_func=lambda v: visibility_labels[v], key=f"home_vis_{row['id']}", label_visibility="collapsed",
+                        )
+                        if new_visibility != row["visibility"]:
+                            accounts_lib.set_session_visibility(int(row["id"]), new_visibility)
+                            st.rerun()
+                        confirm_key = f"_home_confirm_delete_{row['id']}"
+                        if st.session_state.get(confirm_key):
+                            if del_col.button("Confirm", key=f"home_delete_confirm_{row['id']}"):
+                                library.delete_session(int(row["id"]))
+                                del st.session_state[confirm_key]
+                                st.rerun()
+                        else:
+                            if del_col.button("🗑️", key=f"home_delete_{row['id']}", help="Delete this session"):
+                                st.session_state[confirm_key] = True
+                                st.rerun()
+
+        if selected_labels:
+            st.divider()
+            if st.button(f"🔬 Compare {len(selected_labels)} selected session(s) →", type="primary"):
+                _home_seed_lap_comparison([label for _, label in selected_labels])
+                for row_id, _ in selected_labels:
+                    st.session_state.pop(f"home_compare_{row_id}", None)
+                st.switch_page(page_lap_comparison_obj)
+
+    render_footer()
+
+
 def page_overview() -> None:
     if not all_sessions:
         st.title("Karting Telemetry Analysis")
@@ -4163,7 +4427,8 @@ st.sidebar.markdown(
     unsafe_allow_html=True,
 )
 
-page_overview_obj = st.Page(page_overview, title="Top 3 Focus Areas", icon="🎯", default=True)
+page_home_obj = st.Page(page_home, title="Home", icon="🏠", default=True)
+page_overview_obj = st.Page(page_overview, title="Top 3 Focus Areas", icon="🎯")
 page_my_sessions_obj = st.Page(page_my_sessions, title="My Sessions & Sharing", icon="🔒")
 page_shared_laps_obj = st.Page(page_shared_laps, title="Shared Laps", icon="🤝")
 page_team_obj = st.Page(page_team, title="Team", icon="👥")
@@ -4186,6 +4451,7 @@ page_settings_obj = st.Page(page_settings, title="Settings", icon="⚙️")
 
 nav = st.navigation(
     {
+        "Home": [page_home_obj],
         "Analysis": [
             page_overview_obj, page_lap_times_obj, page_data_analysis_obj, page_data_analysis_mobile_obj, page_track_map_obj,
             page_braking_rpm_obj, page_corner_comparison_obj, page_lap_comparison_obj, page_recurring_patterns_obj,
@@ -4275,8 +4541,24 @@ if all_sessions:
     default_session_label = st.session_state.get("_default_session_label")
     default_session_index = session_labels.index(default_session_label) if default_session_label in session_labels else 0
 
+    # Keyed (not left implicit) so the Home page's "Open"/"Kart setup"
+    # buttons can jump straight to a specific session. They can't write
+    # `active_session_select` directly though -- by the time a button
+    # inside a page's own function runs (via nav.run(), which happens
+    # after this sidebar code in the same script run), this widget has
+    # already been instantiated this run, and Streamlit forbids writing to
+    # an already-instantiated widget's key. So they stash the target label
+    # in the plain `_pending_active_session` key instead, consumed here --
+    # strictly before this widget is instantiated -- on the rerun that
+    # follows the click.
+    if "_pending_active_session" in st.session_state:
+        pending = st.session_state.pop("_pending_active_session")
+        if pending in session_labels:
+            st.session_state["active_session_select"] = pending
+    if st.session_state.get("active_session_select") not in session_labels:
+        st.session_state["active_session_select"] = default_session_label if default_session_label in session_labels else session_labels[0]
     active_label = st.sidebar.selectbox(
-        "Session to analyze", session_labels, index=default_session_index,
+        "Session to analyze", session_labels, key="active_session_select",
     )
     active_session = dict(all_sessions)[active_label]
 
