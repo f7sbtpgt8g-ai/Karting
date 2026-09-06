@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { createClient, getAppUser } from "@/lib/supabase/server";
+import { createClient, resolveAppUser } from "@/lib/supabase/server";
+import AccountNotLinked from "@/components/AccountNotLinked";
 import AppHeader from "@/components/AppHeader";
-import SignOutButton from "@/components/SignOutButton";
 import UploadForm from "./UploadForm";
 
 export const dynamic = "force-dynamic";
@@ -14,31 +14,9 @@ const STATUS_STYLE: Record<string, string> = {
 };
 
 export default async function UploadPage() {
-  const appUser = await getAppUser();
-
-  // Middleware guarantees a Supabase session by the time we get here, but not
-  // a mirrored `users` row -- and without one, every RLS policy resolves the
-  // caller to NULL, so an upload would insert a batch owned by nobody.
-  //
-  // The signup trigger (0004) creates that row inside the signup, so reaching
-  // this branch means something is genuinely wrong -- the migration hasn't
-  // been applied, or this address is already claimed by a different identity.
-  // Either way, say so rather than presenting a form that cannot work.
-  if (!appUser) {
-    return (
-      <main className="mx-auto max-w-2xl px-6 py-16">
-        <h1 className="mb-3 text-lg font-semibold">Account not linked yet</h1>
-        <p className="text-sm text-muted">
-          You are signed in, but this account has no driver record in the telemetry database, so
-          nothing you upload could be filed against you. This usually means the address is already
-          registered to a different account. Sign out and sign in with that one, or get in touch.
-        </p>
-        <div className="mt-6">
-          <SignOutButton />
-        </div>
-      </main>
-    );
-  }
+  const resolution = await resolveAppUser();
+  if (resolution.status !== "ok") return <AccountNotLinked resolution={resolution} />;
+  const appUser = resolution.user;
 
   const supabase = await createClient();
 

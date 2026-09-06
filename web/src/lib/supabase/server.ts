@@ -43,6 +43,31 @@ export async function createClient() {
 }
 
 /**
+ * Why the signed-in account could not be resolved to a local `users` row.
+ *
+ * These are three genuinely different situations and used to collapse into
+ * one null: not signed in, the query itself failed, and signed in with no
+ * mirrored row. The screen that reported them guessed a cause ("this address
+ * is probably registered to another account"), which was sometimes simply
+ * untrue and sent the reader looking in the wrong place. Better to say which
+ * of the three it is, and show the identity involved so it can be looked up.
+ */
+export type AppUserResolution =
+  | { status: "ok"; user: AppUser }
+  | { status: "signed_out" }
+  | { status: "unlinked"; authId: string; email: string | null }
+  | { status: "error"; authId: string; message: string };
+
+export type AppUser = {
+  id: number;
+  email: string | null;
+  display_name: string | null;
+  email_verified: boolean | null;
+  engine_category: string | null;
+  authId: string;
+};
+
+/**
  * The signed-in user's row in this schema's own `users` table.
  *
  * Supabase Auth identifies people by UUID; this schema keys everything off
@@ -51,23 +76,41 @@ export async function createClient() {
  * `current_app_user_id()`), so anything writing a row that references a user
  * needs this id rather than `auth.uid()`.
  *
- * Returns null when signed out, or when the account exists in Supabase Auth
- * but has never been mirrored locally -- which is exactly the state that
- * makes RLS silently return nothing, so callers should treat null as "not
- * usable yet" rather than assuming a session implies a row.
+ * An account with no mirrored row authenticates perfectly and is invisible to
+ * every policy -- signed in, sees nothing. The two ways to get there are an
+ * account created before the signup trigger existed (0004), whose
+ * `external_auth_id` is still NULL, and a signup the trigger refused.
  */
-export async function getAppUser() {
+export async function resolveAppUser(): Promise<AppUserResolution> {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) return null;
+  if (!user) return { status: "signed_out" };
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("users")
     .select("id, email, display_name, email_verified, engine_category")
     .eq("external_auth_id", user.id)
     .maybeSingle();
 
-  return data ? { ...data, authId: user.id, email: data.email ?? user.email } : null;
+  // A failed query is not the same as an absent row, and the difference
+  // matters: a missing migration and an unlinked account need completely
+  // different fixes.
+  if (error) {
+    return { status: "error", authId: user.id, message: error.message };
+  }
+  if (!data) {
+    return { status: "unlinked", authId: user.id, email: user.email ?? null };
+  }
+  return {
+    status: "ok",
+    user: { ...data, authId: user.id, email: data.email ?? user.email ?? null } as AppUser,
+  };
+}
+
+/** The resolved user, or null for any of the reasons above. */
+export async function getAppUser(): Promise<AppUser | null> {
+  const resolution = await resolveAppUser();
+  return resolution.status === "ok" ? resolution.user : null;
 }
