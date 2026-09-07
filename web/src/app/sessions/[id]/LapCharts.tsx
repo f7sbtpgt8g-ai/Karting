@@ -374,21 +374,46 @@ export default function LapCharts({
           {CHART_METRICS.map((metric) => (
             <ChartPanel key={metric.key} title={`${metric.label} (${metric.unit})`}>
               <Plot
-                data={laps.map((lap) => ({
-                  x: lap.trace.distanceM,
-                  y: lap.trace[metric.key] as (number | null)[],
-                  type: "scattergl",
-                  mode: "lines",
-                  name: lap.label,
-                  line: { color: colorFor(lap.key), width: 1.6 },
-                  hovertemplate: `${lap.label}: %{y:.1f}<extra></extra>`,
-                }))}
+                data={[
+                  ...laps.map((lap) => ({
+                    x: lap.trace.distanceM,
+                    y: lap.trace[metric.key] as (number | null)[],
+                    type: "scattergl" as const,
+                    mode: "lines" as const,
+                    name: lap.label,
+                    line: { color: colorFor(lap.key), width: 1.6 },
+                    hovertemplate: `${lap.label}: %{y:.1f}<extra></extra>`,
+                  })),
+                  // Invisible traces, purely so the shared hover box also
+                  // carries each lap's delta at this distance -- the same
+                  // values the Delta chart below plots, just not drawn on
+                  // this axis (yaxis2 is hidden; the line colour is fully
+                  // transparent). This is what lets a delta be followed
+                  // while reading Speed or RPM, without looking away to a
+                  // separate chart.
+                  ...deltas.map((delta) => ({
+                    x: delta.distanceM,
+                    y: delta.deltaS,
+                    yaxis: "y2" as const,
+                    type: "scattergl" as const,
+                    mode: "lines" as const,
+                    name: `${delta.label} Δ`,
+                    line: { color: "rgba(0,0,0,0)", width: 1 },
+                    hovertemplate: `${delta.label} Δ: %{y:+.3f}s<extra></extra>`,
+                    showlegend: false,
+                  })),
+                ]}
                 layout={{
                   ...LAYOUT_BASE,
                   height: 190,
                   shapes: shapesFor(),
                   xaxis: xaxisFor("", false),
                   yaxis: { ...AXIS, fixedrange: true },
+                  // `overlaying`'s type in @types/plotly.js is a branded
+                  // pattern string TS can't match a plain literal against --
+                  // cast narrowly rather than losing type-checking on the
+                  // rest of the layout object.
+                  yaxis2: { overlaying: "y" as never, visible: false, fixedrange: true },
                 }}
                 config={CHART_CONFIG}
                 style={{ width: "100%" }}
