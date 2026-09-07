@@ -7,14 +7,28 @@
                                                        # lap, not just
                                                        # never-checked ones
     python -m scripts.compute_ratings --loop          # poll forever
-                                                       # (WORKER_POLL_INTERVAL_S
-                                                       # style deployment)
+                                                       # (default: daily --
+                                                       # see RATING_POLL_
+                                                       # INTERVAL_S below)
 
-Deliberately its own process, not called from worker/processor.py's upload
-path -- see supabase/migrations/0015_driver_rating.sql and
-telemetry/rating/engine.py's module docstrings for why cohort-based rating
-updates need to run as a separate batch/background job rather than
-synchronously on upload.
+Two triggers feed the same `run_rating_batch()`, for two different jobs:
+
+  * `worker/processor.py` calls it directly, best-effort, right after a
+    batch's sessions are saved -- so a driver sees their own upload
+    reflected without waiting on a schedule, and so an upload that
+    completes someone else's cohort (the day they drove now has a field to
+    compare against) doesn't sit unrated until the next scheduled pass.
+  * This script, run with `--loop` (or invoked by an external
+    cron/scheduler), is the backstop that keeps moving even with nobody
+    uploading -- sigma decay is read live at display time regardless, but
+    the historical pace-reference buckets and reference lines are only as
+    fresh as the last time something recomputed them.
+
+Both call the exact same batch, in the exact same order -- there is no
+"upload-triggered" vs. "scheduled" variant of the math, only of when it
+runs. See supabase/migrations/0015_driver_rating.sql and
+telemetry/rating/engine.py's module docstrings for the batch's own
+phase-by-phase reasoning.
 
 Environment: SUPABASE_DB_URL (or DATABASE_URL) -- same as every other
 Postgres-backed script in this repo (telemetry/db.py). This script has no
@@ -51,8 +65,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--loop", action="store_true",
-        help="Run forever, sleeping RATING_POLL_INTERVAL_S seconds (default 3600, i.e. hourly) between passes, "
-             "instead of running once and exiting.",
+        help="Run forever, sleeping RATING_POLL_INTERVAL_S seconds (default 86400, i.e. daily) between passes, "
+             "instead of running once and exiting. This is the backstop alongside the worker's own "
+             "per-upload trigger (see the module docstring) -- daily is plenty since an upload already "
+             "covers the 'just drove, want to see it' case; this exists for the days nobody uploads.",
     )
     args = parser.parse_args()
 
@@ -66,7 +82,7 @@ def main() -> int:
         run_once()
         return 0
 
-    interval = float(os.environ.get("RATING_POLL_INTERVAL_S", "3600"))
+    interval = float(os.environ.get("RATING_POLL_INTERVAL_S", "86400"))
     logger.info("looping every %.0fs", interval)
     while True:
         try:

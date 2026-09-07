@@ -160,6 +160,8 @@ def process_batch(batch: UploadBatch, store: ObjectStore) -> int:
                     requires_confirmation=False,
                 )
             created += 1
+        if created:
+            _recompute_ratings_best_effort(batch.id)
         return created
     finally:
         os.unlink(tmp_path)
@@ -170,6 +172,40 @@ def _driver_display_name(accounts, batch: UploadBatch) -> str | None:
         return None
     profile = accounts.get_profile(batch.driver_profile_id)
     return profile["display_name"] if profile else None
+
+
+def _recompute_ratings_best_effort(batch_id: int) -> None:
+    """Refresh Driver Rating / activity after this batch's sessions land --
+    best-effort, same shape as `_link_to_batch`: a rating pass that fails
+    must never fail an otherwise-successful upload, and a database that
+    predates 0015 simply has no rating tables to update.
+
+    Runs the *whole* batch (validity gate -> cohorts -> streaks), not just
+    this upload's own sessions -- a new upload can complete someone else's
+    cohort for a day that previously had no field to compare against, so
+    the recompute has to be free to revisit any day, not just this one.
+    That is also what a separate scheduled run of `scripts/compute_ratings
+    .py --loop` (see its module docstring) is for: this call covers "a
+    driver just uploaded and wants to see it reflected", the scheduled run
+    is the backstop that still moves things along even with nobody
+    uploading -- decay, and any cohort another driver's later upload alone
+    wouldn't have triggered.
+
+    At today's data volumes (a few hundred laps, a few dozen sessions) a
+    full pass is a ~10 second job -- fine to pay on every upload. If this
+    ever needs to scale past a single club's worth of data, this is the
+    place an incremental version would replace it.
+    """
+    from telemetry import db as pgdb
+
+    if not pgdb.has_postgres_configured():
+        return
+    try:
+        from telemetry.rating.engine import run_rating_batch
+
+        run_rating_batch()
+    except Exception:  # noqa: BLE001
+        logger.warning("batch %s: rating recompute failed", batch_id, exc_info=True)
 
 
 def _link_to_batch(session_db_id: int, batch_id: int) -> None:

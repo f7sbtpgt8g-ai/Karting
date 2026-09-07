@@ -8,11 +8,11 @@
 -- not in this file, per the brief's "keep every threshold in configuration"
 -- requirement -- this migration only defines where the *results* land.
 --
--- Nothing here is computed synchronously on upload. scripts/compute_ratings.py
--- runs as a separate batch/background job (own process, own schedule),
--- deliberately -- cohort-based updates need other drivers' sessions to
--- already exist, and a single new fast lap should not visibly ripple
--- through everyone's numbers in real time.
+-- Nothing here is written by a client -- only telemetry/rating/engine.py's
+-- run_rating_batch() (service-role) ever does, either from
+-- worker/processor.py right after an upload's sessions are saved, or from
+-- scripts/compute_ratings.py on its own schedule (the backstop for the
+-- days nobody uploads). See either module's docstring for why both exist.
 
 -- ---------------------------------------------------------------------------
 -- 1. Part 1 (validity gate): per-lap status, feeding everything downstream.

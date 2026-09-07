@@ -245,6 +245,62 @@ def test_one_bad_batch_does_not_stop_the_queue(worker_db, uploader, store):
     assert _status(worker_db, good)[0] == "complete"
 
 
+def test_a_successful_batch_triggers_a_rating_recompute(worker_db, uploader, store, monkeypatch):
+    """worker/processor.py's `_recompute_ratings_best_effort` is what wires
+    Driver Rating to "on every upload" (see scripts/compute_ratings.py's
+    module docstring for the other trigger, the scheduled backstop) --
+    mocked here rather than asserting on real rating output, since the
+    math itself is already covered by tests/test_rating_*.py; this is
+    purely "did the batch actually call it, with the sessions it just
+    created visible to it."""
+    from worker.main import run_once
+
+    calls = []
+    monkeypatch.setattr("telemetry.rating.engine.run_rating_batch", lambda *a, **k: calls.append(1) or {})
+
+    batch_id = _enqueue(worker_db, uploader)
+    run_once(store)
+
+    assert _status(worker_db, batch_id)[0] == "complete"
+    assert len(calls) == 1
+
+
+def test_a_fully_duplicate_batch_does_not_trigger_a_rating_recompute(worker_db, uploader, store, monkeypatch):
+    """No new session, nothing new to rate -- skip the (otherwise harmless
+    but pointless) recompute rather than pay for one on every re-upload."""
+    from worker.main import run_once
+
+    calls = []
+    monkeypatch.setattr("telemetry.rating.engine.run_rating_batch", lambda *a, **k: calls.append(1) or {})
+
+    _enqueue(worker_db, uploader)
+    run_once(store)
+    assert len(calls) == 1  # the first, real upload
+
+    second = _enqueue(worker_db, uploader)
+    run_once(store)
+    assert _status(worker_db, second) == ("complete", None, 0)
+    assert len(calls) == 1  # unchanged -- the duplicate re-upload created nothing
+
+
+def test_a_failed_rating_recompute_does_not_fail_the_upload(worker_db, uploader, store, monkeypatch):
+    """Best-effort, same shape as `_link_to_batch`: a rating pass blowing up
+    must never turn an otherwise-successful upload into a failed one."""
+    from worker.main import run_once
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("rating batch exploded")
+
+    monkeypatch.setattr("telemetry.rating.engine.run_rating_batch", _boom)
+
+    batch_id = _enqueue(worker_db, uploader)
+    run_once(store)
+
+    status, error, created = _status(worker_db, batch_id)
+    assert status == "complete", f"a rating-recompute failure incorrectly failed the batch: {error}"
+    assert created == 11
+
+
 def test_reuploading_the_same_file_does_not_duplicate_sessions(worker_db, uploader, store):
     """Duplicate detection is the existing `find_session` identity match --
     re-uploading the same export must be a no-op, not 11 more sessions."""

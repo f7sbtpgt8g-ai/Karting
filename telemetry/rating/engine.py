@@ -4,11 +4,15 @@ Everything math-shaped lives in `validity.py` / `elo.py` / `streaks.py` as
 pure, independently-tested functions; this module's job is just wiring real
 rows into and out of them, in the right order, idempotently.
 
-Run via `scripts/compute_ratings.py` as a standalone batch job -- never
-called synchronously from the upload path (worker/processor.py). Safe to
-re-run: laps already validity-checked are skipped (pass `recheck_all=True`
-to force), and sessions that already produced a `driver_rating_history` row
-are never re-applied.
+Run either as a standalone batch job (`scripts/compute_ratings.py`, on a
+schedule) or triggered directly from the upload path
+(`worker/processor.py`'s `_recompute_ratings_best_effort`, best-effort so a
+rating-compute failure never fails an upload) -- both call this exact
+function, in this exact order; see either module's own docstring for why
+each trigger exists. Idempotent and safe to re-run from either one: laps
+already validity-checked are skipped (pass `recheck_all=True` to force),
+and sessions that already produced a `driver_rating_history` row are never
+re-applied.
 
 Phase order matters and is enforced by `run_rating_batch`:
   1. Rebuild each track's GPS reference line, from currently-clean laps

@@ -1065,18 +1065,33 @@ data to watch, not a guess to lock in.
 ```bash
 python -m scripts.compute_ratings                # run once
 python -m scripts.compute_ratings --recheck-all   # also re-run Part 1 on every lap
-python -m scripts.compute_ratings --loop          # poll forever (deploy like the worker)
+python -m scripts.compute_ratings --loop          # poll forever (default: daily)
 ```
 
-Deliberately its own batch job, never called from the upload path --
-cohort-based updates need other drivers' sessions to already exist, and a
-single new fast lap shouldn't visibly ripple through everyone's numbers in
-real time. `driver_ratings` (leaderboard: `/rating`) and the two
+Two triggers feed the exact same batch, not two different code paths:
+`worker/processor.py` calls it directly, best-effort, right after a
+batch's sessions are saved (see `_recompute_ratings_best_effort` --
+same "never fail an otherwise-successful upload" shape as
+`_link_to_batch`), so a driver sees their own upload reflected without
+waiting on a schedule, and so an upload that gives a previously-solo day a
+real field to compare against doesn't sit unrated until the next scheduled
+pass. `scripts/compute_ratings.py --loop` (daily by default,
+`RATING_POLL_INTERVAL_S` to change it) is the backstop that keeps the
+historical reference buckets and reference lines from going stale on a day
+nobody happens to upload anything.
+
+At today's data volumes (a club's worth of sessions, not a national
+championship's) a full pass is a ~10 second job -- cheap enough to pay on
+every upload rather than needing an incremental version; see
+`_recompute_ratings_best_effort`'s docstring for where that would go if
+the data volume ever demands it.
+
+`driver_ratings` (leaderboard: `/rating`) and the two
 `track_reference_lines`/`track_pace_reference` tables are readable by any
 authenticated driver; `driver_rating_history`/`driver_weekly_activity`/
 `driver_streaks` are a driver's own only (plus admin) -- none of the six
-tables has a client write policy at all, since only this script's
-service-role connection ever writes them.
+tables has a client write policy at all, since only the service-role
+connection either trigger runs on ever writes them.
 
 ### Who a signed-in user *is*
 
@@ -1182,9 +1197,11 @@ deduplication.
   redeploy/reboot on most container hosts **unless the Postgres/Supabase
   backend is configured** (the production setup) -- see "The
   Postgres/Supabase-backed data layer" above.
-- `scripts/compute_ratings.py` has no scheduled runner wired up yet --
-  nothing currently invokes it periodically in production, so Driver
-  Rating stays all-zero/unrated until it's run manually or given a cron
-  (`--loop`, or an external scheduler calling it once). Migration `0015`
-  itself also still needs applying to the real Supabase project, same as
-  every migration noted above it in this list.
+- `scripts/compute_ratings.py` now runs on every upload (`worker/
+  processor.py`'s `_recompute_ratings_best_effort`), so new sessions get
+  rated without any manual step. The daily backstop (`--loop`) still has
+  no scheduled runner wired up in production, though -- run it manually,
+  or give it to a cron/`--loop` on the worker's own host, until that's
+  automated. Migrations `0015` and `0016` also still need applying to the
+  real Supabase project, same as every migration noted above them in this
+  list.
