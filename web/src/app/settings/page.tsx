@@ -1,4 +1,4 @@
-import { resolveAppUser } from "@/lib/supabase/server";
+import { createClient, resolveAppUser } from "@/lib/supabase/server";
 import AccountNotLinked from "@/components/AccountNotLinked";
 import AppHeader from "@/components/AppHeader";
 import SettingsForm from "./SettingsForm";
@@ -19,6 +19,24 @@ export default async function SettingsPage() {
   if (resolution.status !== "ok") return <AccountNotLinked resolution={resolution} />;
   const appUser = resolution.user;
 
+  const supabase = await createClient();
+
+  const { data: identity } = await supabase
+    .from("users")
+    .select("first_name, last_name, country")
+    .eq("id", appUser.id)
+    .maybeSingle();
+
+  // The caller's own driver_profiles row -- the same lookup Home
+  // (web/src/app/page.tsx) already does, needed here for the preferred-name
+  // write's WHERE clause and its current value. driver_profiles.display_name,
+  // not users.display_name, is what every leaderboard/roster actually shows.
+  const { data: myProfile } = await supabase
+    .from("driver_profiles")
+    .select("id, display_name")
+    .eq("user_id", appUser.id)
+    .maybeSingle();
+
   return (
     <main className="mx-auto max-w-2xl px-6 py-8">
       <AppHeader email={appUser.email} current="/settings" isAdmin={appUser?.is_admin} />
@@ -26,7 +44,11 @@ export default async function SettingsPage() {
       <p className="mb-8 text-sm text-muted">Your account, and what you race.</p>
       <SettingsForm
         userId={appUser.id}
-        displayName={appUser.display_name ?? ""}
+        driverProfileId={myProfile?.id ?? null}
+        preferredName={myProfile?.display_name ?? ""}
+        firstName={identity?.first_name ?? ""}
+        lastName={identity?.last_name ?? ""}
+        country={identity?.country ?? ""}
         engineCategory={appUser.engine_category ?? ""}
       />
     </main>

@@ -782,6 +782,60 @@ def test_the_settings_grant_does_not_open_up_the_account_row(world, column, valu
     )
 
 
+# ------------------------------------------- driver identity fields (0013)
+#
+# first_name/last_name/country on `users` (an additive column grant, same
+# idiom as engine_category/display_name), and a driver's own preferred name
+# on driver_profiles -- the first UPDATE that table has ever allowed, so it
+# gets the same "row policy, column grant" pairing already proven out above
+# for `users` and in 0010 for `team_memberships`.
+
+
+def test_a_driver_can_set_their_own_preferred_name(world):
+    allowed, err = world["alice"].write(
+        "UPDATE driver_profiles SET display_name='Al' WHERE id=%s", (world["alice_profile"],)
+    )
+    assert allowed, f"a driver could not set their own preferred name: {err}"
+
+
+def test_a_driver_cannot_edit_another_drivers_preferred_name(world):
+    allowed, _ = world["carol"].write(
+        "UPDATE driver_profiles SET display_name='Hijacked' WHERE id=%s", (world["alice_profile"],)
+    )
+    assert not allowed, "a driver edited someone else's preferred name"
+
+
+@pytest.mark.parametrize(
+    "column,value",
+    [
+        ("claim_status", "'unclaimed'"),
+        ("user_id", "999999"),
+        ("created_by_user_id", "999999"),
+    ],
+)
+def test_the_preferred_name_grant_does_not_open_up_the_rest_of_the_profile_row(world, column, value):
+    """driver_profiles carries claim_status and ownership columns -- an
+    UPDATE policy chooses rows, never columns, so the same idiom
+    `test_the_settings_grant_does_not_open_up_the_account_row` already
+    covers for `users` has to cover this table's new self-service grant
+    too."""
+    allowed, error = world["alice"].write(
+        f"UPDATE driver_profiles SET {column} = {value} WHERE id=%s", (world["alice_profile"],)
+    )
+    assert not allowed, f"a client rewrote driver_profiles.{column} via their own preferred-name edit"
+    assert error and "permission denied" in error.lower(), (
+        f"expected a column-level permission error, got: {error}"
+    )
+
+
+def test_a_driver_can_set_their_own_identity_fields(world):
+    allowed, err = world["alice"].write(
+        "UPDATE users SET first_name='Alice', last_name='Anderson', country='NZ' WHERE id=%s",
+        (world["alice_user"],),
+    )
+    assert allowed, f"a driver could not set their own name/country: {err}"
+
+
 # --------------------------------------------------------- team management
 #
 # Creating a team, requesting to join, approving/rejecting, promoting/

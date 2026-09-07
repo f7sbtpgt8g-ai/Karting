@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { ENGINE_CATEGORIES } from "@/lib/engine";
+import { COUNTRIES } from "@/lib/countries";
 
 type Mode = "signin" | "signup" | "reset";
 
@@ -36,6 +37,9 @@ export default function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [country, setCountry] = useState("");
   const [dateOfBirth, setDateOfBirth] = useState("");
   const [guardianEmail, setGuardianEmail] = useState("");
   const [engineCategory, setEngineCategory] = useState("");
@@ -73,7 +77,10 @@ export default function LoginForm() {
           // every RLS policy -- signed in, sees nothing.
           options: {
             data: {
-              display_name: displayName || email,
+              display_name: displayName || lastName,
+              first_name: firstName,
+              last_name: lastName,
+              country,
               ...(dateOfBirth ? { date_of_birth: dateOfBirth } : {}),
               ...(guardianEmail ? { guardian_email: guardianEmail } : {}),
               ...(engineCategory ? { engine_category: engineCategory } : {}),
@@ -153,8 +160,56 @@ export default function LoginForm() {
         {mode === "signup" && (
           <>
             <div>
+              <label className="label mb-1 block" htmlFor="firstName">
+                First name
+              </label>
+              <input
+                id="firstName"
+                required
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                className="w-full rounded border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
+              />
+            </div>
+
+            <div>
+              <label className="label mb-1 block" htmlFor="lastName">
+                Last name
+              </label>
+              <input
+                id="lastName"
+                required
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                className="w-full rounded border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
+              />
+            </div>
+
+            <div>
+              <label className="label mb-1 block" htmlFor="country">
+                Country
+              </label>
+              <select
+                id="country"
+                required
+                value={country}
+                onChange={(e) => setCountry(e.target.value)}
+                className="w-full rounded border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
+              >
+                <option value="" disabled>
+                  Select a country
+                </option>
+                {COUNTRIES.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
               <label className="label mb-1 block" htmlFor="name">
-                Driver name
+                Preferred name
               </label>
               <input
                 id="name"
@@ -163,6 +218,7 @@ export default function LoginForm() {
                 placeholder="How you appear to other drivers"
                 className="w-full rounded border border-hairline bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
               />
+              <p className="mt-1 text-xs text-muted">Defaults to your last name if left blank.</p>
             </div>
 
             <div>
