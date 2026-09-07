@@ -32,6 +32,34 @@ export type Sector = {
   endM: number;
 };
 
+/**
+ * Which corner or straight a point in the lap falls in.
+ *
+ * The question a driver asks of a telemetry trace is "where was that?", and
+ * the answer is a corner name, not a distance in metres. Boundaries belong to
+ * the segment they start: at exactly 162 m the kart is entering the next
+ * corner, not still finishing the last one.
+ */
+export function segmentAt(segments: Segment[], distanceM: number): Segment | null {
+  if (!Number.isFinite(distanceM)) return null;
+  for (const segment of segments) {
+    if (distanceM >= segment.start_m && distanceM < segment.end_m) return segment;
+  }
+  // Past the last boundary -- the run to the line, which is the final segment.
+  const last = segments[segments.length - 1];
+  return last && distanceM >= last.start_m ? last : null;
+}
+
+/** Which sector a point in the lap falls in, by the same rule. */
+export function sectorAt(sectors: Sector[], distanceM: number): Sector | null {
+  if (!Number.isFinite(distanceM)) return null;
+  for (const sector of sectors) {
+    if (distanceM >= sector.startM && distanceM < sector.endM) return sector;
+  }
+  const last = sectors[sectors.length - 1];
+  return last && distanceM >= last.startM ? last : null;
+}
+
 export const MIN_SECTORS = 3;
 export const MAX_SECTORS = 8;
 export const DEFAULT_SECTORS = 4;

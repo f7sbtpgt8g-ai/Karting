@@ -649,6 +649,8 @@ export default function LapAnalysis({
         <LapCharts
           laps={traces}
           sectors={sectors}
+          segments={active.segments}
+          trace={active.trace}
           referenceKey={referenceKey}
           onReferenceChange={setReferenceKey}
         />
