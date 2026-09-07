@@ -197,6 +197,67 @@ def _try(cur, sql: str, params: tuple = ()) -> tuple[bool, str | None, list[tupl
         return (False, str(exc).splitlines()[0], None)
 
 
+def _insert_session(
+    cur,
+    *,
+    driver_profile_id: int,
+    uploaded_by_user_id: int,
+    track_name: str,
+    best_lap_s: float,
+    average_lap_s: float | None = None,
+    visibility: str = "shared",
+    attribution_status: str = "confirmed",
+    engine_category: str | None = None,
+) -> int:
+    """Insert one session for a track-leaderboard test. `source_file` is a
+    fresh uuid every call so repeated inserts in the same test never collide
+    (the fixture's own sessions use a per-tier name instead, since there is
+    only ever one of each)."""
+    cur.execute(
+        "INSERT INTO sessions (source_file, session_index, driver, track_name, start_date, "
+        "ingested_at, best_lap_s, average_lap_s, n_laps, driver_profile_id, uploaded_by_user_id, "
+        "visibility, attribution_status, engine_category) "
+        "VALUES (%s,0,'x',%s,'2026-01-01',now(),%s,%s,10,%s,%s,%s,%s,%s) RETURNING id",
+        (
+            f"{uuid.uuid4()}.tsv",
+            track_name,
+            best_lap_s,
+            average_lap_s,
+            driver_profile_id,
+            uploaded_by_user_id,
+            visibility,
+            attribution_status,
+            engine_category,
+        ),
+    )
+    return cur.fetchone()[0]
+
+
+def _insert_team(cur, name: str, created_by_user_id: int) -> int:
+    cur.execute(
+        "INSERT INTO teams (name, created_by_user_id, created_at) VALUES (%s,%s,now()) RETURNING id",
+        (name, created_by_user_id),
+    )
+    return cur.fetchone()[0]
+
+
+def _insert_claimed_driver(cur, display_name: str) -> tuple[int, int]:
+    """A driver with no `Actor` of their own -- for tests that only need
+    another team's roster to exist, not to query *as* that driver."""
+    cur.execute(
+        "INSERT INTO users (email, external_auth_id, email_verified, display_name, created_at) "
+        "VALUES (%s,%s,TRUE,%s,now()) RETURNING id",
+        (f"{display_name.lower()}-{uuid.uuid4().hex[:8]}@example.com", str(uuid.uuid4()), display_name),
+    )
+    user_id = cur.fetchone()[0]
+    cur.execute(
+        "INSERT INTO driver_profiles (display_name, user_id, claim_status, created_at, claimed_at) "
+        "VALUES (%s,%s,'claimed',now(),now()) RETURNING id",
+        (display_name, user_id),
+    )
+    return user_id, cur.fetchone()[0]
+
+
 @pytest.fixture(scope="module")
 def world(db):
     """Two drivers on the same team, one driver on no team, and one session
@@ -951,3 +1012,204 @@ def test_the_leave_grant_does_not_open_up_other_columns(world, column, value):
     assert error and "permission denied" in error.lower(), (
         f"expected a column-level permission error, got: {error}"
     )
+
+
+# --------------------------------------------------------- track leaderboards
+#
+# There is no `tracks` table -- these RPCs aggregate over sessions.track_name
+# directly (0011_track_leaderboards.sql). Most of them are plain SECURITY
+# INVOKER reads that ride the sessions_select policy as-is. The two podium
+# functions (track_driver_podium, track_team_podium) additionally repeat the
+# public-visibility predicate themselves rather than trusting whatever RLS
+# already narrowed things to, and track_team_podium runs as SECURITY DEFINER
+# because team_memberships_select would otherwise collapse its cross-team
+# ranking down to "the caller's own team, maybe". The tests below exist to
+# prove exactly that -- that the podiums come out identical no matter who is
+# asking, which is the one property a plain SECURITY INVOKER version would
+# have silently gotten wrong.
+
+
+def test_track_summaries_returns_only_rls_visible_tracks(world, db):
+    """An outsider only sees a track's public+own sessions; a teammate
+    additionally sees the team-visibility ones -- track_summaries rides RLS
+    as-is (it isn't meant to be one canonical answer, unlike the podiums)."""
+    with scenario(db) as cur:
+        track = f"Summary Park {uuid.uuid4().hex[:6]}"
+        _insert_session(
+            cur, driver_profile_id=world["dana_profile"], uploaded_by_user_id=world["dana_user"],
+            track_name=track, best_lap_s=50.0, visibility="shared",
+        )
+        _insert_session(
+            cur, driver_profile_id=world["bob_profile"], uploaded_by_user_id=world["bob_user"],
+            track_name=track, best_lap_s=40.0, visibility="team",
+        )
+
+        _become(cur, world["carol"])  # unaffiliated outsider
+        cur.execute("SELECT session_count FROM track_summaries(NULL) WHERE track_name=%s", (track,))
+        assert cur.fetchone() == (1,), "an outsider saw a team-only session in the track list"
+
+        _become(cur, world["alice"])  # Bob's teammate
+        cur.execute("SELECT session_count FROM track_summaries(NULL) WHERE track_name=%s", (track,))
+        assert cur.fetchone() == (2,), "a teammate did not see the team-visibility session"
+
+
+def test_track_my_best_is_scoped_to_the_caller_only(world, db):
+    with scenario(db) as cur:
+        track = f"Own Best Park {uuid.uuid4().hex[:6]}"
+        _insert_session(
+            cur, driver_profile_id=world["alice_profile"], uploaded_by_user_id=world["alice_user"],
+            track_name=track, best_lap_s=50.0,
+        )
+        _insert_session(
+            cur, driver_profile_id=world["bob_profile"], uploaded_by_user_id=world["bob_user"],
+            track_name=track, best_lap_s=40.0,
+        )
+
+        _become(cur, world["alice"])
+        cur.execute("SELECT best_lap_s FROM track_my_best(%s, NULL)", (track,))
+        assert cur.fetchone() == (50.0,), "Alice's own best leaked Bob's faster lap"
+
+        _become(cur, world["bob"])
+        cur.execute("SELECT best_lap_s FROM track_my_best(%s, NULL)", (track,))
+        assert cur.fetchone() == (40.0,), "Bob's own best leaked Alice's lap instead of his own"
+
+
+def test_track_driver_podium_and_team_podium_are_identical_for_every_caller(world, db):
+    """The core correctness test. Reds (Alice) and a brand-new team Blues
+    (Frank, who has no `Actor` and is never queried as -- only his team's
+    existence matters) each have one public lap; Bob additionally has a
+    *faster* team-only lap that must never appear anywhere. Three callers
+    with three different relationships to these teams -- Carol (on neither),
+    Bob (on Reds, not Blues), Alice (on Reds, not Blues) -- must all see the
+    exact same podium, in the same order, including Blues' entry despite
+    none of them being a Blues member."""
+    with scenario(db) as cur:
+        track = f"Podium Park {uuid.uuid4().hex[:6]}"
+        blues_user, frank_profile = _insert_claimed_driver(cur, "Frank")
+        blues_team = _insert_team(cur, "Blues", blues_user)
+        cur.execute(
+            "INSERT INTO team_memberships (team_id, driver_profile_id, role, status, requested_at, decided_at) "
+            "VALUES (%s,%s,'manager','active',now(),now())",
+            (blues_team, frank_profile),
+        )
+
+        _insert_session(
+            cur, driver_profile_id=world["alice_profile"], uploaded_by_user_id=world["alice_user"],
+            track_name=track, best_lap_s=50.0, visibility="shared",
+        )
+        _insert_session(
+            cur, driver_profile_id=frank_profile, uploaded_by_user_id=blues_user,
+            track_name=track, best_lap_s=45.0, visibility="shared",
+        )
+        _insert_session(
+            cur, driver_profile_id=world["bob_profile"], uploaded_by_user_id=world["bob_user"],
+            track_name=track, best_lap_s=10.0, visibility="team",  # never public -- must be excluded
+        )
+
+        results = {}
+        for who in ("carol", "bob", "alice"):
+            _become(cur, world[who])
+            cur.execute(
+                "SELECT driver_name, best_lap_s, team_name FROM track_driver_podium(%s, NULL, 10)", (track,)
+            )
+            drivers = cur.fetchall()
+            cur.execute("SELECT team_name, best_lap_s FROM track_team_podium(%s, NULL, 3)", (track,))
+            teams = cur.fetchall()
+            results[who] = (drivers, teams)
+
+        assert results["carol"] == results["bob"] == results["alice"], (
+            f"the podium differed by caller: {results}"
+        )
+        drivers, teams = results["carol"]
+        assert drivers == [("Frank", 45.0, "Blues"), ("Alice", 50.0, "Reds")], drivers
+        assert teams == [("Blues", 45.0), ("Reds", 50.0)], teams
+        assert 10.0 not in [d[1] for d in drivers], "Bob's team-only lap leaked into a public podium"
+
+
+def test_track_podiums_exclude_private_and_unconfirmed_but_my_best_includes_them(world, db):
+    with scenario(db) as cur:
+        track = f"Exclusion Park {uuid.uuid4().hex[:6]}"
+        _insert_session(
+            cur, driver_profile_id=world["alice_profile"], uploaded_by_user_id=world["alice_user"],
+            track_name=track, best_lap_s=50.0, visibility="shared", attribution_status="confirmed",
+        )
+        _insert_session(
+            cur, driver_profile_id=world["alice_profile"], uploaded_by_user_id=world["alice_user"],
+            track_name=track, best_lap_s=20.0, visibility="private", attribution_status="confirmed",
+        )
+        _insert_session(
+            cur, driver_profile_id=world["alice_profile"], uploaded_by_user_id=world["alice_user"],
+            track_name=track, best_lap_s=10.0, visibility="shared", attribution_status="pending",
+        )
+
+        _become(cur, world["alice"])
+        cur.execute("SELECT best_lap_s FROM track_my_best(%s, NULL)", (track,))
+        assert cur.fetchone() == (10.0,), "Alice's own best did not pick up her fastest private/unconfirmed lap"
+
+        for who in ("alice", "bob", "carol"):
+            _become(cur, world[who])
+            cur.execute("SELECT best_lap_s FROM track_driver_podium(%s, NULL, 10)", (track,))
+            laps = [row[0] for row in cur.fetchall()]
+            assert laps == [50.0], f"private/unconfirmed laps leaked into the public podium for {who}: {laps}"
+
+
+def test_track_driver_podium_filters_by_engine_category(world, db):
+    with scenario(db) as cur:
+        track = f"Class Park {uuid.uuid4().hex[:6]}"
+        _insert_session(
+            cur, driver_profile_id=world["alice_profile"], uploaded_by_user_id=world["alice_user"],
+            track_name=track, best_lap_s=50.0, engine_category="Rotax Senior",
+        )
+        _insert_session(
+            cur, driver_profile_id=world["alice_profile"], uploaded_by_user_id=world["alice_user"],
+            track_name=track, best_lap_s=45.0, engine_category="X30 Senior",
+        )
+
+        _become(cur, world["carol"])
+        cur.execute(
+            "SELECT best_lap_s FROM track_driver_podium(%s, 'Rotax Senior', 10)", (track,)
+        )
+        assert cur.fetchall() == [(50.0,)], "the class filter did not restrict to the requested class"
+
+        cur.execute("SELECT best_lap_s, engine_category FROM track_driver_podium(%s, NULL, 10)", (track,))
+        assert cur.fetchall() == [(45.0, "X30 Senior")], "unfiltered should surface the faster class"
+
+
+def test_track_map_source_prefers_public_then_falls_back_to_own(world, db):
+    with scenario(db) as cur:
+        track = f"Map Park {uuid.uuid4().hex[:6]}"
+        bob_session = _insert_session(
+            cur, driver_profile_id=world["bob_profile"], uploaded_by_user_id=world["bob_user"],
+            track_name=track, best_lap_s=40.0, visibility="private",
+        )
+        cur.execute("INSERT INTO session_analysis (session_db_id, best_lap) VALUES (%s, 1)", (bob_session,))
+
+        _become(cur, world["bob"])
+        cur.execute("SELECT session_id FROM track_map_source(%s, NULL)", (track,))
+        assert cur.fetchone() == (bob_session,), "no public session yet -- should have fallen back to Bob's own"
+
+        # sessions has no INSERT policy for `authenticated` at all (real
+        # ingestion runs on the worker's superuser connection) -- drop back
+        # to the connection's own unrestricted role before inserting again.
+        cur.execute("RESET ROLE")
+
+        # A slower public session should still win over Bob's faster private one.
+        alice_session = _insert_session(
+            cur, driver_profile_id=world["alice_profile"], uploaded_by_user_id=world["alice_user"],
+            track_name=track, best_lap_s=60.0, visibility="shared",
+        )
+        cur.execute("INSERT INTO session_analysis (session_db_id, best_lap) VALUES (%s, 1)", (alice_session,))
+
+        _become(cur, world["bob"])
+        cur.execute("SELECT session_id FROM track_map_source(%s, NULL)", (track,))
+        assert cur.fetchone() == (alice_session,), "a public session should be preferred even if slower"
+
+
+def test_anonymous_gets_nothing_from_track_rpcs(world):
+    for sql in (
+        "SELECT * FROM track_summaries(NULL)",
+        "SELECT * FROM track_driver_podium('Ring', NULL, 10)",
+        "SELECT * FROM track_team_podium('Ring', NULL, 3)",
+    ):
+        rows, _ = world["anon"].try_query(sql)
+        assert rows == [], f"anonymous got rows back from: {sql}"

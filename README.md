@@ -919,13 +919,19 @@ all, so a client cannot mark an unparsed file complete or stall the queue
 
 `/` (Home -- sessions grouped by driver, filters, sortable columns, inline
 edit of type/track/conditions/visibility, delete), `/sessions/[id]` (Lap
-Analysis, plus `/sessions/[id]/engine` for engine analysis), `/upload`,
-`/login`, and `/admin`. Everything else the retired Streamlit prototype
-had (Top 3 Focus Areas, Corner/Lap Comparison, Recurring Patterns,
-Gearing Simulation, Consistency/Progression, Kart Setup, History, Teams,
-Leaderboards, Shared Laps, Find My Profile -- see the sections above for
-what each one does) hasn't been rebuilt here yet; the nav deliberately
-links only to routes that exist rather than to a 404.
+Analysis, plus `/sessions/[id]/engine` for engine analysis), `/tracks`
+(every track in scope with its best/average lap by engine class, and a
+per-track page with a personal-best highlight, an all-drivers podium, a
+team podium and a track map -- all filterable by class; see
+`supabase/migrations/0011_track_leaderboards.sql`), `/teams` (create,
+join, approve, promote/demote, remove, transfer manager -- see
+`supabase/migrations/0010_teams_management.sql`), `/upload`, `/login`,
+and `/admin`. Everything else the retired Streamlit prototype had (Top 3
+Focus Areas, Corner/Lap Comparison, Recurring Patterns, Gearing
+Simulation, Consistency/Progression, Kart Setup, History, Shared Laps,
+Find My Profile -- see the sections above for what each one does) hasn't
+been rebuilt here yet; the nav deliberately links only to routes that
+exist rather than to a 404.
 
 **Lap Analysis** reads the tables 0005 added, not the Parquet blob -- which
 is what makes it possible in a browser at all. Summary cards, a lap table
@@ -1092,10 +1098,10 @@ deduplication.
 
 - Most of the retired Streamlit prototype's feature set (Top 3 Focus
   Areas, Corner/Lap Comparison, Recurring Patterns, Gearing Simulation,
-  Consistency/Progression, Kart Setup, History, Teams, Leaderboards,
-  Shared Laps, Find My Profile) hasn't been rebuilt in `web/` yet -- see
-  "What exists in `web/` so far" above for the current page list, and the
-  earlier sections of this README for what each retired page did.
+  Consistency/Progression, Kart Setup, History, Shared Laps, Find My
+  Profile) hasn't been rebuilt in `web/` yet -- see "What exists in
+  `web/` so far" above for the current page list, and the earlier
+  sections of this README for what each retired page did.
 - No export (PDF or otherwise) exists in `web/` yet.
 - Ideal-line overlay and fuel/tyre-effect isolation described in the
   original spec's "additional features" section are not built yet --

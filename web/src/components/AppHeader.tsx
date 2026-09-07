@@ -7,9 +7,8 @@ import SignOutButton from "./SignOutButton";
  * Only the pages that actually exist are listed -- the rest of the
  * feature set the old Streamlit prototype had (kart setup, corner/lap
  * comparison, gearing simulation, consistency/progression trends,
- * leaderboards, history, etc.) hasn't been rebuilt here yet, and a link
- * to a route that 404s reads as a broken app rather than an unfinished
- * one.
+ * history, etc.) hasn't been rebuilt here yet, and a link to a route
+ * that 404s reads as a broken app rather than an unfinished one.
  */
 export default function AppHeader({
   email,
@@ -22,6 +21,7 @@ export default function AppHeader({
 }) {
   const links = [
     { href: "/", label: "Home" },
+    { href: "/tracks", label: "Tracks" },
     { href: "/upload", label: "Upload" },
     { href: "/teams", label: "Teams" },
     { href: "/settings", label: "Settings" },
