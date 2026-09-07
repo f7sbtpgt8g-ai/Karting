@@ -1075,10 +1075,16 @@ same "never fail an otherwise-successful upload" shape as
 `_link_to_batch`), so a driver sees their own upload reflected without
 waiting on a schedule, and so an upload that gives a previously-solo day a
 real field to compare against doesn't sit unrated until the next scheduled
-pass. `scripts/compute_ratings.py --loop` (daily by default,
-`RATING_POLL_INTERVAL_S` to change it) is the backstop that keeps the
-historical reference buckets and reference lines from going stale on a day
-nobody happens to upload anything.
+pass. The backstop that keeps the historical reference buckets and
+reference lines from going stale on a day nobody happens to upload
+anything is `.github/workflows/daily-rating-recompute.yml` -- a scheduled
+GitHub Actions workflow (03:00 UTC, plus a manual `workflow_dispatch`
+trigger) that just runs `python -m scripts.compute_ratings` once, reusing
+the `SUPABASE_DB_URL` repository secret already set up for
+`build-windows-installer.yml`. No standalone host/process to deploy for
+this: the `--loop` mode above still works identically if you'd rather run
+it as a long-lived process somewhere (a platform-native cron alongside the
+worker, for instance), but isn't required.
 
 At today's data volumes (a club's worth of sessions, not a national
 championship's) a full pass is a ~10 second job -- cheap enough to pay on
@@ -1199,9 +1205,10 @@ deduplication.
   Postgres/Supabase-backed data layer" above.
 - `scripts/compute_ratings.py` now runs on every upload (`worker/
   processor.py`'s `_recompute_ratings_best_effort`), so new sessions get
-  rated without any manual step. The daily backstop (`--loop`) still has
-  no scheduled runner wired up in production, though -- run it manually,
-  or give it to a cron/`--loop` on the worker's own host, until that's
-  automated. Migrations `0015` and `0016` also still need applying to the
-  real Supabase project, same as every migration noted above them in this
-  list.
+  rated without any manual step, and the daily backstop is
+  `.github/workflows/daily-rating-recompute.yml` (reuses the `SUPABASE_DB_URL`
+  secret already set up for `build-windows-installer.yml`, no new hosting
+  needed) -- so as long as that secret is set on the repo, both triggers
+  are live with nothing further to deploy. Migrations `0015` and `0016`
+  still need applying to the real Supabase project, same as every
+  migration noted above them in this list.

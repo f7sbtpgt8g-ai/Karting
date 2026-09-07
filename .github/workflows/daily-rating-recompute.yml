@@ -1,0 +1,34 @@
+name: Daily Driver Rating recompute
+
+# The scheduled half of Driver Rating's two triggers -- see
+# scripts/compute_ratings.py's module docstring. worker/processor.py
+# already calls the same batch on every upload; this is the backstop that
+# keeps the historical reference lines/pace buckets from going stale on a
+# day nobody happens to upload anything. Runs once a day, not --loop,
+# since a scheduled Action is itself the loop.
+
+on:
+  schedule:
+    # 03:00 UTC daily -- arbitrary off-peak time, not otherwise significant;
+    # change the cron expression if a different time suits your drivers'
+    # timezone better.
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  recompute:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Recompute Driver Rating
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python -m scripts.compute_ratings
