@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import dynamic from "next/dynamic";
-import { CHART_METRICS, deltaTrace, lapColor, type LapTrace } from "@/lib/lapCharts";
+import { CHART_METRICS, deltaTrace, lapColor, type ComparedLap } from "@/lib/lapCharts";
 import { SECTOR_COLORS } from "@/lib/trackMap";
 import type { Sector } from "@/lib/sectors";
 
@@ -49,36 +49,45 @@ const LAYOUT_BASE = {
  * place on every lap -- against time, two laps drift apart and nothing lines
  * up after the first mistake.
  *
+ * Laps may come from several sessions and several drivers at once, so every
+ * series is named by its `label` rather than by lap number: two drivers both
+ * have a lap 10, and a legend reading "Lap 10" twice says nothing about
+ * which line is whose.
+ *
  * Sector boundaries are drawn as vertical rules on every chart, in the same
  * colours as the track map, so a difference can be attributed to a stretch
  * of tarmac without counting corners.
  */
 export default function LapCharts({
-  traces,
+  laps,
   sectors,
-  referenceLap,
+  referenceKey,
   onReferenceChange,
 }: {
-  traces: LapTrace[];
+  laps: ComparedLap[];
   sectors: Sector[];
-  referenceLap: number | null;
-  onReferenceChange: (lapNumber: number) => void;
+  referenceKey: string | null;
+  onReferenceChange: (key: string) => void;
 }) {
-  const reference = traces.find((t) => t.lapNumber === referenceLap) ?? traces[0];
+  const reference = laps.find((lap) => lap.key === referenceKey) ?? laps[0];
 
   const deltas = useMemo(
     () =>
       reference
-        ? traces
-            .filter((t) => t.lapNumber !== reference.lapNumber)
-            .map((t) => ({ lapNumber: t.lapNumber, ...deltaTrace(t, reference) }))
+        ? laps
+            .filter((lap) => lap.key !== reference.key)
+            .map((lap) => ({
+              key: lap.key,
+              label: lap.label,
+              ...deltaTrace(lap.trace, reference.trace),
+            }))
         : [],
-    [traces, reference],
+    [laps, reference],
   );
 
-  const colorFor = (lapNumber: number) =>
+  const colorFor = (key: string) =>
     lapColor(
-      traces.findIndex((t) => t.lapNumber === lapNumber),
+      laps.findIndex((lap) => lap.key === key),
       SECTOR_COLORS,
     );
 
@@ -90,14 +99,18 @@ export default function LapCharts({
     y0: 0,
     y1: 1,
     yref: "paper" as const,
-    line: { color: SECTOR_COLORS[sector.index % SECTOR_COLORS.length], width: 1, dash: "dot" as const },
+    line: {
+      color: SECTOR_COLORS[sector.index % SECTOR_COLORS.length],
+      width: 1,
+      dash: "dot" as const,
+    },
   }));
 
-  if (traces.length === 0) {
+  if (laps.length === 0) {
     return (
       <div className="rounded border border-hairline bg-surface px-4 py-8 text-center text-sm text-muted">
         Tick <span className="text-ink2">Cmp</span> on two or more laps above to plot them against
-        each other.
+        each other. Laps from different tabs can be compared together.
       </div>
     );
   }
@@ -107,27 +120,27 @@ export default function LapCharts({
       <div className="flex flex-wrap items-center gap-4">
         <h2 className="text-sm font-bold">Lap comparison</h2>
         <div className="flex flex-wrap items-center gap-3 text-xs">
-          {traces.map((trace) => (
-            <span key={trace.lapNumber} className="flex items-center gap-1.5">
+          {laps.map((lap) => (
+            <span key={lap.key} className="flex items-center gap-1.5">
               <span
                 className="inline-block h-2 w-2 rounded-sm"
-                style={{ background: colorFor(trace.lapNumber) }}
+                style={{ background: colorFor(lap.key) }}
                 aria-hidden
               />
-              <span className="text-ink2">Lap {trace.lapNumber}</span>
+              <span className="text-ink2">{lap.label}</span>
             </span>
           ))}
         </div>
         <label className="ml-auto flex items-center gap-2">
           <span className="label">Delta vs</span>
           <select
-            value={reference?.lapNumber ?? ""}
-            onChange={(e) => onReferenceChange(Number(e.target.value))}
+            value={reference?.key ?? ""}
+            onChange={(event) => onReferenceChange(event.target.value)}
             className="rounded border border-hairline bg-surface px-2 py-1 text-sm"
           >
-            {traces.map((trace) => (
-              <option key={trace.lapNumber} value={trace.lapNumber}>
-                Lap {trace.lapNumber}
+            {laps.map((lap) => (
+              <option key={lap.key} value={lap.key}>
+                {lap.label}
               </option>
             ))}
           </select>
@@ -137,14 +150,14 @@ export default function LapCharts({
       {CHART_METRICS.map((metric) => (
         <ChartPanel key={metric.key} title={`${metric.label} (${metric.unit})`}>
           <Plot
-            data={traces.map((trace) => ({
-              x: trace.distanceM,
-              y: trace[metric.key] as (number | null)[],
+            data={laps.map((lap) => ({
+              x: lap.trace.distanceM,
+              y: lap.trace[metric.key] as (number | null)[],
               type: "scattergl",
               mode: "lines",
-              name: `Lap ${trace.lapNumber}`,
-              line: { color: colorFor(trace.lapNumber), width: 1.6 },
-              hovertemplate: `Lap ${trace.lapNumber}: %{y:.1f}<extra></extra>`,
+              name: lap.label,
+              line: { color: colorFor(lap.key), width: 1.6 },
+              hovertemplate: `${lap.label}: %{y:.1f}<extra></extra>`,
             }))}
             layout={{
               ...LAYOUT_BASE,
@@ -160,11 +173,7 @@ export default function LapCharts({
       ))}
 
       <ChartPanel
-        title={
-          reference
-            ? `Delta to lap ${reference.lapNumber} (s) — above zero is slower`
-            : "Delta (s)"
-        }
+        title={reference ? `Delta to ${reference.label} (s) — above zero is slower` : "Delta (s)"}
       >
         <Plot
           data={deltas.map((delta) => ({
@@ -172,9 +181,9 @@ export default function LapCharts({
             y: delta.deltaS,
             type: "scattergl",
             mode: "lines",
-            name: `Lap ${delta.lapNumber}`,
-            line: { color: colorFor(delta.lapNumber), width: 1.6 },
-            hovertemplate: `Lap ${delta.lapNumber}: %{y:+.3f}s<extra></extra>`,
+            name: delta.label,
+            line: { color: colorFor(delta.key), width: 1.6 },
+            hovertemplate: `${delta.label}: %{y:+.3f}s<extra></extra>`,
           }))}
           layout={{
             ...LAYOUT_BASE,
@@ -201,9 +210,9 @@ export default function LapCharts({
 
       <p className="text-xs text-muted">
         Plotted against distance, not time, so the same corner sits at the same place on every lap.
-        Dotted rules are the sector boundaries, coloured as on the track map. Delta is computed by
-        interpolating both laps onto a common distance grid &mdash; the two were sampled wherever
-        their own GPS fixes landed.
+        Dotted rules are the sector boundaries of the session shown in the table, coloured as on
+        the track map. Delta is computed by interpolating both laps onto a common distance grid
+        &mdash; the two were sampled wherever their own GPS fixes landed.
       </p>
     </div>
   );

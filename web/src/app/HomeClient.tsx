@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { CONDITION_COLOR, CONDITIONS } from "@/lib/conditions";
 import { ENGINE_CATEGORIES, engineColor } from "@/lib/engine";
 import { lapTime, parseSessionDate, sessionDate, sessionTime } from "@/lib/format";
 import { bulkOutcome } from "@/lib/writes";
@@ -50,18 +51,6 @@ const SESSION_TYPES = [
   "Superheat",
   "Final",
 ];
-const CONDITIONS = ["Dry", "Wet", "Mixed"];
-
-// Water reads blue, and a mixed track reads as the warning it is. Dry stays
-// plain, because "nothing unusual" should not compete for attention with the
-// two conditions that change how the lap times should be read. The two hues
-// are the validated categorical slots used on the track map, so they are
-// legible on this surface and distinguishable to a colour-blind reader.
-const CONDITION_COLOR: Record<string, string> = {
-  Wet: "#3987e5",
-  Mixed: "#d95926",
-  Dry: "#eef0f1",
-};
 const VISIBILITY_LABELS: Record<string, string> = {
   private: "Private",
   team: "Team",

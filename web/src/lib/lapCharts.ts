@@ -16,6 +16,23 @@ export type LapTrace = {
   longitudinalG: (number | null)[];
 };
 
+/**
+ * A lap on the charts, carrying who it belongs to.
+ *
+ * The trace itself knows only a lap number, which stops identifying anything
+ * the moment a second driver's session is open -- so identity and labelling
+ * ride alongside it rather than being rebuilt at each use.
+ */
+export type ComparedLap = {
+  /** `sessionId:lapNumber` -- see lib/comparison.ts. */
+  key: string;
+  sessionId: number;
+  lapNumber: number;
+  /** What the legend, the hover and the delta selector call this lap. */
+  label: string;
+  trace: LapTrace;
+};
+
 export const CHART_METRICS = [
   { key: "speedKmh", label: "Speed", unit: "km/h" },
   { key: "rpm", label: "RPM", unit: "rpm" },

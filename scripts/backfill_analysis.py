@@ -52,6 +52,7 @@ from telemetry.analysis_store import (  # noqa: E402
     store_session_analysis,
 )
 from telemetry.parser import Session, load_sessions  # noqa: E402
+from telemetry.track_naming import name_track_if_unknown  # noqa: E402
 
 logger = logging.getLogger("backfill")
 
@@ -295,7 +296,7 @@ def main(argv: list[str] | None = None, store=None) -> int:
         f"{total_bytes / 1e6:.1f} MB total\n"
     )
 
-    analyzed = archived = cleared = skipped = failed = 0
+    analyzed = archived = cleared = skipped = failed = tracks_named = 0
     reclaimed = 0
     tsv_cache: dict = {}
 
@@ -332,6 +333,16 @@ def main(argv: list[str] | None = None, store=None) -> int:
             frame = _load_dataframe(meta, store=store, tsv_cache=tsv_cache)
             session = _rebuild_session(meta, frame)
 
+            # Named before analysis is skipped, not after: a session that is
+            # already analysed can still be missing its track name, and once
+            # any one session at a circuit is named by hand, a re-run of this
+            # names every other session driven there.
+            if args.analyze or args.clear_blobs:
+                named = name_track_if_unknown(session_db_id, session)
+                if named:
+                    logger.info("named session %s '%s' from its GPS position", session_db_id, named)
+                    tracks_named += 1
+
             if args.analyze or args.clear_blobs:
                 if has_stored_analysis(session_db_id):
                     logger.info("session %s already analyzed at v%s", session_db_id, ANALYSIS_VERSION)
@@ -363,8 +374,9 @@ def main(argv: list[str] | None = None, store=None) -> int:
 
     if args.analyze or args.clear_blobs or args.archive:
         print(
-            f"\nanalyzed {analyzed} · archived {archived} · blobs cleared {cleared} "
-            f"({reclaimed / 1e6:.1f} MB) · skipped {skipped} · failed {failed}"
+            f"\nanalyzed {analyzed} · tracks named {tracks_named} · archived {archived} · "
+            f"blobs cleared {cleared} ({reclaimed / 1e6:.1f} MB) · "
+            f"skipped {skipped} · failed {failed}"
         )
         if cleared and not args.vacuum:
             print("Re-run with --vacuum to return the freed space to the filesystem.")
