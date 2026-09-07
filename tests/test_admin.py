@@ -327,6 +327,101 @@ def test_deleting_an_unknown_user_is_an_error_not_a_silent_success(world):
     assert error is not None
 
 
+# ------------------------------------------------------ deleting an empty team
+
+
+def test_a_non_admin_cannot_delete_an_empty_team(world):
+    with world["conn"].cursor() as cur:
+        cur.execute(
+            "INSERT INTO teams (name, created_by_user_id, created_at) VALUES ('Ghosts',%s,now()) "
+            "RETURNING id",
+            (world["boss_user"],),
+        )
+        team_id = cur.fetchone()[0]
+
+    _, error = world["driver"].try_call("SELECT admin_delete_empty_team(%s)", (team_id,))
+    assert error and "not authorised" in error.lower()
+    with world["conn"].cursor() as cur:
+        cur.execute("SELECT count(*) FROM teams WHERE id=%s", (team_id,))
+        assert cur.fetchone()[0] == 1, "a non-admin's failed delete still removed the team"
+
+
+def test_an_admin_can_delete_a_truly_empty_team(world):
+    with world["conn"].cursor() as cur:
+        cur.execute(
+            "INSERT INTO teams (name, created_by_user_id, created_at) VALUES ('Ghosts',%s,now()) "
+            "RETURNING id",
+            (world["boss_user"],),
+        )
+        team_id = cur.fetchone()[0]
+
+    world["boss"].call("SELECT admin_delete_empty_team(%s)", (team_id,))
+
+    with world["conn"].cursor() as cur:
+        cur.execute("SELECT count(*) FROM teams WHERE id=%s", (team_id,))
+        assert cur.fetchone()[0] == 0
+
+
+def test_deleting_refuses_a_team_with_an_active_member(world):
+    """An orphaned team (no active *manager*) can still have real, active
+    members -- that case belongs to admin_team_reassign_manager, and
+    deleting it out from under them would be a much bigger action than a
+    'clean up this empty shell' button implies."""
+    with world["conn"].cursor() as cur:
+        cur.execute(
+            "INSERT INTO teams (name, created_by_user_id, created_at) VALUES ('Haunted',%s,now()) "
+            "RETURNING id",
+            (world["boss_user"],),
+        )
+        team_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO team_memberships (team_id, driver_profile_id, role, status, requested_at, "
+            "decided_at) VALUES (%s,%s,'admin','active',now(),now())",
+            (team_id, world["driver_profile"]),
+        )
+
+    _, error = world["boss"].try_call("SELECT admin_delete_empty_team(%s)", (team_id,))
+    assert error and "active member" in error.lower()
+
+    with world["conn"].cursor() as cur:
+        cur.execute("SELECT count(*) FROM teams WHERE id=%s", (team_id,))
+        assert cur.fetchone()[0] == 1, "the team was deleted despite having an active member"
+        cur.execute("SELECT count(*) FROM team_memberships WHERE team_id=%s", (team_id,))
+        assert cur.fetchone()[0] == 1
+
+
+def test_deleting_an_empty_team_cleans_up_leftover_non_active_membership_rows(world):
+    """A team with zero *active* members can still carry non-active rows
+    (a rejected request, someone who left) -- team_memberships.team_id has
+    no ON DELETE clause, so those would block the delete with a foreign-key
+    error unless the function cleans them up itself first."""
+    with world["conn"].cursor() as cur:
+        cur.execute(
+            "INSERT INTO teams (name, created_by_user_id, created_at) VALUES ('Rejected Only',%s,now()) "
+            "RETURNING id",
+            (world["boss_user"],),
+        )
+        team_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO team_memberships (team_id, driver_profile_id, role, status, requested_at, "
+            "decided_at) VALUES (%s,%s,'member','rejected',now(),now())",
+            (team_id, world["driver_profile"]),
+        )
+
+    world["boss"].call("SELECT admin_delete_empty_team(%s)", (team_id,))
+
+    with world["conn"].cursor() as cur:
+        cur.execute("SELECT count(*) FROM teams WHERE id=%s", (team_id,))
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM team_memberships WHERE team_id=%s", (team_id,))
+        assert cur.fetchone()[0] == 0, "the leftover rejected-request row was not cleaned up"
+
+
+def test_deleting_an_unknown_team_is_an_error_not_a_silent_success(world):
+    _, error = world["boss"].try_call("SELECT admin_delete_empty_team(%s)", (999999,))
+    assert error is not None
+
+
 def test_the_admin_flag_cannot_be_granted_from_the_app(world):
     """Privilege has to come from outside the application. `is_admin` is not
     in the column-level UPDATE grant, so no client can mint an admin -- which
