@@ -38,6 +38,7 @@ export default async function TrackDetailPage({ params }: { params: { trackName:
     rank: number;
     driver_profile_id: number;
     driver_name: string;
+    driver_country: string | null;
     best_lap_s: number;
     engine_category: string | null;
     team_name: string | null;
@@ -48,6 +49,7 @@ export default async function TrackDetailPage({ params }: { params: { trackName:
     team_name: string;
     best_lap_s: number;
     fastest_driver_name: string;
+    fastest_driver_country: string | null;
   };
   type RawMapSource = { session_id: number | null; lap_number: number | null };
 
@@ -71,6 +73,7 @@ export default async function TrackDetailPage({ params }: { params: { trackName:
       rank: row.rank,
       driverProfileId: row.driver_profile_id,
       driverName: row.driver_name,
+      driverCountry: row.driver_country,
       bestLapS: row.best_lap_s,
       engineCategory: row.engine_category,
       teamName: row.team_name,
@@ -83,6 +86,7 @@ export default async function TrackDetailPage({ params }: { params: { trackName:
     teamName: row.team_name,
     bestLapS: row.best_lap_s,
     fastestDriverName: row.fastest_driver_name,
+    fastestDriverCountry: row.fastest_driver_country,
   }));
 
   const mapSource = ((mapSourceRes.data as RawMapSource[] | null) ?? [])[0] ?? null;

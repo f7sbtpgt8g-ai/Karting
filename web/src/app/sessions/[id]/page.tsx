@@ -140,10 +140,19 @@ export default async function SessionPage({ params }: { params: { id: string } }
         .maybeSingle()
     : { data: null };
 
+  // users.country isn't readable cross-driver via plain RLS (unlike
+  // driver_profiles, `users` has no public-read branch), so this goes
+  // through the driver_country() SECURITY DEFINER lookup (0014) instead of
+  // a nested embed, which would just come back null for anyone else.
+  const { data: driverCountry } = session.driver_profile_id
+    ? await supabase.rpc("driver_country", { p_driver_profile_id: session.driver_profile_id })
+    : { data: null };
+
   const bundle = buildBundle({
     session,
     analysis,
     laps: laps ?? [],
+    driverCountry: driverCountry as string | null,
     segmentTimes: segmentTimes ?? [],
     peaks: peaks ?? [],
     trace: bestTrace,

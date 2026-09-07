@@ -91,34 +91,53 @@ export default async function TeamsPage() {
         .eq("team_id", membership.teamId)
         .eq("status", "active")
         .returns<RawRoster[]>();
-      roster = (rosterRows ?? []).map((r) => ({
-        id: r.id,
-        role: r.role,
-        driverProfileId: r.driver_profile_id,
-        displayName: r.driver_profiles?.display_name ?? "Unknown driver",
-      }));
-
+      type RawPending = {
+        id: number;
+        requested_at: string | null;
+        driver_profile_id: number;
+        driver_profiles: { display_name: string } | null;
+      };
+      let pendingRows: RawPending[] = [];
       if (membership.role === "manager" || membership.role === "admin") {
-        type RawPending = {
-          id: number;
-          requested_at: string | null;
-          driver_profile_id: number;
-          driver_profiles: { display_name: string } | null;
-        };
-        const { data: pendingRows } = await supabase
+        const { data } = await supabase
           .from("team_memberships")
           .select("id, requested_at, driver_profile_id, driver_profiles(display_name)")
           .eq("team_id", membership.teamId)
           .eq("status", "pending")
           .order("requested_at", { ascending: true })
           .returns<RawPending[]>();
-        pendingRequests = (pendingRows ?? []).map((r) => ({
-          id: r.id,
-          driverProfileId: r.driver_profile_id,
-          displayName: r.driver_profiles?.display_name ?? "Unknown driver",
-          requestedAt: r.requested_at,
-        }));
+        pendingRows = data ?? [];
       }
+
+      // users.country isn't readable cross-driver via plain RLS (unlike
+      // driver_profiles, `users` has no public-read branch), so this goes
+      // through the driver_countries() SECURITY DEFINER lookup (0014)
+      // instead of a nested embed, which would just come back null for
+      // anyone else.
+      const allIds = [...(rosterRows ?? []), ...pendingRows].map((r) => r.driver_profile_id);
+      type RawCountry = { driver_profile_id: number; country: string | null };
+      const { data: countryData } = allIds.length
+        ? await supabase.rpc("driver_countries", { p_driver_profile_ids: allIds })
+        : { data: [] };
+      const countryByProfile = new Map(
+        ((countryData ?? []) as RawCountry[]).map((r) => [r.driver_profile_id, r.country]),
+      );
+
+      roster = (rosterRows ?? []).map((r) => ({
+        id: r.id,
+        role: r.role,
+        driverProfileId: r.driver_profile_id,
+        displayName: r.driver_profiles?.display_name ?? "Unknown driver",
+        country: countryByProfile.get(r.driver_profile_id) ?? null,
+      }));
+
+      pendingRequests = pendingRows.map((r) => ({
+        id: r.id,
+        driverProfileId: r.driver_profile_id,
+        displayName: r.driver_profiles?.display_name ?? "Unknown driver",
+        requestedAt: r.requested_at,
+        country: countryByProfile.get(r.driver_profile_id) ?? null,
+      }));
     }
   }
 

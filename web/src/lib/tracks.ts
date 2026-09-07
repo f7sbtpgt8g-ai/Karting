@@ -12,6 +12,7 @@ export type TrackSummaryRow = {
   sessionCount: number;
   bestLapS: number | null;
   bestLapDriverName: string | null;
+  bestLapDriverCountry: string | null;
   bestLapEngineCategory: string | null;
   averageLapS: number | null;
   lastDrivenDate: string | null; // ISO date from the RPC's DATE column
@@ -28,6 +29,7 @@ export type DriverPodiumRow = {
   rank: number;
   driverProfileId: number;
   driverName: string;
+  driverCountry: string | null;
   bestLapS: number;
   engineCategory: string | null;
   teamName: string | null;
@@ -39,6 +41,7 @@ export type TeamPodiumRow = {
   teamName: string;
   bestLapS: number;
   fastestDriverName: string;
+  fastestDriverCountry: string | null;
 };
 
 /**

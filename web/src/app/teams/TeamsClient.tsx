@@ -4,9 +4,22 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { TEAM_ROLE_LABELS, canActOnMember, compareTeamRole, type TeamRole, type TeamMembershipStatus } from "@/lib/teams";
+import { driverNameWithFlag } from "@/lib/flags";
 
-export type RosterRow = { id: number; role: TeamRole; driverProfileId: number; displayName: string };
-export type PendingRequestRow = { id: number; driverProfileId: number; displayName: string; requestedAt: string | null };
+export type RosterRow = {
+  id: number;
+  role: TeamRole;
+  driverProfileId: number;
+  displayName: string;
+  country: string | null;
+};
+export type PendingRequestRow = {
+  id: number;
+  driverProfileId: number;
+  displayName: string;
+  requestedAt: string | null;
+  country: string | null;
+};
 export type TeamOption = { id: number; name: string };
 
 type Membership = {
@@ -267,7 +280,7 @@ export default function TeamsClient({
           <div className="divide-y divide-hairline rounded border border-hairline bg-surface">
             {pendingRequests.map((req) => (
               <div key={req.id} className="flex items-center justify-between px-4 py-3">
-                <span className="text-sm">{req.displayName}</span>
+                <span className="text-sm">{driverNameWithFlag(req.displayName, req.country)}</span>
                 <div className="flex gap-2">
                   <button
                     type="button"
@@ -303,7 +316,8 @@ export default function TeamsClient({
               <div key={member.id} className="px-4 py-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm">
-                    {member.displayName} {isSelf && <span className="text-xs text-muted">(you)</span>}
+                    {driverNameWithFlag(member.displayName, member.country)}{" "}
+                    {isSelf && <span className="text-xs text-muted">(you)</span>}
                   </span>
                   <span className="text-xs text-muted">{TEAM_ROLE_LABELS[member.role]}</span>
                 </div>

@@ -29,6 +29,7 @@ export default async function TracksPage() {
     session_count: number;
     best_lap_s: number | null;
     best_lap_driver_name: string | null;
+    best_lap_driver_country: string | null;
     best_lap_engine_category: string | null;
     average_lap_s: number | null;
     last_driven_date: string | null;
@@ -46,6 +47,7 @@ export default async function TracksPage() {
     sessionCount: row.session_count,
     bestLapS: row.best_lap_s,
     bestLapDriverName: row.best_lap_driver_name,
+    bestLapDriverCountry: row.best_lap_driver_country,
     bestLapEngineCategory: row.best_lap_engine_category,
     averageLapS: row.average_lap_s,
     lastDrivenDate: row.last_driven_date,

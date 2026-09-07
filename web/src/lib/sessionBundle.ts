@@ -14,6 +14,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { driverNameWithFlag } from "./flags";
 import type { Segment } from "./sectors";
 import type { TracePoint } from "./trackMap";
 
@@ -90,6 +91,7 @@ export function buildBundle({
   peaks,
   trace,
   appUserId,
+  driverCountry,
 }: {
   session: RawSession;
   analysis: RawAnalysis | null;
@@ -104,6 +106,10 @@ export function buildBundle({
   peaks: { lap_number: number; max_speed_kmh: number | null; max_rpm: number | null }[];
   trace: { latitude: number[] | null; longitude: number[] | null; distance_m: number[] | null } | null;
   appUserId: number | null;
+  /** users.country isn't readable cross-driver via plain RLS, so the caller
+   *  fetches it separately via the driver_country() RPC (0014) and passes
+   *  it in here, rather than this function reaching for a client itself. */
+  driverCountry?: string | null;
 }): SessionBundle {
   const peakByLap = new Map(peaks.map((p) => [p.lap_number, p]));
 
@@ -137,7 +143,10 @@ export function buildBundle({
 
   return {
     sessionId: session.id,
-    driverName: session.driver_profiles?.display_name ?? session.track_name ?? "Session",
+    driverName: driverNameWithFlag(
+      session.driver_profiles?.display_name ?? session.track_name ?? "Session",
+      driverCountry ?? null,
+    ),
     trackName: session.track_name,
     startDate: session.start_date,
     startTime: session.start_time,
@@ -229,10 +238,15 @@ export async function loadSessionBundle(
         }>()
     : { data: null };
 
+  const { data: driverCountry } = session.driver_profile_id
+    ? await supabase.rpc("driver_country", { p_driver_profile_id: session.driver_profile_id })
+    : { data: null };
+
   return buildBundle({
     session,
     analysis,
     laps: laps ?? [],
+    driverCountry: driverCountry as string | null,
     segmentTimes: segmentTimes ?? [],
     peaks: peaks ?? [],
     trace,

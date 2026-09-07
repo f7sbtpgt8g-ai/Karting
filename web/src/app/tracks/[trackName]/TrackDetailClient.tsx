@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { ENGINE_CATEGORIES, engineColor } from "@/lib/engine";
 import { lapTime } from "@/lib/format";
+import { driverNameWithFlag } from "@/lib/flags";
 import {
   buildSectors,
   sectorTimes as computeSectorTimes,
@@ -30,6 +31,7 @@ type RawDriverPodium = {
   rank: number;
   driver_profile_id: number;
   driver_name: string;
+  driver_country: string | null;
   best_lap_s: number;
   engine_category: string | null;
   team_name: string | null;
@@ -40,6 +42,7 @@ type RawTeamPodium = {
   team_name: string;
   best_lap_s: number;
   fastest_driver_name: string;
+  fastest_driver_country: string | null;
 };
 type RawMapSource = { session_id: number | null; lap_number: number | null };
 
@@ -116,6 +119,7 @@ export default function TrackDetailClient({
           rank: row.rank,
           driverProfileId: row.driver_profile_id,
           driverName: row.driver_name,
+          driverCountry: row.driver_country,
           bestLapS: row.best_lap_s,
           engineCategory: row.engine_category,
           teamName: row.team_name,
@@ -129,6 +133,7 @@ export default function TrackDetailClient({
           teamName: row.team_name,
           bestLapS: row.best_lap_s,
           fastestDriverName: row.fastest_driver_name,
+          fastestDriverCountry: row.fastest_driver_country,
         })),
       );
 
@@ -244,7 +249,9 @@ export default function TrackDetailClient({
                     >
                       {row.rank}
                     </span>
-                    <span className="flex-1 font-semibold">{row.driverName}</span>
+                    <span className="flex-1 font-semibold">
+                      {driverNameWithFlag(row.driverName, row.driverCountry)}
+                    </span>
                     {row.teamName && <span className="text-xs text-muted">{row.teamName}</span>}
                     {row.engineCategory && (
                       <span
@@ -276,7 +283,9 @@ export default function TrackDetailClient({
                       {row.rank}
                     </span>
                     <span className="flex-1 font-semibold">{row.teamName}</span>
-                    <span className="text-xs text-muted">{row.fastestDriverName}</span>
+                    <span className="text-xs text-muted">
+                      {driverNameWithFlag(row.fastestDriverName, row.fastestDriverCountry)}
+                    </span>
                     <span className="font-mono text-xs font-bold">{lapTime(row.bestLapS)}</span>
                   </div>
                 ))}

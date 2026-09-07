@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { sessionDate, sessionTime } from "@/lib/format";
 import { engineColor } from "@/lib/engine";
+import { driverNameWithFlag } from "@/lib/flags";
 
 /**
  * Which drivers a search covers.
@@ -191,19 +192,38 @@ export default function AddSessionsDialog({
       if (searchError) throw searchError;
 
       const excluded = new Set(excludeSessionIds);
-      const rows = (data ?? [])
-        .filter((row) => !excluded.has(row.id))
-        .map((row) => ({
-          id: row.id,
-          driverName: row.driver_profiles?.display_name ?? "Unknown driver",
-          startDate: row.start_date,
-          startTime: row.start_time,
-          sessionType: row.session_type,
-          trackCondition: row.track_condition,
-          engineCategory: row.engine_category,
-          bestLapS: row.best_lap_s,
-          nLaps: row.n_laps,
-        }));
+      const filtered = (data ?? []).filter((row) => !excluded.has(row.id));
+
+      // users.country isn't readable cross-driver via plain RLS (unlike
+      // driver_profiles, `users` has no public-read branch), so this goes
+      // through the driver_countries() SECURITY DEFINER lookup (0014)
+      // instead of a nested embed, which would just come back null for
+      // anyone else.
+      const ids = Array.from(
+        new Set(filtered.map((row) => row.driver_profile_id).filter((id): id is number => id !== null)),
+      );
+      type RawCountry = { driver_profile_id: number; country: string | null };
+      const { data: countryData } = ids.length
+        ? await supabase.rpc("driver_countries", { p_driver_profile_ids: ids })
+        : { data: [] };
+      const countryByProfile = new Map(
+        ((countryData ?? []) as RawCountry[]).map((r) => [r.driver_profile_id, r.country]),
+      );
+
+      const rows = filtered.map((row) => ({
+        id: row.id,
+        driverName: driverNameWithFlag(
+          row.driver_profiles?.display_name ?? "Unknown driver",
+          row.driver_profile_id ? (countryByProfile.get(row.driver_profile_id) ?? null) : null,
+        ),
+        startDate: row.start_date,
+        startTime: row.start_time,
+        sessionType: row.session_type,
+        trackCondition: row.track_condition,
+        engineCategory: row.engine_category,
+        bestLapS: row.best_lap_s,
+        nLaps: row.n_laps,
+      }));
 
       setCandidates(rows);
       if (rows.length === 0) {

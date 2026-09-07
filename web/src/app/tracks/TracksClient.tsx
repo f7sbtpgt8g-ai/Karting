@@ -5,6 +5,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { ENGINE_CATEGORIES, engineColor } from "@/lib/engine";
 import { lapTime, sessionDate } from "@/lib/format";
+import { driverNameWithFlag } from "@/lib/flags";
 import type { TrackSummaryRow } from "@/lib/tracks";
 
 /**
@@ -51,6 +52,7 @@ export default function TracksClient({ tracks }: { tracks: TrackSummaryRow[] }) 
           session_count: number;
           best_lap_s: number | null;
           best_lap_driver_name: string | null;
+          best_lap_driver_country: string | null;
           best_lap_engine_category: string | null;
           average_lap_s: number | null;
           last_driven_date: string | null;
@@ -61,6 +63,7 @@ export default function TracksClient({ tracks }: { tracks: TrackSummaryRow[] }) 
             sessionCount: row.session_count,
             bestLapS: row.best_lap_s,
             bestLapDriverName: row.best_lap_driver_name,
+            bestLapDriverCountry: row.best_lap_driver_country,
             bestLapEngineCategory: row.best_lap_engine_category,
             averageLapS: row.average_lap_s,
             lastDrivenDate: row.last_driven_date,
@@ -167,7 +170,9 @@ export default function TracksClient({ tracks }: { tracks: TrackSummaryRow[] }) 
                 <span className="text-xs text-muted">{row.sessionCount}</span>
                 <span className="font-mono text-xs font-bold">{lapTime(row.bestLapS)}</span>
                 <span className="flex items-center gap-1.5 text-xs text-muted">
-                  {row.bestLapDriverName ?? "--"}
+                  {row.bestLapDriverName
+                    ? driverNameWithFlag(row.bestLapDriverName, row.bestLapDriverCountry)
+                    : "--"}
                   {row.bestLapEngineCategory && (
                     <span
                       className="rounded bg-selected px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-ink2"

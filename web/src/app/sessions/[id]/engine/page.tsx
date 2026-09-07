@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { createClient, getAppUser } from "@/lib/supabase/server";
 import AppHeader from "@/components/AppHeader";
+import { driverNameWithFlag } from "@/lib/flags";
 import EngineAnalysis, { type EngineLapRow } from "./EngineAnalysis";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +21,7 @@ export default async function EnginePage({ params }: { params: { id: string } })
 
   const { data: session } = await supabase
     .from("sessions")
-    .select("id, track_name, start_date, start_time, driver_profiles(display_name)")
+    .select("id, track_name, start_date, start_time, driver_profile_id, driver_profiles(display_name)")
     .eq("id", sessionId)
     .maybeSingle()
     .returns<{
@@ -28,6 +29,7 @@ export default async function EnginePage({ params }: { params: { id: string } })
       track_name: string | null;
       start_date: string | null;
       start_time: string | null;
+      driver_profile_id: number | null;
       driver_profiles: { display_name: string } | null;
     }>();
 
@@ -80,6 +82,14 @@ export default async function EnginePage({ params }: { params: { id: string } })
       >(),
   ]);
 
+  // users.country isn't readable cross-driver via plain RLS (unlike
+  // driver_profiles, `users` has no public-read branch), so this goes
+  // through the driver_country() SECURITY DEFINER lookup (0014) instead of
+  // a nested embed, which would just come back null for anyone else.
+  const { data: driverCountry } = session.driver_profile_id
+    ? await supabase.rpc("driver_country", { p_driver_profile_id: session.driver_profile_id })
+    : { data: null };
+
   const traceByLap = new Map((traces ?? []).map((t) => [t.lap_number, t]));
   const rows: EngineLapRow[] = (laps ?? []).map((lap) => {
     const t = traceByLap.get(lap.lap_number);
@@ -105,7 +115,10 @@ export default async function EnginePage({ params }: { params: { id: string } })
       <AppHeader email={appUser?.email} current="/" isAdmin={appUser?.is_admin} />
       <EngineAnalysis
         sessionId={sessionId}
-        driverName={session.driver_profiles?.display_name ?? "Session"}
+        driverName={driverNameWithFlag(
+          session.driver_profiles?.display_name ?? "Session",
+          driverCountry as string | null,
+        )}
         trackName={session.track_name}
         startDate={session.start_date}
         startTime={session.start_time}

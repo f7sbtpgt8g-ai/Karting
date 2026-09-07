@@ -95,6 +95,20 @@ export default async function HomePage() {
       ).data ?? [])
     : [];
 
+  // users.country isn't readable cross-driver via plain RLS (unlike
+  // driver_profiles, `users` has no public-read branch), so this goes
+  // through the driver_countries() SECURITY DEFINER lookup (0014) instead
+  // of a nested embed, which would just come back null for anyone else.
+  // Cast rather than `.returns<>()`: without generated database types the
+  // client cannot tell a set-returning function from a scalar one, and
+  // guesses "single object" for the RPC builder.
+  type RawCountry = { driver_profile_id: number; country: string | null };
+  const { data: countryData } = scopeIds.length
+    ? await supabase.rpc("driver_countries", { p_driver_profile_ids: scopeIds })
+    : { data: [] };
+  const countryRows = (countryData ?? []) as RawCountry[];
+  const countryByProfile = new Map(countryRows.map((r) => [r.driver_profile_id, r.country]));
+
   const sessions: SessionRow[] = rows.map((row) => ({
     id: row.id,
     trackName: row.track_name,
@@ -109,6 +123,7 @@ export default async function HomePage() {
     visibility: row.visibility,
     driverProfileId: row.driver_profile_id,
     driverName: row.driver_profiles?.display_name ?? "Unknown driver",
+    driverCountry: row.driver_profile_id ? (countryByProfile.get(row.driver_profile_id) ?? null) : null,
   }));
 
   return (
