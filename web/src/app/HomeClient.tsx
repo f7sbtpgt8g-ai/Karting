@@ -39,7 +39,7 @@ export type SessionRow = {
  * data it names.
  */
 const COLUMNS =
-  "grid grid-cols-[24px_1.7fr_0.6fr_0.6fr_1.3fr_1.9fr_0.8fr_0.5fr_1.2fr] items-center gap-2 pl-8";
+  "grid grid-cols-[24px_1.7fr_0.6fr_0.6fr_1.3fr_1.9fr_0.8fr_0.5fr_1.7fr] items-center gap-2 pl-8";
 
 const SESSION_TYPES = [
   "Training",
@@ -86,6 +86,28 @@ function compareByTime(a: SessionRow, b: SessionRow): number {
   return a.bestLapS - b.bestLapS;
 }
 
+/** `HH:MM` or `HH:MM:SS` (`sessions.start_time`) as seconds since midnight,
+ *  for comparing when in the day a session happened -- distinct from
+ *  `compareByTime`, which compares the *lap* time shown in the "Best lap"
+ *  column. Confusing the two is what made two sessions on the same day
+ *  sort by fastest lap instead of by clock time. */
+function parseStartTimeSeconds(raw: string | null): number | null {
+  if (!raw) return null;
+  const match = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return null;
+  const [, h, m, s] = match;
+  return Number(h) * 3600 + Number(m) * 60 + Number(s ?? 0);
+}
+
+function compareByStartTime(a: SessionRow, b: SessionRow): number {
+  const at = parseStartTimeSeconds(a.startTime);
+  const bt = parseStartTimeSeconds(b.startTime);
+  if (at === null && bt === null) return 0;
+  if (at === null) return 1;
+  if (bt === null) return -1;
+  return at - bt;
+}
+
 function displayType(raw: string | null): { label: string; confirmed: boolean } {
   if (raw && raw.trim()) return { label: raw, confirmed: true };
   return { label: SESSION_TYPES[0], confirmed: false };
@@ -125,6 +147,22 @@ export default function HomeClient({
   const [editing, setEditing] = useState<number | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+
+  // Which day groups are collapsed -- keyed `${profileId}:${day}` since the
+  // same date string recurs across drivers. Starts empty: every day opens
+  // expanded, and only the days a driver actively tucks away stay closed
+  // across a re-render (a fresh Set every render would reopen everything
+  // on each keystroke in the filters above).
+  const [collapsedDays, setCollapsedDays] = useState<Set<string>>(new Set());
+  function toggleDayCollapsed(key: string) {
+    setCollapsedDays((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   // Bulk track naming. The sync tool has no idea what track it is at -- it
   // reads a logger, not a calendar -- so a day's worth of synced sessions
@@ -185,17 +223,28 @@ export default function HomeClient({
             : compareByTrack(a, b) * direction;
       if (primary !== 0) return primary;
 
-      // Ties always cascade date -> track -> time, in that fixed order,
-      // regardless of which column is the active sort -- otherwise two
-      // rows tied on the clicked column (most commonly: several sessions
-      // on the same day, when sorting by date) fall back to whatever order
-      // they happened to arrive from the server, which is what made
-      // "sorted by time" look broken for a day with more than one session.
-      const byDate = compareByDate(a, b);
+      // Ties always cascade date -> start time -> track -> best lap, in
+      // that fixed order and in the *same* direction as the active sort --
+      // otherwise two rows tied on the clicked column (most commonly:
+      // several sessions on the same day, when sorting by date) fall back
+      // to whatever order they happened to arrive from the server, and a
+      // reversed date sort would flip the days while leaving same-day
+      // sessions in server order instead of also reading newest/oldest
+      // first within the day.
+      //
+      // Start time -- when in the day a session happened -- is what
+      // actually distinguishes same-day sessions to a driver looking at
+      // this list; best lap is the last-resort tiebreak, not the second
+      // key. Using it there was the bug: two same-day sessions sorted by
+      // fastest lap instead of by clock time, which looked like sorting
+      // was simply broken.
+      const byDate = compareByDate(a, b) * direction;
       if (byDate !== 0) return byDate;
-      const byTrack = compareByTrack(a, b);
+      const byStartTime = compareByStartTime(a, b) * direction;
+      if (byStartTime !== 0) return byStartTime;
+      const byTrack = compareByTrack(a, b) * direction;
       if (byTrack !== 0) return byTrack;
-      return compareByTime(a, b);
+      return compareByTime(a, b) * direction;
     });
   }, [rows, track, type, condition, from, to, sortKey, sortDesc]);
 
@@ -546,7 +595,7 @@ export default function HomeClient({
       )}
 
       <div className="overflow-x-auto">
-        <div className="min-w-[920px]">
+        <div className="min-w-[980px]">
           <div className={`${COLUMNS} border-b border-hairline pb-1`}>
             <span className="label" />
             <SortHeader label="Track" column="trackName" />
@@ -584,12 +633,28 @@ export default function HomeClient({
                     const selectable = isMine ? dayRows.map((r) => r.id) : [];
                     const allSelected =
                       selectable.length > 0 && selectable.every((id) => selected.has(id));
+                    const dayKey = `${driver.profileId}:${day}`;
+                    const isCollapsed = collapsedDays.has(dayKey);
+                    const fastestLapS = dayRows.reduce<number | null>(
+                      (fastest, r) =>
+                        r.bestLapS != null && (fastest === null || r.bestLapS < fastest) ? r.bestLapS : fastest,
+                      null,
+                    );
                     return (
                       <div key={day || "undated"}>
                         {/* Half a step in from the driver, half a step out
                             from its sessions, so the nesting reads at a
                             glance. */}
                         <div className="mt-2 flex items-center gap-2 py-1 pl-4">
+                          <button
+                            type="button"
+                            onClick={() => toggleDayCollapsed(dayKey)}
+                            className="text-muted hover:text-ink"
+                            aria-expanded={!isCollapsed}
+                            title={isCollapsed ? "Expand this day" : "Collapse this day"}
+                          >
+                            {isCollapsed ? "▸" : "▾"}
+                          </button>
                           {isMine && (
                             <input
                               type="checkbox"
@@ -604,10 +669,12 @@ export default function HomeClient({
                           </span>
                           <span className="text-[11px] text-muted">
                             {dayRows.length} session{dayRows.length === 1 ? "" : "s"}
+                            {isCollapsed && fastestLapS != null && ` · fastest ${lapTime(fastestLapS)}`}
                           </span>
                         </div>
 
-                        {dayRows.map((row) => {
+                        {!isCollapsed &&
+                          dayRows.map((row) => {
                           const shown = displayType(row.sessionType);
                           const typeOptionsForRow = SESSION_TYPES.includes(shown.label)
                             ? SESSION_TYPES
@@ -727,21 +794,61 @@ export default function HomeClient({
                                 </span>
 
                                 <span className="flex items-center justify-end gap-2 text-[11px]">
-                                  {isMine && (
-                                    <button
-                                      type="button"
-                                      onClick={() => setEditing(editing === row.id ? null : row.id)}
-                                      className="text-muted underline hover:text-ink"
-                                    >
-                                      Edit
-                                    </button>
+                                  {isMine && confirmDeleteId === row.id ? (
+                                    <>
+                                      <span className="text-loss">Delete?</span>
+                                      <button
+                                        type="button"
+                                        disabled={busy === row.id}
+                                        onClick={async () => {
+                                          await remove(row.id);
+                                          setConfirmDeleteId(null);
+                                        }}
+                                        className="rounded bg-loss px-2 py-0.5 font-semibold text-white disabled:opacity-50"
+                                      >
+                                        {busy === row.id ? "..." : "Yes"}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setConfirmDeleteId(null)}
+                                        className="text-muted underline hover:text-ink"
+                                      >
+                                        No
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      {isMine && (
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() => setEditing(editing === row.id ? null : row.id)}
+                                            className="text-muted underline hover:text-ink"
+                                          >
+                                            Edit
+                                          </button>
+                                          {/* Quick, single-purpose delete -- separate from EditRow's own
+                                              delete below, which stays for the "I'm already editing this
+                                              session anyway" path. This one's for the common case of
+                                              spotting a duplicate upload straight off the list. */}
+                                          <button
+                                            type="button"
+                                            onClick={() => setConfirmDeleteId(row.id)}
+                                            className="text-loss underline hover:text-ink"
+                                            title="Delete this session"
+                                          >
+                                            Delete
+                                          </button>
+                                        </>
+                                      )}
+                                      <Link
+                                        href={`/sessions/${row.id}`}
+                                        className="rounded border border-hairline bg-raised px-3 py-1 font-semibold text-ink2 hover:border-accent hover:text-ink"
+                                      >
+                                        Open
+                                      </Link>
+                                    </>
                                   )}
-                                  <Link
-                                    href={`/sessions/${row.id}`}
-                                    className="rounded border border-hairline bg-raised px-3 py-1 font-semibold text-ink2 hover:border-accent hover:text-ink"
-                                  >
-                                    Open
-                                  </Link>
                                 </span>
                               </div>
 
