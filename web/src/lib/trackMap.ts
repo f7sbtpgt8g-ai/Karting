@@ -111,6 +111,48 @@ export function projectTrack(trace: TracePoint[], size = 100): ProjectedTrack | 
   };
 }
 
+/**
+ * Where the kart was, `distanceM` into the lap.
+ *
+ * Interpolated between the two GPS fixes either side, not snapped to the
+ * nearer one: fixes land every ~6 m at racing speed, and snapping would make
+ * the marker jump between them while the pointer moves smoothly along the
+ * trace -- which reads as the marker being wrong rather than coarse.
+ *
+ * Clamped at both ends. The map is drawn from one lap and the pointer may be
+ * over another, and two laps of the same circuit differ by a few metres in
+ * measured length, so a hover near the line can land just past the end of
+ * the drawn lap. The kart was at the line; saying "no position" would blink
+ * the marker out exactly where the lap is most interesting.
+ */
+export function positionAtDistance(
+  track: ProjectedTrack,
+  distanceM: number,
+): { x: number; y: number } | null {
+  const points = track.points;
+  if (points.length === 0 || !Number.isFinite(distanceM)) return null;
+  if (points.length === 1) return { x: points[0].x, y: points[0].y };
+
+  if (distanceM <= points[0].distanceM) return { x: points[0].x, y: points[0].y };
+  const last = points[points.length - 1];
+  if (distanceM >= last.distanceM) return { x: last.x, y: last.y };
+
+  let low = 0;
+  let high = points.length - 1;
+  while (high - low > 1) {
+    const mid = (low + high) >> 1;
+    if (points[mid].distanceM <= distanceM) low = mid;
+    else high = mid;
+  }
+
+  const a = points[low];
+  const b = points[high];
+  const span = b.distanceM - a.distanceM;
+  if (span <= 0) return { x: a.x, y: a.y };
+  const t = (distanceM - a.distanceM) / span;
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+
 export type SectorPath = {
   index: number;
   label: string;
