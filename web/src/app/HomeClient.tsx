@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { ENGINE_CATEGORIES, engineColor } from "@/lib/engine";
 import { lapTime, parseSessionDate, sessionDate, sessionTime } from "@/lib/format";
+import { bulkOutcome } from "@/lib/writes";
 
 export type SessionRow = {
   id: number;
@@ -93,6 +94,17 @@ export default function HomeClient({
 }) {
   const router = useRouter();
   const [rows, setRows] = useState(sessions);
+
+  // Follow the server whenever it re-renders this page.
+  //
+  // `useState(sessions)` seeds once and then never looks at the prop again,
+  // so without this the table shows whatever the last local edit left behind
+  // -- including after a `router.refresh()` that fetched newer data. Making
+  // the server the thing being displayed is what stops the table and the
+  // database from quietly disagreeing.
+  useEffect(() => {
+    setRows(sessions);
+  }, [sessions]);
   const [track, setTrack] = useState("");
   const [type, setType] = useState("");
   const [condition, setCondition] = useState("");
@@ -230,19 +242,41 @@ export default function HomeClient({
       });
   }, [filtered, myProfileId, sortKey, sortDesc]);
 
+  /**
+   * Save one field, and only claim it saved once the row comes back.
+   *
+   * `.select()` is what makes that possible. An UPDATE whose rows are all
+   * filtered out by RLS is not an error to PostgREST -- it is a successful
+   * request that changed nothing, and returns no error to check. Without
+   * asking for the affected rows there is no way to tell that apart from a
+   * save that worked, so the table would show the new value, the database
+   * would keep the old one, and the next page load would silently undo it.
+   */
   async function patch(id: number, changes: Partial<Record<string, unknown>>, local: Partial<SessionRow>) {
     setBusy(id);
     setError(null);
-    const { error: updateError } = await createClient()
+    const { data, error: updateError } = await createClient()
       .from("sessions")
       .update(changes)
-      .eq("id", id);
+      .eq("id", id)
+      .select("id");
     setBusy(null);
     if (updateError) {
       setError(updateError.message);
       return false;
     }
+    if (!data || data.length === 0) {
+      setError(
+        "That change was not saved: the database did not accept it for this session. " +
+          "It is not yours to edit, or it no longer exists.",
+      );
+      return false;
+    }
     setRows((current) => current.map((r) => (r.id === id ? { ...r, ...local } : r)));
+    // Next caches this page's rendered output on the client, so returning to
+    // it after opening a session can serve what it looked like before this
+    // edit. Refreshing throws that away and re-renders from the database.
+    router.refresh();
     return true;
   }
 
@@ -253,6 +287,13 @@ export default function HomeClient({
    * thirty chances to half-apply. RLS still decides which of them land --
    * `sessions_update_own` filters the set server-side, so this cannot rename
    * a teammate's session even if one were somehow selected.
+   *
+   * Which is exactly why the returned ids are the ones marked as renamed,
+   * rather than everything that was selected. A row RLS filtered out comes
+   * back in no error and no rejection -- just an id missing from the reply --
+   * and a bulk write is where that matters most: one silent refusal in
+   * thirty is invisible if the table is updated from the request instead of
+   * from the response.
    */
   async function applyBulkTrack() {
     const ids = [...selected];
@@ -261,20 +302,30 @@ export default function HomeClient({
 
     setBulkBusy(true);
     setError(null);
-    const { error: updateError } = await createClient()
+    const { data, error: updateError } = await createClient()
       .from("sessions")
       .update({ track_name: name })
-      .in("id", ids);
+      .in("id", ids)
+      .select("id");
     setBulkBusy(false);
     if (updateError) {
       setError(updateError.message);
       return;
     }
-    setRows((current) =>
-      current.map((r) => (selected.has(r.id) ? { ...r, trackName: name } : r)),
+
+    const { saved, refused, message } = bulkOutcome(
+      ids,
+      (data ?? []).map((row) => row.id as number),
     );
-    setSelected(new Set());
-    setBulkTrack("");
+    if (message) setError(message);
+    if (saved.size === 0) return;
+
+    setRows((current) => current.map((r) => (saved.has(r.id) ? { ...r, trackName: name } : r)));
+    // Anything refused stays selected and stays as it was, so the table never
+    // shows a name that is not in the database.
+    setSelected(new Set(refused));
+    if (refused.length === 0) setBulkTrack("");
+    router.refresh();
   }
 
   function toggleSelected(id: number) {
