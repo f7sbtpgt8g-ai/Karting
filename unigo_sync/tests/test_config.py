@@ -86,11 +86,13 @@ def test_data_root_is_the_executable_dir_when_frozen(monkeypatch):
 
 
 def test_data_root_is_the_repo_root_in_a_source_checkout(monkeypatch):
-    """Matches `app.py`'s own `DB_PATH` anchor, so the GUI and the Streamlit
-    app share one `data/sessions.db` when both run from a checkout."""
+    """`_default_data_root()` walks up from this file to the repo root --
+    checked against `requirements.txt`, a file only the real repo root
+    has, as a stand-in for "the path arithmetic landed in the right
+    place" rather than trusting the arithmetic against itself."""
     monkeypatch.delattr(config_module.sys, "frozen", raising=False)
     root = config_module._default_data_root()
-    assert os.path.isfile(os.path.join(root, "app.py"))
+    assert os.path.isfile(os.path.join(root, "requirements.txt"))
 
 
 def test_filelist_url_joins_base_and_path():

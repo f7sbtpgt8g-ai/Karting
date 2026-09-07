@@ -39,9 +39,6 @@ export type SessionRow = {
 const COLUMNS =
   "grid grid-cols-[24px_1.7fr_0.6fr_0.6fr_1.3fr_1.9fr_0.8fr_0.5fr_1.2fr] items-center gap-2 pl-8";
 
-// app.py's HOME_SESSION_TYPE_OPTIONS and telemetry/weather.py's
-// CONDITION_OPTIONS -- kept identical so a session typed in one app reads
-// back correctly in the other.
 const SESSION_TYPES = [
   "Training",
   "Warm up",
@@ -62,8 +59,8 @@ type SortKey = "trackName" | "startDate" | "bestLapS";
 /**
  * A session whose `session_type` has never been saved reads back as an
  * unconfirmed "Training" -- the state is derived from the column being
- * empty rather than tracked separately, exactly as `_home_display_type`
- * does it. Unconfirmed shows in accent, confirmed in green.
+ * empty rather than tracked separately. Unconfirmed shows in accent,
+ * confirmed in green.
  */
 function displayType(raw: string | null): { label: string; confirmed: boolean } {
   if (raw && raw.trim()) return { label: raw, confirmed: true };

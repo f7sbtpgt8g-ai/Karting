@@ -158,8 +158,9 @@ def test_display_name_falls_back_to_the_email(db):
 
 
 def test_an_existing_local_account_is_adopted_not_duplicated(db):
-    """A Streamlit-era account crossing over to Supabase Auth has to keep its
-    id -- every session it owns references it."""
+    """An account created under the local auth provider, crossing over to
+    Supabase Auth, has to keep its id -- every session it owns references
+    it."""
     with db.cursor() as cur:
         cur.execute(
             "INSERT INTO users (email, password_hash, email_verified, display_name, created_at) "
@@ -263,9 +264,9 @@ def test_signing_up_without_a_class_is_fine(db):
 
 
 def test_adopting_an_account_does_not_overwrite_its_class(db):
-    """A Streamlit-era account crossing over keeps whatever it already has:
-    the driver set that deliberately, and the signup form's blank default
-    must not wipe it."""
+    """An account created under the local auth provider, crossing over,
+    keeps whatever it already has: the driver set that deliberately, and
+    the signup form's blank default must not wipe it."""
     with db.cursor() as cur:
         cur.execute(
             "INSERT INTO users (email, password_hash, email_verified, engine_category, created_at) "

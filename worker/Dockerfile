@@ -19,7 +19,8 @@ WORKDIR /app
 COPY worker/requirements.txt ./worker/requirements.txt
 RUN pip install --no-cache-dir -r worker/requirements.txt
 
-# The parser and analysis code, unchanged from what the Streamlit app runs.
+# The parser and analysis code -- the same `telemetry/` package the
+# Supabase-backed CLI scripts and tests use.
 COPY telemetry/ ./telemetry/
 COPY worker/ ./worker/
 

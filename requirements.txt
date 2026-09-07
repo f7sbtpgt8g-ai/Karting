@@ -1,8 +1,6 @@
 pandas>=2.0
 numpy>=1.24
 scipy>=1.10
-plotly>=5.18
-streamlit>=1.32
 pyyaml>=6.0
 pytest>=7.4
 # Supabase/Postgres-backed data layer (telemetry/db.py and the Supabase*
@@ -14,7 +12,7 @@ pytest>=7.4
 # session-dataframe cache in storage.py.
 psycopg2-binary>=2.9
 pyarrow>=14
-# Optional: only used for the Lap Comparison page's "Use AI phrasing" toggle
+# Optional: only used for the "AI phrasing" mode of coaching notes
 # (telemetry/narrative.py). Not required -- falls back to templated
 # sentences if this isn't installed or ANTHROPIC_API_KEY isn't set.
 # anthropic>=0.40

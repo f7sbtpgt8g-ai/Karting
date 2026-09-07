@@ -44,9 +44,9 @@ def _default_data_root() -> str:
     working directory says.
 
     Frozen: the directory holding the .exe, i.e. the same place the
-    installer puts config.yaml. Source checkout: the repo root, which is
-    what `app.py`'s own `DB_PATH` resolves to, so running the GUI from a
-    checkout shares the Streamlit app's database as the config implies.
+    installer puts config.yaml. Source checkout: the repo root -- so
+    running the GUI from a checkout resolves `sessions_db` to the same
+    `data/sessions.db` any other local-SQLite tool in this repo would.
     """
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
@@ -73,9 +73,9 @@ class SyncConfig:
     log_path: str = "data/unigo_sync/sync.log"
 
     # Analysis session library this tool ingests into (same file
-    # `scripts/ingest.py --db` and the Streamlit app default to) when no
-    # Postgres/Supabase database is configured via SUPABASE_DB_URL /
-    # DATABASE_URL -- see telemetry.db.has_postgres_configured.
+    # `scripts/ingest.py --db` defaults to) when no Postgres/Supabase
+    # database is configured via SUPABASE_DB_URL / DATABASE_URL -- see
+    # telemetry.db.has_postgres_configured.
     sessions_db: str = "data/sessions.db"
 
     # Cached login (email/session token/chosen driver) for the GUI, so a

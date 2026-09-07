@@ -2,11 +2,14 @@ import Link from "next/link";
 import SignOutButton from "./SignOutButton";
 
 /**
- * The top bar, matching the Streamlit app's own top-nav layout.
+ * The top bar.
  *
- * Only the pages that actually exist are listed. The rest of the parity
- * set still lives in Streamlit, and a link to a route that 404s reads as a
- * broken app rather than an unfinished one.
+ * Only the pages that actually exist are listed -- the rest of the
+ * feature set the old Streamlit prototype had (kart setup, corner/lap
+ * comparison, gearing simulation, consistency/progression trends, teams,
+ * leaderboards, history, etc.) hasn't been rebuilt here yet, and a link
+ * to a route that 404s reads as a broken app rather than an unfinished
+ * one.
  */
 export default function AppHeader({
   email,

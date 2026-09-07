@@ -1,10 +1,9 @@
 """Turning one claimed `upload_batches` row into stored sessions.
 
 The actual parsing and analysis is `telemetry.parser` / `telemetry.storage`
-called unchanged -- this module is the glue that was previously spread
-through `app.py`'s upload page: write the bytes somewhere the parser can
-read, load every session in the file, save each one with the batch's
-context attached, and attribute it.
+called unchanged -- this module is the glue: write the bytes somewhere
+the parser can read, load every session in the file, save each one with
+the batch's context attached, and attribute it.
 """
 
 from __future__ import annotations

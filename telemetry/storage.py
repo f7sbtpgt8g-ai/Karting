@@ -6,9 +6,9 @@ querying; each session's full sparse dataframe (needed for corner/G/RPM
 re-analysis) is cached alongside as a pickle keyed by session id, since a
 pandas DataFrame with mixed sparse columns doesn't map cleanly onto SQL rows.
 
-Designed to be driven by `scripts/ingest.py` as well as the UI, so a race
-day's exports can be ingested by an automation script (e.g. a GitHub Action)
-without going through Streamlit.
+Designed to be driven by `scripts/ingest.py` as well as the web app and
+worker, so a race day's exports can be ingested by an automation script
+(e.g. a GitHub Action) without going through either of those.
 """
 
 from __future__ import annotations
@@ -149,15 +149,16 @@ def _safe_float(value) -> float | None:
 
 class SessionLibrary:
     """Each method opens and closes its own short-lived SQLite connection
-    rather than holding one for the object's lifetime. `SessionLibrary` is
-    typically wrapped in `st.cache_resource` and shared as a singleton
-    across Streamlit's reruns, and a single long-lived `sqlite3.Connection`
-    shared that way was found to hang (no exception, just never completing)
-    when accessed from more than one tab's rendering in the same session --
-    most likely Streamlit executing tab content on more than one thread
-    under the hood. A fresh connection per call sidesteps that entirely;
-    SQLite's own file-level locking handles the rest for a single-writer,
-    mostly-single-user tool like this one.
+    rather than holding one for the object's lifetime. This repo's
+    original Streamlit prototype shared a single `SessionLibrary` (and a
+    single long-lived `sqlite3.Connection` inside it) as a cached
+    singleton across reruns, and that connection was found to hang (no
+    exception, just never completing) when accessed from more than one
+    tab's rendering in the same session -- most likely the UI framework
+    executing tab content on more than one thread under the hood. A fresh
+    connection per call sidesteps that entirely; SQLite's own file-level
+    locking handles the rest for a single-writer, mostly-single-user tool
+    like this one.
     """
 
     def __init__(self, db_path: str, cache_dir: str | None = None):
@@ -220,9 +221,9 @@ class SessionLibrary:
     ) -> int | None:
         """Existing DB id for a session already ingested from this exact
         file/session/start-time combination, if any -- lets callers avoid
-        re-inserting the same session (e.g. the Streamlit app reruns its
-        whole script on every interaction, so a naive save-on-every-run
-        would otherwise duplicate rows endlessly).
+        re-inserting the same session (e.g. the same file re-uploaded, or
+        `scripts/ingest.py` pointed at a directory it's already run
+        against once).
 
         `driver`, when given, is matched too: two different drivers' loggers
         can genuinely export under the same default filename with the same

@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """CLI ingestion script: parse Unipro TSV export(s) into the session library.
 
-Designed to be run standalone (not just from the Streamlit UI) so it can be
-triggered automatically after a race-day upload -- e.g. from a GitHub Action
-that watches a folder or receives an uploaded file, matching the existing
-automation pattern used elsewhere in this project.
+Designed to be run standalone (not just via the web app's upload flow) so
+it can be triggered automatically after a race-day upload -- e.g. from a
+GitHub Action that watches a folder or receives an uploaded file, matching
+the existing automation pattern used elsewhere in this project.
 
 Usage:
     python scripts/ingest.py session1.tsv session2.tsv \

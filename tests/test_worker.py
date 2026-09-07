@@ -1,8 +1,8 @@
 """The ingest worker, end to end against a real Postgres.
 
-Covers the loop that replaces Streamlit's file uploader: claim a pending
-batch, fetch the raw file, parse it, persist every session in it, and mark
-the batch complete -- plus the failure paths, which are the ones that decide
+Covers the loop `web/`'s upload flow hands off to: claim a pending batch,
+fetch the raw file, parse it, persist every session in it, and mark the
+batch complete -- plus the failure paths, which are the ones that decide
 whether a stuck upload shows the user something useful or a spinner forever.
 
 Storage is the `LocalDirectoryStore` rather than Supabase Storage, so this

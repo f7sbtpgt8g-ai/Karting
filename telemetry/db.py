@@ -65,7 +65,7 @@ def database_url() -> str:
 def connect(connect_timeout_s: float | None = None):
     """One short-lived connection per call -- the same convention the
     SQLite classes use (see `SessionLibrary`'s docstring for why a
-    long-lived connection shared across Streamlit reruns was found to
+    long-lived connection shared as a cached singleton was found to
     hang). Supabase's own connection pooler (pgbouncer) sits in front of
     this in production, so paying for a fresh connection per call is cheap
     here, not the bottleneck it would be against a bare Postgres instance.

@@ -134,15 +134,20 @@ telemetry/            Parsing + analysis core (independently testable, no UI cod
   auth.py                                 Registration/login/reset (Supabase or local provider)
   mailer.py                                Email templates + pluggable delivery
   storage.py                     Session library (history + corner/pattern trend logging) -- SQLite locally, Postgres/Supabase when configured
-  db.py                           Shared Postgres/Supabase connection helper (see "Migrating the database layer to Supabase")
+  db.py                           Shared Postgres/Supabase connection helper (see "Row Level Security" below)
   analysis.py                     UI-agnostic façade: analyze_session()/analyze_lap()/compare_laps()
-app.py                Streamlit UI (thin orchestration layer over telemetry/*)
-web/                  Next.js frontend (Vercel) -- see "Splitting the app" below
-worker/               Ingest worker: claims upload_batches, parses, persists
+web/                  Next.js frontend (Vercel) -- see "The app today" below
+worker/               Ingest worker: claims upload_batches, parses, persists (Railway/Render/Fly)
 scripts/ingest.py     CLI ingestion into the session library (automation-friendly)
 tests/                pytest suite + synthetic fixture generator
 config/               Example kart setup YAML
 ```
+
+The original UI (`app.py`, a Streamlit app) has been retired now that
+`web/` + `worker/` + Supabase run in production -- see "The app today:
+Next.js frontend + background worker" below for the current architecture
+and how to run it locally. It's still in git history if you
+need to see how a since-removed page worked.
 
 ## Setup
 
@@ -152,70 +157,21 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Running the app
+This installs `telemetry/`'s own dependencies, for running `scripts/`,
+the test suite, or `unigo_sync` from a source checkout. The web app and
+worker each have their own separate install step -- see "Running it
+locally" under "The app today" below.
 
-```bash
-source .venv/bin/activate
-streamlit run app.py
-```
-
-Then open the local URL Streamlit prints. A default sample file
-(`sample_data/default_session.tsv`) is ingested into the session library
-automatically the very first time the app runs, under a placeholder
-"Sample Driver" -- upload your own `.tsv` files on the **Settings** page any
-time to add more (does not overwrite the file on disk). Every session
-that's ever been uploaded lives in the same SQLite-backed library
-(`data/sessions.db`), so nothing needs re-uploading on a later visit or
-after a page reload -- see "Session persistence & comparing across
-drivers" below. The **Top 3 Focus Areas** headline is its own landing page,
-in plain language, separate from the deeper technical pages
-(hover-linked speed/RPM/delta traces + track map, track map, braking zones,
-RPM trace, per-corner entry/apex/exit speed & RPM, cross-session corner
-comparison, a what-if gearing simulator, peak-power RPM zone time,
-consistency, progression, session/setup history).
-The multi-session file the tool loads by default automatically selects
-whichever loaded session had the single fastest lap.
-
-Pages are switched via a left-hand navigation menu (`st.navigation`/
-`st.Page` in `app.py`), which collapses into a mobile-friendly drawer on
-narrow screens rather than wrapping across lines like a row of tabs would.
-Deliberately not `st.tabs()` either -- see the comment above the page
-function definitions in `app.py` for why: `st.tabs()` executes every
-section's code on every rerun regardless of which tab is visible, and once
-this app's combined per-section content got heavy enough, the last couple
-of tabs stopped rendering silently (no error, content just never arrived).
-Each `st.Page` callable only executes when it's the selected page, which
-fixed it and is strictly cheaper besides. The session/lap pickers and an
-"Edit kart setup" shortcut stay pinned below the nav menu in the sidebar,
-visible from every page; file upload and the driver name live on the
-**Settings** page, out of the way of the analysis pages.
-
-The Data Analysis view's stacked speed/RPM/G-force/delta chart and its
-track map are hover-linked client-side, not via a Streamlit rerun: hover
-anywhere on the chart (any row, any overlaid lap) and the map's position
-marker jumps to the matching point, replacing the old flow of reading a
-distance off the tooltip and dragging a slider to find it. `st.plotly_chart`
-has no way to sync hover state between two independently-rendered figures,
-and driving that sync through Python (a rerun per `plotly_hover` event)
-would mean a round-trip for every pixel the mouse crosses. Instead
-`render_linked_speed_delta` in `app.py` renders both figures as plain
-Plotly.js inside one `st.components.v1.html` block and wires a
-`plotly_hover` listener directly in JS, so the highlight is instant and
-nothing on the Python side re-runs until a real widget changes. Multiple
-laps are overlaid in the chart with different sample counts, so there's no
-single shared point index to key off -- instead the hovered *distance*
-(shared across laps via `hovermode="x unified"`) is linearly interpolated
-client-side into the chosen map lap's own lat/lon arrays, mirroring what
-the old slider did with `np.interp` server-side.
-
-This renders its own copy of plotly.js inline (`plotlyjs_script_tag` in
-`app.py`, sourced from whatever `plotly` version is already installed) each
-time this view loads, rather than referencing a shared file or a CDN. An
-earlier version tried vendoring it as a static asset via Streamlit's
-`server.enableStaticServing`, which worked locally but rendered blank on
-Streamlit Community Cloud -- inlining costs a larger per-render payload but
-doesn't depend on a platform feature that's turned out to be unreliable
-there, and needs no outbound network access either.
+> **On the sections below, through "Session library (history) &
+> automation":** they document the full feature set as built in this
+> repo's now-retired Streamlit prototype, plus the underlying
+> `telemetry/` analysis engine and data model, which are unchanged and
+> still exactly what the worker (and any page rebuilt in `web/`) compute
+> and enforce. Mentions of "the sidebar," "the Settings page," or a
+> specific page name describe that retired UI's layout, not `web/`'s --
+> see "What exists in `web/` so far" under "The app today" for what's
+> actually live today. Kept here because the algorithms, data model, and
+> UX decisions they describe are still the spec for anything rebuilt.
 
 ## Session persistence & comparing across drivers
 
@@ -250,9 +206,10 @@ nothing about whose lap you're looking at.
 
 This still shares the same disk-persistence caveat as the History page:
 `data/sessions.db` lives on local/container disk, wiped on every
-redeploy/reboot on platforms without persistent storage (e.g. Streamlit
-Community Cloud) -- a within-run/within-deploy convenience, not a durable
-database.
+redeploy/reboot on platforms without persistent storage -- a
+within-run/within-deploy convenience, not a durable database, unless
+`SUPABASE_DB_URL`/`DATABASE_URL` is set (the production setup -- see
+"Row Level Security" below).
 
 Uploaded the wrong file, or just want to clean one out? The History page's
 "Delete a session" picker (`SessionLibrary.delete_session`) removes a
@@ -389,7 +346,7 @@ Auth is behind a provider interface (`auth.py`):
   recommended for a real multi-user deployment.
 
 This is a separate switch from where that `users` table (and everything
-else) actually lives -- see "Migrating the database layer to Supabase"
+else) actually lives -- see "The Postgres/Supabase-backed data layer"
 below, controlled independently by `SUPABASE_DB_URL`/`DATABASE_URL`. Auth
 can move to Supabase Auth (GoTrue) while storage stays on local SQLite, or
 vice versa, or both at once.
@@ -562,8 +519,8 @@ just "gear up/down" to avoid ambiguity.
   fire) moves the map marker to that point, so "which part of the track is
   this" stays answerable without needing to hover a mouse that isn't
   there. The compact map carries corner-number labels for orientation at a
-  glance; a "🔍 Expand" button opens it larger in an `st.dialog` popup for
-  a clearer look at the track shape and corner layout when the inline
+  glance; a "🔍 Expand" button opens it larger in a modal for a clearer
+  look at the track shape and corner layout when the inline
   thumbnail isn't enough.
 - **Braking zones / RPM trace / per-corner entry-apex-exit table**: labeled
   as *inferred* where relevant -- there's no direct brake or throttle
@@ -692,8 +649,8 @@ for s in sessions:
 "
 ```
 
-If that runs without error and the lap counts look right, load the file
-into the Streamlit app and check the lap time table and RPM/speed ranges
+If that runs without error and the lap counts look right, upload the file
+through the web app and check the lap time table and RPM/speed ranges
 look plausible for your class before trusting the deeper analysis.
 
 ## Running the tests
@@ -729,12 +686,12 @@ specific session* (not from whatever session you looked at previously --
 see "Filling in the kart setup" above). Both are browsable from the
 **History** view.
 
-**Important caveat:** by default, this storage lives on the app's local
-disk. On Streamlit Community Cloud specifically, that disk is wiped on
-every redeploy and reboot -- so treat it as a within-deploy convenience,
-not durable long-term history, unless `SUPABASE_DB_URL`/`DATABASE_URL` is
-set (see "Migrating the database layer to Supabase" below), in which case
-this same storage is backed by Postgres instead and survives redeploys.
+**Important caveat:** by default, this storage lives on local disk, which
+is wiped on every redeploy/reboot on most container hosts -- so treat it
+as a within-deploy convenience, not durable long-term history, unless
+`SUPABASE_DB_URL`/`DATABASE_URL` is set (the production setup -- see
+"Row Level Security" below), in which case this same storage is backed by
+Postgres instead and survives redeploys.
 
 Ingest files from the command line -- e.g. from a script triggered after a
 race-day upload -- with:
@@ -745,7 +702,7 @@ python scripts/ingest.py session1.tsv session2.tsv \
     --db data/sessions.db
 ```
 
-## Migrating the database layer to Supabase
+## The Postgres/Supabase-backed data layer
 
 Every table this app uses (`sessions`, `laps`, `kart_setups`,
 `corner_metrics`, `pattern_instances`, `users`, `driver_profiles`, `teams`,
@@ -757,16 +714,19 @@ automatically over the local SQLite classes whenever `SUPABASE_DB_URL` (or
 `DATABASE_URL`) is set -- see `telemetry/db.py` and each module's
 `*_from_env` factory. Nothing about this is opt-in per-feature: setting
 that one environment variable moves the whole storage layer, not just
-telemetry or just accounts.
+telemetry or just accounts. This is the production path -- the web app and
+worker both run against Supabase; the local SQLite classes exist for
+offline/single-machine use (see "What's intentionally not covered here"
+below).
 
-**Why**: this app's SQLite file (`data/sessions.db`) lives on the app's
-own local disk, which is wiped on every redeploy/reboot on a platform
-without persistent storage (Streamlit Community Cloud, notably). A Supabase
-Postgres database is the durable alternative -- and, unlike a bespoke
-database only this app's Python code can reach, it's also directly queryable
-over Supabase's REST API (PostgREST) with an official Swift client, which
-matters if a native mobile app is ever built against the same data (see
-"Row Level Security" below for what that implies).
+**Why Postgres/Supabase at all, rather than just SQLite everywhere**: a
+plain SQLite file lives on local disk, which is wiped on every
+redeploy/reboot on most container hosts -- durability alone would call
+for any managed Postgres. Supabase specifically also means the data is
+directly queryable over its REST API (PostgREST) with an official Swift
+client, which matters for a native mobile app built against the same data
+(see "Row Level Security" below for what that implies), and it's what
+`web/`'s own auth and RLS-scoped queries are built on.
 
 ### Setting it up
 
@@ -817,16 +777,18 @@ matters if a native mobile app is ever built against the same data (see
 
 ### Row Level Security (and why it matters for a future iOS app)
 
-This app's own Postgres connection (`SUPABASE_DB_URL`) is expected to use a
-role that bypasses Row Level Security (Supabase's default service-role/
-`postgres` connection) -- `accounts.PUBLIC_VISIBILITY_SQL` is already
-applied explicitly in every query the Python data-access classes run, so
-RLS would just be a redundant second check for this one process.
+The worker's own Postgres connection (`SUPABASE_DB_URL`) is expected to
+use a role that bypasses Row Level Security (Supabase's default
+service-role/`postgres` connection) -- `accounts.PUBLIC_VISIBILITY_SQL`
+is already applied explicitly in every query the Python data-access
+classes run, so RLS would just be a redundant second check for that one
+process.
 
-It stops being redundant the moment anything *other* than this app talks to
-the database directly -- which is exactly what a native mobile client would
-do, querying Supabase's PostgREST API with a user's own JWT rather than
-going through this Streamlit app at all. `supabase/migrations/0001_init.sql`
+It is not redundant for anything else that talks to the database
+directly -- which is exactly what `web/` does (querying Supabase's
+PostgREST API with a user's own JWT, on the `authenticated` role, never
+the service-role one) and what a native mobile client would do too.
+`supabase/migrations/0001_init.sql`
 includes a first-pass set of RLS policies for that case (mirroring
 `PUBLIC_VISIBILITY_SQL` for `sessions`, and narrower rules for `laps`,
 `session_cache`, `corner_metrics`, `pattern_instances`, `driver_profiles`,
@@ -898,13 +860,13 @@ recommended production setup; running with neither `SUPABASE_DB_URL`/
 `DATABASE_URL` nor `SUPABASE_URL`/`SUPABASE_ANON_KEY` set still works
 exactly as it did before, fully offline.
 
-## Splitting the app: Next.js frontend + background worker
+## The app today: Next.js frontend + background worker
 
-The Streamlit app is one process that does everything: it serves the UI,
-parses uploads, and talks to the database. That works, and it still runs --
-but it puts an ~18-second CPU-bound parse inside a web request, which is the
-one thing a serverless frontend host cannot do. The migration splits it into
-three pieces that each do one job:
+This repo's original prototype was one Streamlit process that did
+everything: served the UI, parsed uploads, and talked to the database.
+That put an ~18-second CPU-bound parse inside a web request, which is the
+one thing a serverless frontend host cannot do -- the reason it was
+split into three pieces that each do one job:
 
 | Piece | Where | Holds |
 | --- | --- | --- |
@@ -919,11 +881,11 @@ one, bypasses RLS, and is never reachable from a browser.
 
 ### The upload path
 
-Streamlit could hand `st.file_uploader`'s bytes straight to
-`load_sessions()`. Once the frontend is serverless that handoff has to be
-explicit, because a real Unipro export is tens of MB and ~900k rows -- past
-typical serverless request-body limits, and far past a sensible function
-timeout:
+The retired prototype could hand an uploaded file's bytes straight to
+`load_sessions()` in the same process. A serverless frontend can't do
+that handoff implicitly, because a real Unipro export is tens of MB and
+~900k rows -- past typical serverless request-body limits, and far past a
+sensible function timeout -- so it's explicit instead:
 
 ```
 browser                     Vercel                Storage            worker
@@ -957,8 +919,13 @@ all, so a client cannot mark an unparsed file complete or stall the queue
 
 `/` (Home -- sessions grouped by driver, filters, sortable columns, inline
 edit of type/track/conditions/visibility, delete), `/sessions/[id]` (Lap
-Analysis), `/upload`, and `/login`. Everything else on the parity list is
-still Streamlit's, and the nav deliberately links only to routes that exist.
+Analysis, plus `/sessions/[id]/engine` for engine analysis), `/upload`,
+`/login`, and `/admin`. Everything else the retired Streamlit prototype
+had (Top 3 Focus Areas, Corner/Lap Comparison, Recurring Patterns,
+Gearing Simulation, Consistency/Progression, Kart Setup, History, Teams,
+Leaderboards, Shared Laps, Find My Profile -- see the sections above for
+what each one does) hasn't been rebuilt here yet; the nav deliberately
+links only to routes that exist rather than to a 404.
 
 **Lap Analysis** reads the tables 0005 added, not the Parquet blob -- which
 is what makes it possible in a browser at all. Summary cards, a lap table
@@ -1052,18 +1019,23 @@ RLS policy resolves the caller through that bridge
 and is invisible to every policy -- signed in, sees nothing, no error
 anywhere.
 
-That mirroring used to live in Python (`telemetry/auth.py`), which meant it
-only happened if the signup went through Streamlit.
-`0004_mirror_auth_users.sql` moves it to a trigger on `auth.users`, so it
-happens for every client -- Streamlit, the Next.js app, and the iOS app
-later -- and creates the driver profile alongside it. Registration details
-(display name, date of birth, guardian email) travel as GoTrue user
-metadata, which is also how the under-16 guardian-consent rule keeps
-applying to signups that never touch Python.
+That mirroring used to live only in Python (`telemetry/auth.py`'s
+`_mirror_user`), which meant it only happened for a client that actually
+called it. `0004_mirror_auth_users.sql` moves it to a trigger on
+`auth.users`, so it happens for every client -- the Next.js app,
+`unigo_sync`, and the iOS app later -- and creates the driver profile
+alongside it. Registration details (display name, date of birth,
+guardian email) travel as GoTrue user metadata, which is also how the
+under-16 guardian-consent rule keeps applying to signups that never touch
+Python. `_mirror_user` itself is still live code, just no longer the only
+path: it's what `unigo_sync`'s own login still calls on a Supabase-backed
+account (`SupabaseAuthProvider.login`/`register`), since that tool talks
+to `telemetry.auth` directly rather than through GoTrue's JS client the
+way `web/` does.
 
 Accounts created *before* that trigger existed still have a NULL
-`external_auth_id`. They repair themselves on their next Streamlit sign-in
-(`_mirror_user` backfills the column), or can be linked in one go with
+`external_auth_id`. They repair themselves on their next sign-in that
+goes through `_mirror_user`, or can be linked in one go with
 `supabase/manual/0004_backfill_external_auth_id.sql`. That script is
 deliberately **not** a migration: it is the one part of this work that
 writes to rows already in the live app's tables, so it is opt-in and shows
@@ -1084,11 +1056,13 @@ python -m worker.main                        # or WORKER_ONCE=1 to drain and exi
 ```
 
 The worker deploys from `worker/Dockerfile`, built with the **repo root** as
-context (it needs `telemetry/` as well as `worker/`). Its dependency list is
-deliberately separate from the app's `requirements.txt` and contains neither
-streamlit nor plotly -- so if a UI import ever creeps back into
-`telemetry/`, the image stops building rather than the worker quietly
-shipping a Streamlit install.
+context (it needs `telemetry/` as well as `worker/`). Its dependency list
+is deliberately separate from the repo-root `requirements.txt` (see
+`worker/requirements.txt`'s own header comment) -- so if a UI library
+import ever creeps into `telemetry/`, the worker image stops building
+rather than quietly shipping one anyway
+(`tests/test_analysis_extraction.py::test_analysis_module_imports_no_ui_libraries`
+asserts the same thing at the source level).
 
 ### Deploying
 
@@ -1116,21 +1090,27 @@ deduplication.
 
 ## Known limitations / not yet implemented
 
-- PDF export is not implemented; the exportable summary is HTML-based
-  (Plotly figures export cleanly to standalone HTML).
+- Most of the retired Streamlit prototype's feature set (Top 3 Focus
+  Areas, Corner/Lap Comparison, Recurring Patterns, Gearing Simulation,
+  Consistency/Progression, Kart Setup, History, Teams, Leaderboards,
+  Shared Laps, Find My Profile) hasn't been rebuilt in `web/` yet -- see
+  "What exists in `web/` so far" above for the current page list, and the
+  earlier sections of this README for what each retired page did.
+- No export (PDF or otherwise) exists in `web/` yet.
 - Ideal-line overlay and fuel/tyre-effect isolation described in the
   original spec's "additional features" section are not built yet --
   the delta-time trace and consistency trend cover most of the same ground
-  today.
+  once Lap Comparison exists in `web/` again.
 - Corner detection thresholds (`telemetry/corners.py`) are reasonable
   defaults tuned against the synthetic fixture; they may need adjustment
   for a real track's actual corner geometry and GPS noise characteristics.
 - `sample_data/default_session.tsv` (a real telemetry file, committed
-  intentionally as the app's default -- see `sample_data/README.md`) means
-  **this repo should not be treated as private** even if it isn't in your
-  history yet; that GPS track, lap times, and RPM data are visible to
-  anyone who can see the repo while it stays public.
+  intentionally so the test suite and verification scripts have a real
+  export to run against -- see `sample_data/README.md`) means **this repo
+  should not be treated as private** even if it isn't in your history yet;
+  that GPS track, lap times, and RPM data are visible to anyone who can
+  see the repo while it stays public.
 - History/setup persistence is local-disk-only and does not survive a
-  Streamlit Community Cloud redeploy/reboot **unless the Postgres/Supabase
-  backend is configured** -- see "Migrating the database layer to Supabase"
-  above.
+  redeploy/reboot on most container hosts **unless the Postgres/Supabase
+  backend is configured** (the production setup) -- see "The
+  Postgres/Supabase-backed data layer" above.

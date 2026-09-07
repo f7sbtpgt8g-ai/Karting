@@ -1,9 +1,9 @@
 /**
- * The display formats the Streamlit app uses, so the two look like one
- * product while they run side by side.
+ * Shared display formats for lap times, dates, etc. -- kept in one place
+ * so every page renders them identically.
  */
 
-/** `SS.mmm` -- design 1a's lap-time format (`_da1a_time_str` in app.py). */
+/** `SS.mmm` -- design 1a's lap-time format. */
 export function lapTime(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return "--.---";
   return seconds.toFixed(3);

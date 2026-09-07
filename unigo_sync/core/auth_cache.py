@@ -6,12 +6,11 @@ route to the sessions database at all.
 
 The token cached here is exactly the one `telemetry.auth.AuthStore` /
 `SupabaseAuthStore` hand back from `start_session()` -- the same
-server-side, revocable session Streamlit's own login gate uses (see
-`app.py`'s `_set_session_token`). Caching it doesn't add a second,
-weaker auth mechanism: it is the same 7-day session, just persisted to
-disk instead of `st.session_state`, and it is re-validated with
-`AuthStore.user_for_session` the moment the network is back (see
-`core.connectivity`) rather than trusted forever.
+server-side, revocable session the web app's own login route uses.
+Caching it doesn't add a second, weaker auth mechanism: it is the same
+7-day session, just persisted to disk here instead of a browser cookie,
+and it is re-validated with `AuthStore.user_for_session` the moment the
+network is back (see `core.connectivity`) rather than trusted forever.
 
 Nothing in this file talks to the database or the network -- it is
 deliberately just a plain read/write of a small JSON blob.

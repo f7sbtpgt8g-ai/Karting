@@ -7,8 +7,8 @@ import HomeClient, { type SessionRow } from "./HomeClient";
 export const dynamic = "force-dynamic";
 
 /**
- * Home: every session in scope, grouped by driver -- the Streamlit app's
- * landing page (`page_home`).
+ * Home: every session in scope, grouped by driver -- the app's landing
+ * page.
  *
  * "In scope" is deliberately narrower than what RLS permits. The policies
  * let you read your own sessions, your teammates' team-visible ones, and

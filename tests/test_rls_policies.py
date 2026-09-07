@@ -1,12 +1,12 @@
 """What the Row Level Security policies actually permit and deny.
 
-These policies have shipped since the Supabase migration but have never
-gated a real request: the Streamlit app connects on a superuser connection
-that bypasses RLS entirely, and no account has ever had an
-`external_auth_id`, so `current_app_user_id()` has always returned NULL.
-Part 2 of the Next.js migration points a browser client at PostgREST under
-the `authenticated` role, at which point these policies become the only
-thing standing between one driver and another driver's data.
+These policies shipped before anything actually depended on them: the
+worker connects on a superuser connection that bypasses RLS entirely, and
+for a while no account had an `external_auth_id`, so
+`current_app_user_id()` always returned NULL. `web/` now points a browser
+client at PostgREST under the `authenticated` role, which makes these
+policies the only thing standing between one driver and another driver's
+data.
 
 So this suite treats them as a security boundary and tests them as one:
 every assertion runs as the `authenticated` role with a real JWT claim set,

@@ -339,7 +339,7 @@ class AccountLibrary:
     """Accounts, driver identities, attribution and visibility, sharing the
     SQLite file `SessionLibrary` uses. Follows the same
     connection-per-call convention as `SessionLibrary` (see its docstring:
-    a long-lived connection shared across Streamlit reruns was found to
+    a long-lived connection shared as a cached singleton was found to
     hang)."""
 
     def __init__(self, db_path: str):

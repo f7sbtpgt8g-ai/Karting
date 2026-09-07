@@ -1,8 +1,8 @@
 import type { Config } from "tailwindcss";
 
-// Design 1a's dark token palette, kept identical to the values the Streamlit
-// app uses (.streamlit/config.toml and app.py's _DA1A) so the two look like
-// one product while they run side by side during the migration.
+// Design 1a's dark token palette -- see
+// design_handoff_karting_telemetry/README.md's "Design tokens" table for
+// where these values come from; change them there and here together.
 const config: Config = {
   content: ["./src/**/*.{ts,tsx}"],
   theme: {

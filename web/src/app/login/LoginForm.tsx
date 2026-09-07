@@ -95,7 +95,7 @@ export default function LoginForm() {
       if (error) throw error;
       // Deliberately the same message whether or not the address exists --
       // confirming which emails are registered would let anyone enumerate
-      // accounts, the same reasoning the Streamlit app's reset flow uses.
+      // accounts.
       setMessage({ kind: "info", text: "If that address has an account, a reset link is on its way." });
     } catch (err) {
       setMessage({ kind: "error", text: err instanceof Error ? err.message : String(err) });

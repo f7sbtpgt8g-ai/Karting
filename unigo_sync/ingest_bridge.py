@@ -5,9 +5,9 @@ allowed to depend on the rest of the repo, since its whole job is gluing
 OS-agnostic so it can be reused as-is (or ported) elsewhere.
 
 Note on the integration point: as flagged in ../README.md, this repo has
-no watched-folder auto-ingest daemon -- ingestion is either the
-Streamlit app's file uploader or `scripts/ingest.py`'s explicit
-file-path arguments. Rather than adding a folder-watcher poller as a
+no watched-folder auto-ingest daemon -- ingestion is either the web
+app's upload flow or `scripts/ingest.py`'s explicit file-path arguments.
+Rather than adding a folder-watcher poller as a
 third ingestion path, this bridge calls the same loading/saving code
 `scripts/ingest.py` uses, directly, right after a session is written --
 so a manual "sync now" (or the optional background watcher) can hand
@@ -84,9 +84,9 @@ def ingest_new_sessions(
     # Postgres/Supabase-backed when SUPABASE_DB_URL/DATABASE_URL is
     # configured, the local SQLite file at `db_path` otherwise -- same
     # choice `scripts/ingest.py` makes, so a sync pass lands sessions in
-    # the same database the Streamlit app and every other ingestion path
-    # read from, rather than a local-only file that silently diverges
-    # from a deployed Supabase project.
+    # the same database the web app and every other ingestion path read
+    # from, rather than a local-only file that silently diverges from a
+    # deployed Supabase project.
     library = session_library_from_env(db_path)
     ingested = 0
     try:

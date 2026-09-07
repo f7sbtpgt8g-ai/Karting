@@ -1,20 +1,23 @@
 """UI-agnostic entry points for the analysis pipeline.
 
 Every algorithm called from here already lives in its own module in this
-package, and always has -- nothing under `telemetry/` imports Streamlit or
-Plotly (`app.py` is the only file in the repo that imports either). What was
-missing, and what this module adds, is the **orchestration**: which functions
-to call in which order, and what to thread between them.
+package, and always has -- nothing under `telemetry/` imports a UI
+library. What was missing, and what this module adds, is the
+**orchestration**: which functions to call in which order, and what to
+thread between them.
 
-Until now that sequence existed only inside `app.py` -- partly at module
-level, partly inside individual page bodies -- interleaved with `st.*` widget
-calls, `st.session_state` reads and `st.cache_resource` wrappers. So a second
-caller (a background worker, a CLI, a test, a future mobile backend) had no
-way to reproduce a session's analysis without reimplementing that sequence
-and drifting from it. This module is that sequence, and nothing else: it
-adds no new analysis, changes no thresholds, and is deliberately verifiable
-as producing identical results to the Streamlit path (see
-`scripts/verify_analysis_extraction.py`).
+That sequence used to exist only inside this repo's original Streamlit
+prototype (long since removed) -- partly at module level, partly inside
+individual page bodies -- interleaved with the UI framework's own widget
+calls, session-state reads and caching wrappers. So a second caller (a
+background worker, a CLI, a test, a future mobile backend) had no way to
+reproduce a session's analysis without reimplementing that sequence and
+drifting from it. This module is that sequence, and nothing else: it
+adds no new analysis, changes no thresholds, and was verified at
+extraction time to produce identical results to the code it replaced
+(see `scripts/verify_analysis_extraction.py` and
+`tests/test_analysis_extraction.py::_app_py_session_orchestration`, kept
+as a frozen reference implementation for exactly that comparison).
 
 Three entry points, matching the three questions the app actually asks:
 
@@ -28,7 +31,7 @@ Three entry points, matching the three questions the app actually asks:
   a reference lap, plus the ranked plain-language findings.
 
 All three are pure with respect to their inputs: no I/O, no globals, no
-caching. Callers that need caching (Streamlit's reruns, a worker's job loop)
+caching. Callers that need caching (a web request, a worker's job loop)
 own that themselves, because the right cache key differs per caller.
 """
 
@@ -55,10 +58,9 @@ from .parser import Session
 from .setup_config import KartSetup
 from .setup_engine import all_setup_suggestions
 
-# Mirrors app.py's own message for this case verbatim -- a session whose
-# every lap is an out-lap, in-lap or statistical outlier has nothing to
-# analyze, which is a legitimate outcome of a short or aborted run rather
-# than an error to raise on.
+# A session whose every lap is an out-lap, in-lap or statistical outlier
+# has nothing to analyze -- a legitimate outcome of a short or aborted
+# run, not an error to raise on.
 NO_CLEAN_LAPS_MESSAGE = "No clean laps found in this session after outlier filtering -- check the file."
 
 
@@ -78,8 +80,8 @@ class SessionAnalysis:
     """Everything true of one session as a whole.
 
     `data_error` is set (and the derived fields left empty) when the session
-    has no clean laps -- callers should check it rather than assuming
-    `best_lap` is populated, exactly as the Streamlit pages do today.
+    has no clean laps -- every caller must check it rather than assuming
+    `best_lap` is populated.
     """
 
     laps: pd.DataFrame
@@ -111,14 +113,14 @@ def analyze_session(session: Session, setup: KartSetup | None = None) -> Session
 
     `setup` is the kart setup saved for this specific session, if any. When
     omitted, a default `KartSetup` carrying only the session's driver name is
-    used -- matching what `app.py` does for a session nobody has filled a
-    setup in for yet, so the setup-correlation engine still runs (its
-    suggestions are then based on its own documented Rotax EVO defaults,
-    which is why every one of them is labelled with a confidence level).
+    used for a session nobody has filled a setup in for yet, so the
+    setup-correlation engine still runs (its suggestions are then based on
+    its own documented Rotax EVO defaults, which is why every one of them
+    is labelled with a confidence level).
 
-    The order below is load-bearing and mirrors `app.py` exactly: segments
-    are built from the *best* lap (the cleanest reference line available),
-    while theoretical best is computed across every clean lap.
+    The order below is load-bearing: segments are built from the *best*
+    lap (the cleanest reference line available), while theoretical best is
+    computed across every clean lap.
     """
     laps = compute_clean_laps(session)
     clean = clean_lap_table(laps)
@@ -228,8 +230,8 @@ def compare_laps(
     one.
 
     `thresholds` are the noise-aware significance thresholds; when omitted
-    they're calibrated from this session's own repeat-lap variance, which is
-    what `app.py` does. Diagnosis is fully deterministic and rule-based --
+    they're calibrated from this session's own repeat-lap variance.
+    Diagnosis is fully deterministic and rule-based --
     `use_anthropic` only affects how the already-computed facts are phrased,
     and falls back to templates on any failure.
     """

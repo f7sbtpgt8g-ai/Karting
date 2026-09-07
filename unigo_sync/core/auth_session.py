@@ -2,11 +2,10 @@
 any GUI toolkit so it's plain, testable Python.
 
 Deliberately reuses the same `telemetry.auth` / `telemetry.accounts`
-machinery the Streamlit app's own login gate uses (see `app.py`'s
-`render_auth_gate`) rather than a second, parallel credential check --
-"check credentials against DB" means this one database, whichever backend
-(local SQLite or Supabase) `provider_from_env` selects for the current
-deployment.
+machinery the web app's own login route uses, rather than a second,
+parallel credential check -- "check credentials against DB" means this
+one database, whichever backend (local SQLite or Supabase)
+`provider_from_env` selects for the current deployment.
 """
 
 from __future__ import annotations
@@ -85,7 +84,7 @@ def _misconfigured_database_error(sessions_db_path: str) -> str:
 def login(email: str, password: str, sessions_db_path: str) -> LoginResult:
     """Check credentials against the configured database and, on
     success, mint a server-side session token (same 7-day session
-    `AuthStore.start_session` issues for the Streamlit app -- see
+    `AuthStore.start_session` issues for the web app -- see
     `core/auth_cache.py` for why that's what gets cached for offline
     use)."""
     accounts = account_library_from_env(sessions_db_path)
@@ -125,15 +124,14 @@ def sign_out(session_token: str, sessions_db_path: str) -> None:
 def list_driver_choices(user_id: int, sessions_db_path: str) -> list[DriverChoice]:
     """Every driver profile this signed-in user could reasonably attribute
     a sync to: their own claimed profile first, then every unclaimed/
-    invited profile in the system -- the same pool `app.py`'s "attribute
-    this upload" screen offers under its "Someone not on the platform yet"
-    option, since a shared laptop syncing several karts' loggers is
-    exactly the "team manager uploading a shared logger's file" case
-    `telemetry/accounts.py`'s module docstring describes. Registered
-    *other* drivers are deliberately excluded here: attributing to them
-    needs their confirmation (`attribute_session`/`requires_confirmation`
-    in app.py), a multi-step flow this at-the-track tool doesn't try to
-    reproduce -- do that from the web app instead.
+    invited profile in the system -- since a shared laptop syncing
+    several karts' loggers is exactly the "team manager uploading a
+    shared logger's file" case `telemetry/accounts.py`'s module
+    docstring describes. Registered *other* drivers are deliberately
+    excluded here: attributing to them needs their confirmation
+    (`attribute_session`/`requires_confirmation` in `telemetry/
+    accounts.py`), a multi-step flow this at-the-track tool doesn't try
+    to reproduce -- do that from the web app instead.
     """
     accounts = account_library_from_env(sessions_db_path)
     choices: list[DriverChoice] = []

@@ -22,10 +22,17 @@ Both are the same information architecture with different emphasis — pick one,
 The files in this bundle are **design references created in HTML** — prototypes showing intended
 layout, hierarchy and colour semantics. They are not production code to copy.
 
-The target app is the existing **Streamlit + Plotly** application in
-`f7sbtpgt8g-ai/Karting` (branch `claude/new-session-yilc1w`). The task is to recreate these
-designs inside that app's environment, replacing the current `page_data_analysis` /
-`page_lap_comparison` / `page_track_map` layouts. Two viable routes:
+**Historical note:** this brief targeted the repo's Streamlit prototype (`app.py`), since retired
+-- route 1 below ("stay in Streamlit") is what got built there at the time. The app has since moved
+to route 2 (`web/`, a Next.js frontend); design 1a's dark token palette is still the live one,
+carried over into `web/tailwind.config.ts` and `web/src/lib/format.ts` rather than Streamlit's
+theming. Kept here for the tokens, screenshots and layout rationale, which are still the reference
+for any of this UI rebuilt in `web/`.
+
+The target app was the **Streamlit + Plotly** application in
+`f7sbtpgt8g-ai/Karting`. The task was to recreate these
+designs inside that app's environment, replacing the then-current `page_data_analysis` /
+`page_lap_comparison` / `page_track_map` layouts. Two viable routes were considered:
 
 1. **Stay in Streamlit.** Achievable for most of it: `st.columns` for the three-column shell,
    Plotly subplots with a shared x-axis for the channel stack, `plotly` scattergl with per-segment
@@ -33,9 +40,9 @@ designs inside that app's environment, replacing the current `page_data_analysis
    type, inset accent bars and dark chrome need a custom CSS block. Expect the chrome to be
    approximate; the charts can be exact.
 2. **Move the analysis page to a real frontend** (React + a charting lib such as uPlot or
-   ECharts) talking to the existing `telemetry/` package over a thin FastAPI layer. Recommended if
+   ECharts) talking to the existing `telemetry/` package over a thin API layer. Recommended if
    the crosshair-linked channel stack and hover-synced track map matter, since Streamlit's rerun
-   model makes linked-cursor interaction expensive.
+   model makes linked-cursor interaction expensive -- and the route since taken.
 
 The existing Python modules already produce every number in these mockups — see **Data sources**
 below. No new analysis logic is required.

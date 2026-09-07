@@ -41,8 +41,7 @@ This downloads any session the device has that hasn't been synced before,
 writes a `.unigo_sync.tsv` file for each into `data/unigo_sync/incoming/`,
 and (with `--ingest`) loads the new ones straight into
 `data/sessions.db` via the same loading code `scripts/ingest.py` uses --
-from there they show up in the Streamlit app like any other ingested
-session.
+from there they show up in the web app like any other ingested session.
 
 Other commands:
 
@@ -70,7 +69,7 @@ python -m unigo_sync.platform_windows.gui_app
 This is what `UniGoSyncSetup.exe` (below) actually installs and launches.
 It's a small `tkinter` window (no extra GUI dependency) with two screens:
 
-1. **Sign in** -- the same email/password check as the Streamlit app's own
+1. **Sign in** -- the same email/password check as the web app's own
    login (`telemetry.auth`, local or Supabase depending on
    `SUPABASE_URL`/`SUPABASE_ANON_KEY`/`SUPABASE_DB_URL` -- see
    "Pointing it at a real deployment" below). **Do this once while the
@@ -142,7 +141,7 @@ By default the GUI checks credentials against, and uploads sessions into,
 the local `sessions_db` SQLite file (`data/sessions.db`) -- fine for
 trying it out, but a shared file, not a shared database, if more than one
 laptop needs to see the same drivers. To point it at a real Supabase
-project instead (the same one the Streamlit app itself would use), set
+project instead (the same one the web app itself uses), set
 `supabase_url` / `supabase_anon_key` / `supabase_db_url` in `config.yaml`
 -- see the comments there. These are read once, at startup, and mirrored
 into the process's own `SUPABASE_URL`/`SUPABASE_ANON_KEY`/

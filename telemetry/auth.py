@@ -24,11 +24,11 @@ Which one is active is decided by `provider_from_env`: Supabase when
 
 Session management is server-side either way (an `auth_sessions` row with
 an expiry that can be revoked), so signing out actually invalidates
-something rather than just clearing a client-side variable. Note the
-Streamlit-specific limitation: the session token lives in
-`st.session_state`, which is per-browser-tab and lost on reload, so a
-reload means signing in again -- Streamlit has no first-class cookie API to
-persist it properly.
+something rather than just clearing a client-side variable. How the token
+itself is persisted is a caller concern: the Next.js app leans on
+Supabase Auth's own cookie-based session instead of this token for
+browser sessions (see `web/src/lib/supabase/`), while `unigo_sync` caches
+it to a local file for offline use (see `unigo_sync/core/auth_cache.py`).
 """
 
 from __future__ import annotations

@@ -1,10 +1,11 @@
 # Sample data
 
-`default_session.tsv` is a real Unipro export, committed intentionally as
-the app's default file during active development ("build phase") so it
-loads automatically without re-uploading every time -- see `app.py`'s
-`DEFAULT_TSV_PATH`. Uploading any file in the sidebar overrides it
-immediately for that session; it does not touch the file on disk.
+`default_session.tsv` is a real Unipro export, committed intentionally so
+there's a real (not synthetic) file to test and verify against without
+needing your own export -- `tests/test_worker.py`,
+`tests/test_backfill_analysis.py`, `tests/test_analysis_store.py`,
+`tests/test_ingest_paths.py` and `scripts/verify_analysis_extraction.py`
+all read it directly.
 
 **This repo is currently public**, so this file (and the GPS track,
 lap times, and RPM data in it) is visible to anyone who finds the repo.

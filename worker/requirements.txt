@@ -1,10 +1,10 @@
-# The worker's dependencies -- deliberately not the app's requirements.txt.
-#
-# It runs the same `telemetry/` package the Streamlit app does, but none of
-# the UI: no streamlit, no plotly. Keeping the lists apart is what makes the
-# "the analysis module is UI-agnostic" claim checkable rather than assumed --
-# if an `import streamlit` ever creeps back into telemetry/, this image stops
-# building.
+# The worker's dependencies -- deliberately not the repo-root
+# requirements.txt (which also carries pytest and other dev-only deps this
+# image doesn't need). Keeping the lists apart is also what makes
+# `telemetry/analysis.py`'s "no UI libraries" claim
+# (tests/test_analysis_extraction.py::test_analysis_module_imports_no_ui_libraries)
+# checkable rather than assumed -- a UI import creeping back into
+# `telemetry/` stops this image building, not just a lint warning.
 pandas>=2.0
 numpy>=1.24
 scipy>=1.10

@@ -13,10 +13,11 @@ under the same RLS policies as everything else -- and, measured on the
 bundled export, costs about 4% of the blob it came from, which is what then
 makes clearing the blob worthwhile.
 
-Postgres only. The SQLite path exists for offline single-machine use where
-Streamlit reads the dataframe directly and needs none of this, so rather
-than a second implementation that would never be exercised, the writer
-no-ops when no Postgres is configured.
+Postgres only. The SQLite path exists for offline single-machine use
+(`scripts/ingest.py`, local tests) where a caller can just read the cached
+dataframe directly off disk and needs none of this, so rather than a
+second implementation that would never be exercised, the writer no-ops
+when no Postgres is configured.
 """
 
 from __future__ import annotations
@@ -307,7 +308,7 @@ def analyze_and_store(session_db_id: int, session: Session) -> bool:
     second time.
 
     Returns True when analysis was written -- False both when there is no
-    Postgres configured (the offline SQLite case, where Streamlit reads the
+    Postgres configured (the offline SQLite case, where a caller reads the
     dataframe directly and needs none of this) and when analysis failed.
     """
     try:
