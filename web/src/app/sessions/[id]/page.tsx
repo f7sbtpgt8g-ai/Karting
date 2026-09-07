@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { createClient, getAppUser } from "@/lib/supabase/server";
 import AppHeader from "@/components/AppHeader";
+import { SESSION_COLUMNS, buildBundle } from "@/lib/sessionBundle";
 import type { Segment } from "@/lib/sectors";
-import LapAnalysis, { type LapRow } from "./LapAnalysis";
+import LapAnalysis from "./LapAnalysis";
 
 export const dynamic = "force-dynamic";
 
@@ -29,7 +30,7 @@ type AnalysisRow = {
 };
 
 /**
- * Lap Analysis for one session.
+ * Lap Analysis for one session, plus any others opened alongside it.
  *
  * Everything here comes from the tables 0005 added rather than from the
  * Parquet blob -- which is the whole reason this page can exist at all in a
@@ -37,6 +38,10 @@ type AnalysisRow = {
  * selected: this page needs per-lap scalars and per-segment times, and
  * pulling ~300 KB of traces to render a table would be paying for the charts
  * before they are built.
+ *
+ * Sessions added for comparison are fetched in the browser through the same
+ * `buildBundle`, so a teammate's session arrives shaped exactly like this
+ * one. RLS is what decides whether it arrives at all.
  */
 export default async function SessionPage({ params }: { params: { id: string } }) {
   const sessionId = Number(params.id);
@@ -49,11 +54,7 @@ export default async function SessionPage({ params }: { params: { id: string } }
 
   const { data: session } = await supabase
     .from("sessions")
-    .select(
-      "id, track_name, session_type, start_date, start_time, track_condition, " +
-        "kart_class, driver_profile_id, uploaded_by_user_id, " +
-        "driver_profiles(display_name, user_id)",
-    )
+    .select(SESSION_COLUMNS)
     .eq("id", sessionId)
     .maybeSingle()
     .returns<SessionRow>();
@@ -112,15 +113,6 @@ export default async function SessionPage({ params }: { params: { id: string } }
         }>()
     : { data: null };
 
-  const trace =
-    bestTrace?.latitude && bestTrace.longitude && bestTrace.distance_m
-      ? bestTrace.distance_m.map((distanceM, i) => ({
-          lat: bestTrace.latitude![i],
-          lon: bestTrace.longitude![i],
-          distanceM,
-        }))
-      : [];
-
   if (!analysis) {
     return (
       <main className="mx-auto max-w-6xl px-6 py-8">
@@ -138,52 +130,33 @@ export default async function SessionPage({ params }: { params: { id: string } }
     );
   }
 
-  const peakByLap = new Map((peaks ?? []).map((p) => [p.lap_number, p]));
-  const timesByLap = new Map<number, Record<string, number | null>>();
-  for (const row of segmentTimes ?? []) {
-    if (!row.segment_label) continue;
-    const bucket = timesByLap.get(row.lap_number) ?? {};
-    bucket[row.segment_label] = row.time_s;
-    timesByLap.set(row.lap_number, bucket);
-  }
+  // The viewer's own driver profile, which decides what "my team" and "my
+  // sessions" mean in the add-session searches.
+  const { data: myProfile } = appUser
+    ? await supabase
+        .from("driver_profiles")
+        .select("id")
+        .eq("user_id", appUser.id)
+        .maybeSingle()
+    : { data: null };
 
-  const rows: LapRow[] = (laps ?? []).map((lap) => ({
-    lapNumber: lap.lap_number,
-    lapTimeS: lap.lap_time_s,
-    isOutlier: Boolean(lap.is_outlier),
-    outlierReason: lap.outlier_reason,
-    excludedByUser: Boolean(lap.excluded_by_user),
-    maxSpeedKmh: peakByLap.get(lap.lap_number)?.max_speed_kmh ?? null,
-    maxRpm: peakByLap.get(lap.lap_number)?.max_rpm ?? null,
-    segmentTimes: timesByLap.get(lap.lap_number) ?? {},
-  }));
-
-  // Editable only by the session's own driver or its uploader -- the same
-  // rule `laps_update_own` enforces in the database. Checked here too so the
-  // toggles are simply absent for a teammate rather than present and failing.
-  const canEdit =
-    appUser != null &&
-    (session.uploaded_by_user_id === appUser.id ||
-      session.driver_profiles?.user_id === appUser.id);
+  const bundle = buildBundle({
+    session,
+    analysis,
+    laps: laps ?? [],
+    segmentTimes: segmentTimes ?? [],
+    peaks: peaks ?? [],
+    trace: bestTrace,
+    appUserId: appUser?.id ?? null,
+  });
 
   return (
     <main className="mx-auto max-w-[1400px] px-6 py-8">
       <AppHeader email={appUser?.email} current="/" isAdmin={appUser?.is_admin} />
       <LapAnalysis
-        sessionId={sessionId}
-        driverName={session.driver_profiles?.display_name ?? session.track_name ?? "Session"}
-        trackName={session.track_name}
-        startDate={session.start_date}
-        startTime={session.start_time}
-        kartClass={session.kart_class}
-        trackCondition={session.track_condition}
-        segments={analysis.segments ?? []}
-        speedIsEstimated={analysis.speed_is_estimated}
-        dataError={analysis.data_error}
-        laps={rows}
-        canEdit={canEdit}
-        trace={trace}
-        peaksMissing={rows.length > 0 && rows.every((r) => r.maxSpeedKmh === null)}
+        initial={bundle}
+        appUserId={appUser?.id ?? null}
+        myProfileId={(myProfile?.id as number | undefined) ?? null}
       />
     </main>
   );

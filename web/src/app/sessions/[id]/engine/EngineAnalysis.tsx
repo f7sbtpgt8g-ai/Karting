@@ -246,10 +246,25 @@ export default function EngineAnalysis({
             .
           </p>
         )}
-        <p>
-          Temperature is the logger&apos;s engine sensor. Session averages are weighted by each
-          lap&apos;s sample count, so a short out-lap does not count as much as a full one.
-        </p>
+        {laps.length > 0 && laps.every((lap) => lap.avgTempC === null) ? (
+          // Blank temperature columns look like a bug in this page. They are
+          // not: a session synced straight off the logger has no temperature
+          // in it to store, because the channel has not been decoded out of
+          // the device's binary format (unigo_sync/findings.md documents the
+          // attempts). An export from Unipro Analyser does carry it.
+          <p>
+            <strong className="text-ink2">No engine temperature in this session.</strong> Sessions
+            synced directly from the logger do not carry it &mdash; the temperature channel in the
+            device&apos;s own binary format has not been decoded, so there is nothing to store. A
+            session uploaded as a Unipro Analyser export includes it. The same applies to lateral
+            and longitudinal G on the lap comparison charts.
+          </p>
+        ) : (
+          <p>
+            Temperature is the logger&apos;s engine sensor. Session averages are weighted by each
+            lap&apos;s sample count, so a short out-lap does not count as much as a full one.
+          </p>
+        )}
       </div>
     </div>
   );

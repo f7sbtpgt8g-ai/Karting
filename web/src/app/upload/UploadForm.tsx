@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { CONDITIONS } from "@/lib/conditions";
 
 export const SESSION_TYPES = [
   "Training",
@@ -12,7 +13,10 @@ export const SESSION_TYPES = [
   "Superheat",
   "Final",
 ];
-export const CONDITIONS = ["Dry", "Wet", "Mixed"];
+// Re-exported for anything that used to import it from here; the list
+// itself lives in lib/conditions.ts, alongside the colours it must not
+// collide with.
+export { CONDITIONS };
 
 type Profile = { id: number; display_name: string };
 

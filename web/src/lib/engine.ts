@@ -73,14 +73,27 @@ export function hasPowerzone(category: string | null | undefined): boolean {
  * The hues are the ones `SECTOR_COLORS` in trackMap.ts already uses, chosen
  * to stay distinguishable to a colour-blind reader on this background. Reused
  * rather than picked afresh so the app has one categorical palette.
+ *
+ * Slots 0 and 1 of that palette are deliberately skipped: they are the Wet
+ * and Mixed track conditions, which are shown in the *same table cell* as
+ * the engine class. A blue "Rotax Senior" next to where a blue "Wet" belongs
+ * reads as a condition at a glance -- which is exactly what the first
+ * version of this did. `conditions.test.ts` keeps the two sets apart.
+ *
+ * Slot 5 (#008300) is skipped too: it is a second green, and the one hue in
+ * the palette a reader would confuse with slot 2 when both label engines in
+ * the same column.
  */
 const ENGINE_FAMILY_COLOR: Array<[string, string]> = [
-  ["Rotax", "#3987e5"],
-  ["X30", "#d95926"],
-  ["IAME", "#199e70"],
+  ["Rotax", "#199e70"],
+  ["X30", "#c98500"],
+  ["IAME", "#d55181"],
   ["OK", "#9085e9"],
-  ["KZ", "#d55181"],
+  ["KZ", "#e66767"],
 ];
+
+/** Every colour an engine class can be drawn in. */
+export const ENGINE_COLORS = ENGINE_FAMILY_COLOR.map(([, color]) => color);
 
 /** The colour for an engine class, or null when it is unset or unknown. */
 export function engineColor(category: string | null | undefined): string | null {

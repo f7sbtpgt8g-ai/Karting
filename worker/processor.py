@@ -17,7 +17,7 @@ import tempfile
 import zipfile
 
 from telemetry.accounts import ATTRIBUTION_CONFIRMED, account_library_from_env
-from telemetry.analysis_store import analyze_and_store
+from telemetry.post_ingest import finish_session
 from telemetry.parser import load_sessions
 from telemetry.storage import session_library_from_env
 
@@ -151,7 +151,7 @@ def process_batch(batch: UploadBatch, store: ObjectStore) -> int:
                 **batch.conditions,
             )
             _link_to_batch(session_db_id, batch.id)
-            analyze_and_store(session_db_id, session)
+            finish_session(session_db_id, session)
 
             if batch.driver_profile_id is not None:
                 accounts.attribute_session(

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 
-from telemetry.analysis_store import analyze_and_store
+from telemetry.post_ingest import finish_session
 from telemetry.parser import load_sessions
 from telemetry.storage import SessionLibrary, SupabaseSessionLibrary, session_library_from_env
 
@@ -58,7 +58,7 @@ def ingest_one(
         # go and run a backfill script. Best-effort inside, so a session that
         # saved but would not analyse is not reported as a failed ingest and
         # retried into a duplicate.
-        analyze_and_store(db_id, session)
+        finish_session(db_id, session)
         logger.info("ingested %s session %s -> library id %s", path, session.session_id, db_id)
         ingested += 1
     return ingested
