@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import subprocess
 import uuid
+from contextlib import contextmanager
 
 import pytest
 
@@ -139,15 +140,72 @@ class Actor:
                 cur.execute("ROLLBACK")
 
 
+def _become(cur, actor: "Actor") -> None:
+    """Switch an already-open transaction to act as `actor` for whatever
+    statement runs next -- the multi-actor equivalent of `Actor.query`'s own
+    per-call claim-setting, used by `scenario()` below to weave a sequence
+    like "Dana requests, Alice approves, Dana can now read" through several
+    identities inside one transaction, since `Actor.query`/`.write` each
+    open and roll back their own transaction and so can never see an
+    earlier call's effects."""
+    claims = f'{{"sub":"{actor.auth_uid}","role":"authenticated"}}' if actor.auth_uid else '{"role":"anon"}'
+    cur.execute("SELECT set_config('request.jwt.claims', %s, true)", (claims,))
+    cur.execute(f"SET LOCAL ROLE {'authenticated' if actor.auth_uid else 'anon'}")
+
+
+@contextmanager
+def scenario(db):
+    """One transaction, several actors, rolled back at the end regardless
+    of outcome -- so a multi-step flow (request -> approve -> can-now-read)
+    can be exercised as a single connected story without ever persisting
+    anything past the test, matching every other test in this file."""
+    with db.cursor() as cur:
+        cur.execute("BEGIN")
+        try:
+            yield cur
+        finally:
+            cur.execute("ROLLBACK")
+
+
+def _try(cur, sql: str, params: tuple = ()) -> tuple[bool, str | None, list[tuple] | None]:
+    """Attempt one statement inside a `scenario`, without poisoning the rest
+    of the transaction if it fails -- a raised exception aborts every
+    following statement in the same Postgres transaction until rolled back,
+    which a `scenario` test needs to survive to keep telling its story
+    (e.g. "Bob's attempt to approve is refused, then Alice's succeeds").
+
+    A plain UPDATE/DELETE that RLS filters down to zero matched rows does
+    NOT raise -- it just quietly affects nothing, the same silent-denial
+    trap `Actor.write` already guards against elsewhere in this file. So a
+    statement with no result set (`cur.description is None`: an UPDATE/
+    DELETE/INSERT with no RETURNING) additionally requires `rowcount > 0`
+    to count as `ok`. A SELECT or an RPC call (`SELECT some_function(...)`,
+    which always yields one row even for a VOID-returning function) always
+    has a result set, so this never affects those -- callers checking "did
+    I get the row(s) I expected" should still inspect `rows` themselves.
+    """
+    cur.execute("SAVEPOINT sp")
+    try:
+        cur.execute(sql, params)
+        has_result_set = cur.description is not None
+        rows = cur.fetchall() if has_result_set else None
+        ok = True if has_result_set else cur.rowcount > 0
+        cur.execute("RELEASE SAVEPOINT sp")
+        return (ok, None, rows)
+    except psycopg2.Error as exc:
+        cur.execute("ROLLBACK TO SAVEPOINT sp")
+        return (False, str(exc).splitlines()[0], None)
+
+
 @pytest.fixture(scope="module")
 def world(db):
     """Two drivers on the same team, one driver on no team, and one session
     each at every visibility tier -- the smallest world that can tell the
     three tiers apart."""
-    alice_uid, bob_uid, carol_uid = (str(uuid.uuid4()) for _ in range(3))
+    alice_uid, bob_uid, carol_uid, dana_uid = (str(uuid.uuid4()) for _ in range(4))
     with db.cursor() as cur:
         ids = {}
-        for name, uid in (("alice", alice_uid), ("bob", bob_uid), ("carol", carol_uid)):
+        for name, uid in (("alice", alice_uid), ("bob", bob_uid), ("carol", carol_uid), ("dana", dana_uid)):
             cur.execute(
                 "INSERT INTO users (email, external_auth_id, email_verified, display_name, created_at) "
                 "VALUES (%s,%s,TRUE,%s,now()) RETURNING id",
@@ -170,9 +228,10 @@ def world(db):
         for who, role in (("alice", "manager"), ("bob", "member")):
             cur.execute(
                 "INSERT INTO team_memberships (team_id, driver_profile_id, role, status, requested_at, decided_at) "
-                "VALUES (%s,%s,%s,'active',now(),now())",
+                "VALUES (%s,%s,%s,'active',now(),now()) RETURNING id",
                 (ids["team"], ids[f"{who}_profile"], role),
             )
+            ids[f"{who}_membership"] = cur.fetchone()[0]
 
         # One Alice session per visibility tier.
         for tier in ("private", "team", "shared"):
@@ -217,6 +276,7 @@ def world(db):
         "alice": Actor(db, alice_uid),
         "bob": Actor(db, bob_uid),
         "carol": Actor(db, carol_uid),
+        "dana": Actor(db, dana_uid),
         "anon": Actor(db, None),
     }
 
@@ -656,6 +716,238 @@ def test_the_settings_grant_does_not_open_up_the_account_row(world, column, valu
         f"UPDATE users SET {column} = {value} WHERE id=%s", (world["alice_user"],)
     )
     assert not allowed, f"a client rewrote users.{column} on their own account"
+    assert error and "permission denied" in error.lower(), (
+        f"expected a column-level permission error, got: {error}"
+    )
+
+
+# --------------------------------------------------------- team management
+#
+# Creating a team, requesting to join, approving/rejecting, promoting/
+# demoting, removing a member, and transferring the manager role -- the five
+# SECURITY DEFINER RPCs plus the tightened self-leave policy from
+# 0010_teams_management.sql. Unlike the read-only team policies above, most
+# of these depend on more than one row's state (the caller's own role in
+# *this* team, the target's current role), so they're exercised as
+# multi-step `scenario()` stories rather than single `Actor.write` calls.
+
+
+def test_team_create_makes_caller_the_manager(world, db):
+    with scenario(db) as cur:
+        _become(cur, world["dana"])
+        ok, err, rows = _try(cur, "SELECT team_create('Blues')")
+        assert ok, f"team_create failed: {err}"
+        team_id = rows[0][0]
+
+        ok, err, rows = _try(
+            cur, "SELECT role, status FROM team_memberships WHERE team_id=%s AND driver_profile_id=%s",
+            (team_id, world["dana_profile"]),
+        )
+        assert ok and rows == [("manager", "active")], f"creator wasn't seated as active manager: {rows}"
+
+
+def test_team_create_refuses_if_already_on_a_team(world, db):
+    with scenario(db) as cur:
+        _become(cur, world["bob"])  # already an active member of Reds
+        ok, err, _ = _try(cur, "SELECT team_create('Yellows')")
+        assert not ok, "a driver already on a team was allowed to create another"
+
+
+def test_full_join_approve_flow_grants_team_visibility(world, db):
+    with scenario(db) as cur:
+        _become(cur, world["dana"])
+        ok, err, rows = _try(
+            cur,
+            "INSERT INTO team_memberships (team_id, driver_profile_id, role, status, requested_at) "
+            "VALUES (%s,%s,'member','pending',now()) RETURNING id",
+            (world["team"], world["dana_profile"]),
+        )
+        assert ok, f"Dana could not request to join: {err}"
+        membership_id = rows[0][0]
+
+        ok, err, rows = _try(cur, "SELECT id FROM sessions WHERE id=%s", (world["session_team"],))
+        assert ok and rows == [], "a pending request already grants team-visibility access"
+
+        _become(cur, world["bob"])  # plain member -- not authorised to decide
+        ok, err, _ = _try(cur, "SELECT team_resolve_join_request(%s, TRUE)", (membership_id,))
+        assert not ok, "a plain member was allowed to approve a join request"
+
+        _become(cur, world["alice"])  # the manager
+        ok, err, _ = _try(cur, "SELECT team_resolve_join_request(%s, TRUE)", (membership_id,))
+        assert ok, f"the manager could not approve a pending request: {err}"
+
+        _become(cur, world["dana"])
+        ok, err, rows = _try(cur, "SELECT id FROM sessions WHERE id=%s", (world["session_team"],))
+        assert ok and rows == [(world["session_team"],)], "approved teammate still can't see the team session"
+
+
+def test_manager_can_reject_a_join_request(world, db):
+    with scenario(db) as cur:
+        _become(cur, world["dana"])
+        _, _, rows = _try(
+            cur,
+            "INSERT INTO team_memberships (team_id, driver_profile_id, role, status, requested_at) "
+            "VALUES (%s,%s,'member','pending',now()) RETURNING id",
+            (world["team"], world["dana_profile"]),
+        )
+        membership_id = rows[0][0]
+
+        _become(cur, world["alice"])
+        ok, err, _ = _try(cur, "SELECT team_resolve_join_request(%s, FALSE)", (membership_id,))
+        assert ok, f"the manager could not reject a pending request: {err}"
+
+        _become(cur, world["dana"])
+        _, _, rows = _try(cur, "SELECT id FROM sessions WHERE id=%s", (world["session_team"],))
+        assert rows == [], "a rejected request still grants team-visibility access"
+
+
+def test_only_manager_can_promote_or_demote(world, db):
+    """README rule: an admin may accept/reject requests and remove a plain
+    member, but only the manager may change anyone's role."""
+    with scenario(db) as cur:
+        _become(cur, world["alice"])
+        ok, err, _ = _try(cur, "SELECT team_set_member_role(%s, 'admin')", (world["bob_membership"],))
+        assert ok, f"the manager could not promote a member to admin: {err}"
+
+        _become(cur, world["bob"])  # now an admin
+        ok, err, _ = _try(cur, "SELECT team_set_member_role(%s, 'admin')", (world["bob_membership"],))
+        assert not ok, "an admin was allowed to change a role -- only the manager may"
+
+
+def test_admin_can_resolve_requests_but_not_the_manager_role(world, db):
+    with scenario(db) as cur:
+        _become(cur, world["alice"])
+        _try(cur, "SELECT team_set_member_role(%s, 'admin')", (world["bob_membership"],))
+
+        _become(cur, world["dana"])
+        _, _, rows = _try(
+            cur,
+            "INSERT INTO team_memberships (team_id, driver_profile_id, role, status, requested_at) "
+            "VALUES (%s,%s,'member','pending',now()) RETURNING id",
+            (world["team"], world["dana_profile"]),
+        )
+        membership_id = rows[0][0]
+
+        _become(cur, world["bob"])  # admin, not manager
+        ok, err, _ = _try(cur, "SELECT team_resolve_join_request(%s, TRUE)", (membership_id,))
+        assert ok, f"an admin could not approve a join request: {err}"
+
+        ok, err, _ = _try(cur, "SELECT team_set_member_role(%s, 'admin')", (membership_id,))
+        assert not ok, "an admin was allowed to promote the driver they just approved"
+
+
+def test_admin_cannot_act_on_another_admin_only_manager_can(world, db):
+    """README rule: an admin can remove a plain member, but only the
+    manager may remove or demote a fellow admin -- admins can't act on
+    each other. Alice (manager) admits Dana, then promotes both Bob and
+    Dana to admin, so there are two admins to test against."""
+    with scenario(db) as cur:
+        _become(cur, world["dana"])
+        _, _, rows = _try(
+            cur,
+            "INSERT INTO team_memberships (team_id, driver_profile_id, role, status, requested_at) "
+            "VALUES (%s,%s,'member','pending',now()) RETURNING id",
+            (world["team"], world["dana_profile"]),
+        )
+        dana_membership_id = rows[0][0]
+
+        _become(cur, world["alice"])
+        _try(cur, "SELECT team_resolve_join_request(%s, TRUE)", (dana_membership_id,))
+        _try(cur, "SELECT team_set_member_role(%s, 'admin')", (world["bob_membership"],))
+        _try(cur, "SELECT team_set_member_role(%s, 'admin')", (dana_membership_id,))
+
+        _become(cur, world["bob"])  # admin, targeting a fellow admin
+        ok, err, _ = _try(cur, "SELECT team_remove_member(%s)", (dana_membership_id,))
+        assert not ok, "an admin was allowed to remove another admin"
+
+        _become(cur, world["alice"])  # manager, same target
+        ok, err, _ = _try(cur, "SELECT team_remove_member(%s)", (dana_membership_id,))
+        assert ok, f"the manager could not remove an admin: {err}"
+
+
+def test_manager_cannot_leave_directly_but_can_after_transfer(world, db):
+    with scenario(db) as cur:
+        _become(cur, world["alice"])
+        ok, err, _ = _try(
+            cur, "UPDATE team_memberships SET status='left' WHERE driver_profile_id=%s", (world["alice_profile"],)
+        )
+        assert not ok, "the manager was allowed to leave directly, bypassing transfer"
+
+        ok, err, _ = _try(cur, "SELECT team_transfer_manager(%s)", (world["bob_membership"],))
+        assert ok, f"the manager could not transfer ownership: {err}"
+
+        ok, err, rows = _try(
+            cur, "SELECT role FROM team_memberships WHERE driver_profile_id=%s", (world["alice_profile"],)
+        )
+        assert ok and rows == [("admin",)], f"outgoing manager should land as admin, got: {rows}"
+
+        # Now demoted to admin, Alice's own leave path is open again.
+        ok, err, _ = _try(
+            cur, "UPDATE team_memberships SET status='left' WHERE driver_profile_id=%s", (world["alice_profile"],)
+        )
+        assert ok, f"a demoted former manager could not leave: {err}"
+
+
+def test_transfer_manager_requires_being_current_manager(world, db):
+    with scenario(db) as cur:
+        _become(cur, world["bob"])  # plain member
+        ok, err, _ = _try(cur, "SELECT team_transfer_manager(%s)", (world["bob_membership"],))
+        assert not ok, "a non-manager was allowed to transfer the manager role"
+
+
+def test_partial_unique_index_blocks_second_live_membership_per_profile(world, db):
+    """Defence in depth beyond team_create's own pre-check: even a direct
+    INSERT (run as the connection's own owner role, bypassing RLS, to
+    isolate the database-level backstop from the RLS layer that would
+    normally prevent this insert shape anyway) can't put a second live row
+    under one driver profile."""
+    with scenario(db) as cur:
+        cur.execute(
+            "INSERT INTO teams (name, created_by_user_id, created_at) VALUES ('Greens',%s,now()) RETURNING id",
+            (world["alice_user"],),
+        )
+        other_team_id = cur.fetchone()[0]
+
+        # Bob is already an active member of Reds (from the fixture) -- a
+        # second team's pending request for him should collide.
+        ok, err, _ = _try(
+            cur,
+            "INSERT INTO team_memberships (team_id, driver_profile_id, role, status, requested_at) "
+            "VALUES (%s,%s,'member','pending',now())",
+            (other_team_id, world["bob_profile"]),
+        )
+        assert not ok, "a second live membership row was allowed for one driver profile"
+        assert err and "duplicate key" in err.lower(), f"expected a unique-index violation, got: {err}"
+
+
+def test_partial_unique_index_blocks_second_active_manager_per_team(world, db):
+    """Bypasses RLS entirely (runs as the connection's own owner role, not
+    as any Actor) to isolate the database-level backstop from the RLS layer
+    that would normally prevent this insert shape anyway -- the point is
+    that the constraint holds even if RLS or a future RPC didn't."""
+    with scenario(db) as cur:
+        ok, err, _ = _try(
+            cur,
+            "INSERT INTO team_memberships (team_id, driver_profile_id, role, status, requested_at, decided_at) "
+            "VALUES (%s,%s,'manager','active',now(),now())",
+            (world["team"], world["dana_profile"]),
+        )
+        assert not ok, "a second active manager was allowed on one team"
+        assert err and "duplicate key" in err.lower(), f"expected a unique-index violation, got: {err}"
+
+
+@pytest.mark.parametrize("column,value", [("role", "'admin'"), ("driver_profile_id", "999999")])
+def test_the_leave_grant_does_not_open_up_other_columns(world, column, value):
+    """`team_memberships_leave_own`'s WITH CHECK pins status/driver_profile_id
+    on the *resulting* row, but says nothing about which columns a self-leave
+    PATCH may touch -- the column-level GRANT is what actually closes that,
+    the same idiom `test_the_settings_grant_does_not_open_up_the_account_row`
+    already covers for `users`."""
+    allowed, error = world["bob"].write(
+        f"UPDATE team_memberships SET status='left', {column}={value} WHERE driver_profile_id=%s",
+        (world["bob_profile"],),
+    )
+    assert not allowed, f"a client rewrote team_memberships.{column} via their own leave request"
     assert error and "permission denied" in error.lower(), (
         f"expected a column-level permission error, got: {error}"
     )

@@ -3,6 +3,7 @@ import { createClient, resolveAppUser } from "@/lib/supabase/server";
 import AccountNotLinked from "@/components/AccountNotLinked";
 import AppHeader from "@/components/AppHeader";
 import AdminUsers, { type AdminUserRow } from "./AdminUsers";
+import OrphanedTeams, { type OrphanedTeamRow } from "./OrphanedTeams";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,8 @@ export default async function AdminPage() {
   // guesses "single object" for the RPC builder.
   const { data, error } = await supabase.rpc("admin_user_overview");
   const users = (data ?? []) as AdminUserRow[];
+
+  const { data: orphanedTeams } = await supabase.rpc("admin_list_orphaned_teams");
 
   if (error) {
     // "Not authorised" is the expected answer for everyone who is not an
@@ -61,6 +64,7 @@ export default async function AdminPage() {
   return (
     <main className="mx-auto max-w-[1400px] px-6 py-8">
       <AppHeader email={appUser.email} current="/admin" isAdmin={appUser?.is_admin} />
+      <OrphanedTeams teams={(orphanedTeams ?? []) as OrphanedTeamRow[]} />
       <h1 className="mb-1 text-lg font-semibold">Users</h1>
       <p className="mb-6 text-sm text-muted">
         Every account on this installation. {users.length} total.
