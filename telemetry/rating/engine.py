@@ -41,19 +41,28 @@ from .config import DEFAULT_RATING_CONFIG, RatingConfig
 
 logger = logging.getLogger("telemetry.rating.engine")
 
-# sessions.start_date is free text written by the parser as DD-MM-YYYY --
-# same format 0011's parse_session_date (SQL) parses, kept in sync here
-# rather than round-tripping through that function per row.
-_START_DATE_FORMAT = "%d-%m-%Y"
+# sessions.start_date is free text, written verbatim from the Unipro
+# export's own "Start Date" column (telemetry/parser.py never reformats
+# it) -- so its shape follows whatever the logger/locale that produced the
+# export used, not a single guaranteed format. DD-MM-YYYY is what 0011's
+# parse_session_date (SQL) assumes and what an earlier version of this
+# function assumed too; YYYY-MM-DD shows up in the wild as well (confirmed
+# against a real deployment where every session used it, which meant
+# _parse_session_date silently dropped every single session before this
+# fix -- validity-checked laps, zero pace buckets, zero rating updates).
+# Tried in order; the first one that actually matches wins.
+_START_DATE_FORMATS = ("%d-%m-%Y", "%Y-%m-%d")
 
 
 def _parse_session_date(raw: str | None) -> date | None:
     if not raw:
         return None
-    try:
-        return datetime.strptime(raw, _START_DATE_FORMAT).date()
-    except ValueError:
-        return None
+    for fmt in _START_DATE_FORMATS:
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 # ---------------------------------------------------------------------------

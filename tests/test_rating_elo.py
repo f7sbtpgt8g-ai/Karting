@@ -18,6 +18,7 @@ from telemetry.rating.elo import (
     group_into_cohorts,
     reference_based_update,
 )
+from telemetry.rating.engine import _parse_session_date
 
 CONFIG = RatingConfig()
 DAY = date(2026, 6, 1)
@@ -144,3 +145,26 @@ def test_beating_the_reference_gains_rating_losing_to_it_loses_rating():
     assert slower.mu_after < slower.mu_before
     assert faster.mechanism == REFERENCE
     assert faster.cohort_size == 0
+
+
+class TestParseSessionDate:
+    """`sessions.start_date` is written verbatim from the Unipro export's
+    own "Start Date" column (telemetry/parser.py), so its shape follows
+    whatever the logger/locale produced -- not a single guaranteed format.
+    A real deployment surfaced this: every session used YYYY-MM-DD, which
+    the original DD-MM-YYYY-only parser silently couldn't read, so every
+    session was dropped before it ever reached a cohort -- laps validity-
+    checked, zero pace buckets, zero rating updates, no visible error."""
+
+    def test_dd_mm_yyyy(self):
+        assert _parse_session_date("29-08-2026") == date(2026, 8, 29)
+
+    def test_yyyy_mm_dd(self):
+        assert _parse_session_date("2026-08-29") == date(2026, 8, 29)
+
+    def test_none_and_empty(self):
+        assert _parse_session_date(None) is None
+        assert _parse_session_date("") is None
+
+    def test_unrecognized_format_returns_none_rather_than_raising(self):
+        assert _parse_session_date("29/08/2026") is None
