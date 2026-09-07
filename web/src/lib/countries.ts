@@ -58,6 +58,7 @@ export const COUNTRIES = [
   "Ecuador",
   "Egypt",
   "El Salvador",
+  "England",
   "Equatorial Guinea",
   "Eritrea",
   "Estonia",

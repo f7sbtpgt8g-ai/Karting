@@ -1,11 +1,13 @@
 /**
- * A flag emoji for each country in `COUNTRIES` (countries.ts).
+ * ISO 3166-1 alpha-2 codes for each country in `COUNTRIES` (countries.ts).
  *
- * Built from each country's ISO 3166-1 alpha-2 code rather than ~195
- * hand-typed emoji glyphs: a flag emoji is just two Regional Indicator
- * Symbols, one per letter, offset from the plain ASCII letters by a fixed
- * amount -- so the two-letter code is the only data that needs to be
- * correct by hand, and the rendering is mechanical.
+ * Used to key `flag-icons` CSS classes (`fi fi-<code>`) for an actual flag
+ * image -- not the Regional Indicator emoji approach this used to take.
+ * Emoji flags render fine on macOS/iOS/Android, but Windows (still, as of
+ * several recent releases) has no font that composes the two Regional
+ * Indicator Symbols into a flag glyph, so they show as two boxed letters
+ * instead -- exactly the "GB" text a user reported seeing. An image icon
+ * renders identically everywhere regardless of the viewer's OS/font.
  */
 const COUNTRY_CODES: Record<string, string> = {
   Afghanistan: "AF",
@@ -60,6 +62,12 @@ const COUNTRY_CODES: Record<string, string> = {
   Ecuador: "EC",
   Egypt: "EG",
   "El Salvador": "SV",
+  // Not a real ISO 3166-1 entry -- a deliberate addition alongside "United
+  // Kingdom", not a replacement for it, for a driver who'd rather race
+  // under St George's Cross than the Union Jack. flag-icons ships this and
+  // the other three home-nation flags (gb-sct/gb-wls/gb-nir) as an explicit
+  // extension for exactly this case.
+  England: "GB-ENG",
   "Equatorial Guinea": "GQ",
   Eritrea: "ER",
   Estonia: "EE",
@@ -207,23 +215,9 @@ const COUNTRY_CODES: Record<string, string> = {
   Zimbabwe: "ZW",
 };
 
-const REGIONAL_INDICATOR_OFFSET = 127397; // 0x1F1E6 ('A' flag letter) - 'A'.charCodeAt(0)
-
-function alpha2ToFlag(code: string): string {
-  return String.fromCodePoint(
-    ...[...code.toUpperCase()].map((letter) => REGIONAL_INDICATOR_OFFSET + letter.charCodeAt(0)),
-  );
-}
-
-/** The flag emoji for a country name as stored in `users.country`, or null if unknown/unset. */
-export function countryFlag(country: string | null | undefined): string | null {
+/** The ISO 3166-1 alpha-2 code for a country name as stored in `users.country`, lowercased for `flag-icons` CSS classes, or null if unknown/unset. */
+export function countryCode(country: string | null | undefined): string | null {
   if (!country) return null;
   const code = COUNTRY_CODES[country];
-  return code ? alpha2ToFlag(code) : null;
-}
-
-/** A driver's name with their country's flag preceding it, when known. */
-export function driverNameWithFlag(name: string, country: string | null | undefined): string {
-  const flag = countryFlag(country);
-  return flag ? `${flag} ${name}` : name;
+  return code ? code.toLowerCase() : null;
 }

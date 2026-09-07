@@ -11,6 +11,7 @@ import AddSessionsDialog, { SCOPE_LABEL, type SearchScope } from "./AddSessionsD
 import type { ComparedLap, LapTrace } from "@/lib/lapCharts";
 import { lapKey, lapLabel, lapsBySession, tabLabels } from "@/lib/comparison";
 import { loadSessionBundle, type LapRow, type SessionBundle } from "@/lib/sessionBundle";
+import { DriverName } from "@/components/CountryFlag";
 import {
   DEFAULT_SECTORS,
   MAX_SECTORS,
@@ -806,7 +807,9 @@ function Header({ bundle }: { bundle: SessionBundle }) {
   return (
     <div className="mb-6 flex flex-wrap items-center gap-4">
       <div className="rounded border border-hairline bg-surface px-3 py-2">
-        <div className="text-sm font-semibold text-gain">{bundle.driverName}</div>
+        <div className="text-sm font-semibold text-gain">
+          <DriverName name={bundle.driverName} country={bundle.driverCountry} />
+        </div>
         <div className="text-[11px] text-muted">
           {sessionDate(bundle.startDate)} {sessionTime(bundle.startTime)}
           {bundle.trackName ? ` · ${bundle.trackName}` : ""}

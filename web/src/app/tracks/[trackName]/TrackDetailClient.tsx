@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { ENGINE_CATEGORIES, engineColor } from "@/lib/engine";
 import { lapTime } from "@/lib/format";
-import { driverNameWithFlag } from "@/lib/flags";
+import { DriverName } from "@/components/CountryFlag";
 import {
   buildSectors,
   sectorTimes as computeSectorTimes,
@@ -250,7 +250,7 @@ export default function TrackDetailClient({
                       {row.rank}
                     </span>
                     <span className="flex-1 font-semibold">
-                      {driverNameWithFlag(row.driverName, row.driverCountry)}
+                      <DriverName name={row.driverName} country={row.driverCountry} />
                     </span>
                     {row.teamName && <span className="text-xs text-muted">{row.teamName}</span>}
                     {row.engineCategory && (
@@ -284,7 +284,7 @@ export default function TrackDetailClient({
                     </span>
                     <span className="flex-1 font-semibold">{row.teamName}</span>
                     <span className="text-xs text-muted">
-                      {driverNameWithFlag(row.fastestDriverName, row.fastestDriverCountry)}
+                      <DriverName name={row.fastestDriverName} country={row.fastestDriverCountry} />
                     </span>
                     <span className="font-mono text-xs font-bold">{lapTime(row.bestLapS)}</span>
                   </div>

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { driverNameWithFlag } from "@/lib/flags";
+import { DriverName } from "@/components/CountryFlag";
 
 export type AdminUserRow = {
   id: number;
@@ -120,7 +120,11 @@ export default function AdminUsers({
               >
                 <span className="min-w-0">
                   <span className="block truncate text-sm">
-                    {user.display_name ? driverNameWithFlag(user.display_name, user.country) : "(no name)"}
+                    {user.display_name ? (
+                      <DriverName name={user.display_name} country={user.country} />
+                    ) : (
+                      "(no name)"
+                    )}
                     {user.is_admin && (
                       <span className="ml-2 rounded bg-accent/20 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-accent">
                         admin

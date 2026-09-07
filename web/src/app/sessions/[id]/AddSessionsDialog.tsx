@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { sessionDate, sessionTime } from "@/lib/format";
 import { engineColor } from "@/lib/engine";
-import { driverNameWithFlag } from "@/lib/flags";
+import { DriverName } from "@/components/CountryFlag";
 
 /**
  * Which drivers a search covers.
@@ -26,6 +26,7 @@ export const SCOPE_LABEL: Record<SearchScope, string> = {
 type Candidate = {
   id: number;
   driverName: string;
+  driverCountry: string | null;
   startDate: string | null;
   startTime: string | null;
   sessionType: string | null;
@@ -212,10 +213,10 @@ export default function AddSessionsDialog({
 
       const rows = filtered.map((row) => ({
         id: row.id,
-        driverName: driverNameWithFlag(
-          row.driver_profiles?.display_name ?? "Unknown driver",
-          row.driver_profile_id ? (countryByProfile.get(row.driver_profile_id) ?? null) : null,
-        ),
+        driverName: row.driver_profiles?.display_name ?? "Unknown driver",
+        driverCountry: row.driver_profile_id
+          ? (countryByProfile.get(row.driver_profile_id) ?? null)
+          : null,
         startDate: row.start_date,
         startTime: row.start_time,
         sessionType: row.session_type,
@@ -342,7 +343,9 @@ export default function AddSessionsDialog({
                       className="h-3.5 w-3.5 accent-accent"
                     />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate font-semibold">{row.driverName}</span>
+                      <span className="block truncate font-semibold">
+                        <DriverName name={row.driverName} country={row.driverCountry} />
+                      </span>
                       <span className="block truncate text-[11px] text-muted">
                         {sessionDate(row.startDate)} {sessionTime(row.startTime)}
                         {row.sessionType ? ` · ${row.sessionType}` : ""}

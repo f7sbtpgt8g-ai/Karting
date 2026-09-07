@@ -4,7 +4,6 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { TEAM_ROLE_LABELS, type TeamRole } from "@/lib/teams";
-import { driverNameWithFlag } from "@/lib/flags";
 
 export type OrphanedTeamRow = {
   id: number;
@@ -126,7 +125,7 @@ export default function OrphanedTeams({ teams }: { teams: OrphanedTeamRow[] }) {
                   <option value="">Choose a new manager…</option>
                   {team.members.map((m) => (
                     <option key={m.membership_id} value={m.membership_id}>
-                      {driverNameWithFlag(m.display_name, m.country)} ({TEAM_ROLE_LABELS[m.role]})
+                      {m.display_name} ({TEAM_ROLE_LABELS[m.role]})
                     </option>
                   ))}
                 </select>

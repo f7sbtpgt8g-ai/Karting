@@ -14,7 +14,6 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { driverNameWithFlag } from "./flags";
 import type { Segment } from "./sectors";
 import type { TracePoint } from "./trackMap";
 
@@ -32,6 +31,11 @@ export type LapRow = {
 export type SessionBundle = {
   sessionId: number;
   driverName: string;
+  /** Plain ISO name, not baked into `driverName` -- Plotly hover/legend text
+   *  and native `<select>` options can only render plain text, so the flag
+   *  is composed onto `driverName` only at DOM render time, via
+   *  `<DriverName>` (components/CountryFlag.tsx). */
+  driverCountry: string | null;
   trackName: string | null;
   startDate: string | null;
   startTime: string | null;
@@ -143,10 +147,8 @@ export function buildBundle({
 
   return {
     sessionId: session.id,
-    driverName: driverNameWithFlag(
-      session.driver_profiles?.display_name ?? session.track_name ?? "Session",
-      driverCountry ?? null,
-    ),
+    driverName: session.driver_profiles?.display_name ?? session.track_name ?? "Session",
+    driverCountry: driverCountry ?? null,
     trackName: session.track_name,
     startDate: session.start_date,
     startTime: session.start_time,

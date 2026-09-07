@@ -5,7 +5,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import { ENGINE_CATEGORIES, engineColor } from "@/lib/engine";
 import { lapTime, sessionDate } from "@/lib/format";
-import { driverNameWithFlag } from "@/lib/flags";
+import { DriverName } from "@/components/CountryFlag";
 import type { TrackSummaryRow } from "@/lib/tracks";
 
 /**
@@ -170,9 +170,11 @@ export default function TracksClient({ tracks }: { tracks: TrackSummaryRow[] }) 
                 <span className="text-xs text-muted">{row.sessionCount}</span>
                 <span className="font-mono text-xs font-bold">{lapTime(row.bestLapS)}</span>
                 <span className="flex items-center gap-1.5 text-xs text-muted">
-                  {row.bestLapDriverName
-                    ? driverNameWithFlag(row.bestLapDriverName, row.bestLapDriverCountry)
-                    : "--"}
+                  {row.bestLapDriverName ? (
+                    <DriverName name={row.bestLapDriverName} country={row.bestLapDriverCountry} />
+                  ) : (
+                    "--"
+                  )}
                   {row.bestLapEngineCategory && (
                     <span
                       className="rounded bg-selected px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-ink2"

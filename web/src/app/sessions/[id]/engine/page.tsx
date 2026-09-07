@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { createClient, getAppUser } from "@/lib/supabase/server";
 import AppHeader from "@/components/AppHeader";
-import { driverNameWithFlag } from "@/lib/flags";
 import EngineAnalysis, { type EngineLapRow } from "./EngineAnalysis";
 
 export const dynamic = "force-dynamic";
@@ -115,10 +114,8 @@ export default async function EnginePage({ params }: { params: { id: string } })
       <AppHeader email={appUser?.email} current="/" isAdmin={appUser?.is_admin} />
       <EngineAnalysis
         sessionId={sessionId}
-        driverName={driverNameWithFlag(
-          session.driver_profiles?.display_name ?? "Session",
-          driverCountry as string | null,
-        )}
+        driverName={session.driver_profiles?.display_name ?? "Session"}
+        driverCountry={driverCountry as string | null}
         trackName={session.track_name}
         startDate={session.start_date}
         startTime={session.start_time}

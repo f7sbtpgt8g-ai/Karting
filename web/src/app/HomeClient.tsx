@@ -7,7 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 import { CONDITION_COLOR, CONDITIONS } from "@/lib/conditions";
 import { ENGINE_CATEGORIES, engineColor } from "@/lib/engine";
 import { lapTime, parseSessionDate, sessionDate, sessionTime } from "@/lib/format";
-import { driverNameWithFlag } from "@/lib/flags";
+import { DriverName } from "@/components/CountryFlag";
 import { bulkOutcome } from "@/lib/writes";
 
 export type SessionRow = {
@@ -571,7 +571,7 @@ export default function HomeClient({
                   <div className="mt-3 flex items-baseline gap-3 border-b border-hairline pb-1">
                     <span className="text-sm font-bold">
                       {isMine ? "👤 " : "🏁 "}
-                      {driverNameWithFlag(driver.driverName, driver.driverCountry)}
+                      <DriverName name={driver.driverName} country={driver.driverCountry} />
                       {isMine && " (you)"}
                     </span>
                     <span className="text-[11px] text-muted">

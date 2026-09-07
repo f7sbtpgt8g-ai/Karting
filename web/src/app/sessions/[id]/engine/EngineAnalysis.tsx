@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import Link from "next/link";
 import { sessionDate, sessionTime } from "@/lib/format";
 import { POWERZONE_RPM, hasPowerzone } from "@/lib/engine";
+import { DriverName } from "@/components/CountryFlag";
 
 export type EngineLapRow = {
   lapNumber: number;
@@ -33,6 +34,7 @@ const num = (v: number | null, digits = 0) =>
 export default function EngineAnalysis({
   sessionId,
   driverName,
+  driverCountry,
   trackName,
   startDate,
   startTime,
@@ -41,6 +43,7 @@ export default function EngineAnalysis({
 }: {
   sessionId: number;
   driverName: string;
+  driverCountry: string | null;
   trackName: string | null;
   startDate: string | null;
   startTime: string | null;
@@ -103,7 +106,9 @@ export default function EngineAnalysis({
     <div>
       <div className="mb-6 flex flex-wrap items-center gap-4">
         <div className="rounded border border-hairline bg-surface px-3 py-2">
-          <div className="text-sm font-semibold text-gain">{driverName}</div>
+          <div className="text-sm font-semibold text-gain">
+            <DriverName name={driverName} country={driverCountry} />
+          </div>
           <div className="text-[11px] text-muted">
             {sessionDate(startDate)} {sessionTime(startTime)}
             {trackName ? ` · ${trackName}` : ""}

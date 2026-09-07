@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { TEAM_ROLE_LABELS, canActOnMember, compareTeamRole, type TeamRole, type TeamMembershipStatus } from "@/lib/teams";
-import { driverNameWithFlag } from "@/lib/flags";
+import { DriverName } from "@/components/CountryFlag";
 
 export type RosterRow = {
   id: number;
@@ -280,7 +280,9 @@ export default function TeamsClient({
           <div className="divide-y divide-hairline rounded border border-hairline bg-surface">
             {pendingRequests.map((req) => (
               <div key={req.id} className="flex items-center justify-between px-4 py-3">
-                <span className="text-sm">{driverNameWithFlag(req.displayName, req.country)}</span>
+                <span className="text-sm">
+                  <DriverName name={req.displayName} country={req.country} />
+                </span>
                 <div className="flex gap-2">
                   <button
                     type="button"
@@ -316,7 +318,7 @@ export default function TeamsClient({
               <div key={member.id} className="px-4 py-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm">
-                    {driverNameWithFlag(member.displayName, member.country)}{" "}
+                    <DriverName name={member.displayName} country={member.country} />{" "}
                     {isSelf && <span className="text-xs text-muted">(you)</span>}
                   </span>
                   <span className="text-xs text-muted">{TEAM_ROLE_LABELS[member.role]}</span>
