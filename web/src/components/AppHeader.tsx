@@ -22,6 +22,7 @@ export default function AppHeader({
   const links = [
     { href: "/", label: "Home" },
     { href: "/tracks", label: "Tracks" },
+    { href: "/rating", label: "Rating" },
     { href: "/upload", label: "Upload" },
     { href: "/teams", label: "Teams" },
     { href: "/settings", label: "Settings" },

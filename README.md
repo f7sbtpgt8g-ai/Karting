@@ -1016,6 +1016,68 @@ it when nothing is uploading.
 on the worker service, which already holds the database URL and the
 service-role key.
 
+### Driver Rating & activity streaks
+
+`telemetry/rating/` -- an iRating-style competitive number kept strictly
+separate from a purely-motivational streak/activity layer:
+
+- **Validity gate** (`validity.py`): every lap becomes `verified`,
+  `flagged` (implausible time, possible track cut against a consensus GPS
+  line, or a speed drop with no recorded braking -- held for review, never
+  silently trusted or dropped), or `excluded` (reuses the existing
+  in/out-lap and statistical-outlier detection, plus a driver's own
+  exclusion). Only `verified` laps count toward anything below.
+- **Field-relative pace scoring** (`elo.py`): a session is scored against
+  the *other* drivers who drove the same track/date/conditions/class that
+  day (a "cohort"), not an absolute reference time -- every pairing in the
+  cohort is a virtual head-to-head match, Elo's expected-score formula says
+  who "should" have won it given current ratings, and mu moves by the
+  actual-vs-expected gap, averaged across the cohort. A day with no
+  comparable field falls back to a nightly-refreshed historical reference
+  bucket (median of the top few verified sessions in that track+class+
+  conditions bucket) treated as a single virtual opponent. Every
+  contributing session is recorded in `driver_rating_history`, tagged
+  `field` or `reference`, for the "why did my rating move" breakdown on
+  Home.
+- **Confidence (sigma)**: shrinks with every contributing verified session
+  (extra sessions in the same week still count, just at a reduced weight --
+  diminishing returns, not a route to inflating confidence through volume
+  alone), and grows purely as a function of time since a driver's last
+  verified session once a configurable grace window has passed (karting is
+  seasonal; a naive continuous decay would tank every driver's number over
+  the same off-season months). The displayed rating is the conservative
+  `mu - k*sigma`, computed at request time in `web/src/lib/rating.ts` --
+  nothing writes a "current" sigma to the database, since it would only
+  ever be advancing a clock.
+- **Weekly streaks** (`streaks.py`): a Monday-start week "counts" with at
+  least one verified session; a single missed week consumes a banked freeze
+  and survives, two consecutive misses always breaks it. Architecturally
+  separate from mu/sigma -- the only coupling is the reduced same-week
+  sigma-shrink weight above.
+
+Every threshold (cohort minimum size, Elo K-factor, sigma shrink rate,
+implausible-lap floor, track-cut tolerance, streak freeze rules, decay
+grace window) lives in `telemetry/rating/config.py` (batch-side) or
+`web/src/lib/rating.ts` (display-side decay), not hard-coded -- these are
+reasoned starting points meant to be tuned once there's real multi-driver
+data to watch, not a guess to lock in.
+
+```bash
+python -m scripts.compute_ratings                # run once
+python -m scripts.compute_ratings --recheck-all   # also re-run Part 1 on every lap
+python -m scripts.compute_ratings --loop          # poll forever (deploy like the worker)
+```
+
+Deliberately its own batch job, never called from the upload path --
+cohort-based updates need other drivers' sessions to already exist, and a
+single new fast lap shouldn't visibly ripple through everyone's numbers in
+real time. `driver_ratings` (leaderboard: `/rating`) and the two
+`track_reference_lines`/`track_pace_reference` tables are readable by any
+authenticated driver; `driver_rating_history`/`driver_weekly_activity`/
+`driver_streaks` are a driver's own only (plus admin) -- none of the six
+tables has a client write policy at all, since only this script's
+service-role connection ever writes them.
+
 ### Who a signed-in user *is*
 
 Supabase Auth identifies people by UUID; this schema keys everything off an
@@ -1120,3 +1182,9 @@ deduplication.
   redeploy/reboot on most container hosts **unless the Postgres/Supabase
   backend is configured** (the production setup) -- see "The
   Postgres/Supabase-backed data layer" above.
+- `scripts/compute_ratings.py` has no scheduled runner wired up yet --
+  nothing currently invokes it periodically in production, so Driver
+  Rating stays all-zero/unrated until it's run manually or given a cron
+  (`--loop`, or an external scheduler calling it once). Migration `0015`
+  itself also still needs applying to the real Supabase project, same as
+  every migration noted above it in this list.

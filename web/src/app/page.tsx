@@ -3,6 +3,9 @@ import { createClient, resolveAppUser } from "@/lib/supabase/server";
 import AccountNotLinked from "@/components/AccountNotLinked";
 import AppHeader from "@/components/AppHeader";
 import HomeClient, { type SessionRow } from "./HomeClient";
+import RatingCard from "./RatingCard";
+import ActivityCard from "./ActivityCard";
+import type { DriverRatingRow, DriverStreakRow, RatingHistoryRow, WeeklyActivityRow } from "@/lib/rating";
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +33,79 @@ export default async function HomePage() {
     .select("id, display_name")
     .eq("user_id", appUser.id)
     .maybeSingle();
+
+  // Driver Rating + Activity: both RLS-scoped to the caller's own rows
+  // already (0015), so this is a plain own-profile read, not a new RPC.
+  const [{ data: ratingRow }, { data: historyRows }, { data: streakRow }, { data: weeklyRows }] = myProfile
+    ? await Promise.all([
+        supabase
+          .from("driver_ratings")
+          .select("driver_profile_id, mu, sigma_at_last_update, last_verified_session_at, sessions_rated_count")
+          .eq("driver_profile_id", myProfile.id)
+          .maybeSingle(),
+        supabase
+          .from("driver_rating_history")
+          .select(
+            "id, session_db_id, computed_at, mechanism, cohort_track, cohort_date, cohort_conditions, cohort_class, cohort_size, mu_before, mu_after, sigma_before, sigma_after, note",
+          )
+          .eq("driver_profile_id", myProfile.id)
+          .order("computed_at", { ascending: false })
+          .limit(8),
+        supabase
+          .from("driver_streaks")
+          .select("current_streak, longest_streak, freezes_available, last_qualifying_week")
+          .eq("driver_profile_id", myProfile.id)
+          .maybeSingle(),
+        supabase
+          .from("driver_weekly_activity")
+          .select("week_start, verified_session_count, has_midweek_bonus")
+          .eq("driver_profile_id", myProfile.id)
+          .order("week_start", { ascending: false })
+          .limit(6),
+      ])
+    : [{ data: null }, { data: [] }, { data: null }, { data: [] }];
+
+  const rating: DriverRatingRow | null = ratingRow
+    ? {
+        driverProfileId: ratingRow.driver_profile_id,
+        mu: ratingRow.mu,
+        sigmaAtLastUpdate: ratingRow.sigma_at_last_update,
+        lastVerifiedSessionAt: ratingRow.last_verified_session_at,
+        sessionsRatedCount: ratingRow.sessions_rated_count,
+      }
+    : null;
+
+  const history: RatingHistoryRow[] = (historyRows ?? []).map((h) => ({
+    id: h.id,
+    sessionDbId: h.session_db_id,
+    computedAt: h.computed_at,
+    mechanism: h.mechanism,
+    cohortTrack: h.cohort_track,
+    cohortDate: h.cohort_date,
+    cohortConditions: h.cohort_conditions,
+    cohortClass: h.cohort_class,
+    cohortSize: h.cohort_size,
+    muBefore: h.mu_before,
+    muAfter: h.mu_after,
+    sigmaBefore: h.sigma_before,
+    sigmaAfter: h.sigma_after,
+    note: h.note,
+  }));
+
+  const streak: DriverStreakRow | null = streakRow
+    ? {
+        currentStreak: streakRow.current_streak,
+        longestStreak: streakRow.longest_streak,
+        freezesAvailable: streakRow.freezes_available,
+        lastQualifyingWeek: streakRow.last_qualifying_week,
+      }
+    : null;
+
+  const weeklyActivity: WeeklyActivityRow[] = (weeklyRows ?? []).map((w) => ({
+    weekStart: w.week_start,
+    verifiedSessionCount: w.verified_session_count,
+    hasMidweekBonus: w.has_midweek_bonus,
+  }));
 
   let scopeIds: number[] = myProfile ? [myProfile.id] : [];
   let elevatedRole: string | null = null;
@@ -129,6 +205,17 @@ export default async function HomePage() {
   return (
     <main className="mx-auto max-w-6xl px-6 py-8">
       <AppHeader email={appUser.email} current="/" isAdmin={appUser?.is_admin} />
+
+      {myProfile && (
+        <div className="mb-6 grid gap-4 sm:grid-cols-2">
+          <RatingCard rating={rating} history={history} />
+          <ActivityCard
+            streak={streak}
+            weeklyActivity={weeklyActivity}
+            lastVerifiedSessionAt={rating?.lastVerifiedSessionAt ?? null}
+          />
+        </div>
+      )}
 
       {sessions.length === 0 ? (
         <div className="rounded border border-hairline bg-surface p-8 text-center">

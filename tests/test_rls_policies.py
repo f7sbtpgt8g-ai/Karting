@@ -1267,3 +1267,102 @@ def test_anonymous_gets_nothing_from_track_rpcs(world):
     ):
         rows, _ = world["anon"].try_query(sql)
         assert rows == [], f"anonymous got rows back from: {sql}"
+
+
+# --------------------------------------------------------- driver rating (0015)
+
+
+@pytest.fixture(scope="module")
+def rating_rows(db, world):
+    """One rating/history/streak/activity row each for Alice and Bob --
+    written directly, the way scripts/compute_ratings.py's service-role
+    connection would, never through a client grant (there isn't one)."""
+    with db.cursor() as cur:
+        for who in ("alice", "bob"):
+            profile_id = world[f"{who}_profile"]
+            cur.execute(
+                "INSERT INTO driver_ratings (driver_profile_id, mu, sigma_at_last_update, sessions_rated_count) "
+                "VALUES (%s, 1550, 300, 3) ON CONFLICT (driver_profile_id) DO NOTHING",
+                (profile_id,),
+            )
+            cur.execute(
+                "INSERT INTO driver_rating_history "
+                "(driver_profile_id, session_db_id, mechanism, cohort_size, mu_before, mu_after, sigma_before, sigma_after) "
+                "VALUES (%s, %s, 'field', 3, 1500, 1520, 350, 315)",
+                (profile_id, world["session_shared"]),
+            )
+            cur.execute(
+                "INSERT INTO driver_weekly_activity (driver_profile_id, week_start, verified_session_count) "
+                "VALUES (%s, '2026-01-05', 2) ON CONFLICT (driver_profile_id, week_start) DO NOTHING",
+                (profile_id,),
+            )
+            cur.execute(
+                "INSERT INTO driver_streaks (driver_profile_id, current_streak, longest_streak, freezes_available) "
+                "VALUES (%s, 3, 5, 1) ON CONFLICT (driver_profile_id) DO NOTHING",
+                (profile_id,),
+            )
+        cur.execute(
+            "INSERT INTO track_reference_lines (track_name, ref_lat, ref_lon, ref_tolerance_m, built_from_lap_count) "
+            "VALUES ('Ring', '{45.0,45.001}', '{9.0,9.001}', '{3.0,3.0}', 10) ON CONFLICT (track_name) DO NOTHING"
+        )
+        cur.execute(
+            "INSERT INTO track_pace_reference (track_name, engine_category, track_condition, reference_lap_s, implied_rating, sample_session_count) "
+            "VALUES ('Ring', 'Senior', 'Dry', 30.0, 1500, 5) ON CONFLICT (track_name, engine_category, track_condition) DO NOTHING"
+        )
+    db.commit()
+    return world
+
+
+@pytest.mark.parametrize("table", ["driver_rating_history", "driver_weekly_activity", "driver_streaks"])
+def test_a_driver_sees_only_their_own_rating_history_and_streak_rows(rating_rows, table):
+    world = rating_rows
+    owner_rows = world["alice"].query(f"SELECT driver_profile_id FROM {table}")
+    assert {r[0] for r in owner_rows} == {world["alice_profile"]}, f"{table}: owner should see only their own rows"
+
+    outsider_rows = world["carol"].query(f"SELECT driver_profile_id FROM {table}")
+    assert outsider_rows == [], f"{table} leaked another driver's row to an outsider"
+
+    # anon has no grant on these tables at all (REVOKE ALL FROM anon in
+    # 0015) -- a hard permission-denied, not merely RLS filtering to zero
+    # rows, both count as "cannot read this" per try_query's contract.
+    anon_rows, anon_error = world["anon"].try_query(f"SELECT driver_profile_id FROM {table}")
+    assert anon_rows == [] and (anon_error is None or "permission denied" in anon_error.lower())
+
+
+@pytest.mark.parametrize("table", ["driver_ratings", "track_reference_lines", "track_pace_reference"])
+def test_rating_and_track_reference_tables_are_readable_by_any_authenticated_driver(rating_rows, table):
+    """Unlike the per-driver tables above, these back the public leaderboard
+    and the explainability badges -- any authenticated driver reads them,
+    same shape as `teams_select`."""
+    world = rating_rows
+    outsider_rows = world["carol"].query(f"SELECT * FROM {table}")
+    assert outsider_rows != [], f"{table} should be readable by any authenticated driver"
+
+    anon_rows, anon_error = world["anon"].try_query(f"SELECT * FROM {table}")
+    assert anon_rows == [] and (anon_error is None or "permission denied" in anon_error.lower())
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        "driver_ratings",
+        "driver_rating_history",
+        "driver_weekly_activity",
+        "driver_streaks",
+        "track_reference_lines",
+        "track_pace_reference",
+    ],
+)
+def test_a_client_cannot_write_any_rating_table(rating_rows, table):
+    """Every one of these is written exclusively by scripts/compute_ratings.py
+    on the service-role connection -- there is no client-facing write policy
+    at all, not even onto a driver's own rating row."""
+    world = rating_rows
+    if table in ("track_reference_lines", "track_pace_reference"):
+        allowed, error = world["alice"].write(f"DELETE FROM {table}")
+    else:
+        allowed, error = world["alice"].write(
+            f"DELETE FROM {table} WHERE driver_profile_id = %s", (world["alice_profile"],)
+        )
+    assert not allowed, f"a client was able to write to {table}"
+    assert error and "permission denied" in error.lower(), f"expected a permission error on {table}, got: {error}"
