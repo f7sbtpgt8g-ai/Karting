@@ -62,6 +62,28 @@ type SortKey = "trackName" | "startDate" | "bestLapS";
  * empty rather than tracked separately. Unconfirmed shows in accent,
  * confirmed in green.
  */
+function compareByDate(a: SessionRow, b: SessionRow): number {
+  const at = parseSessionDate(a.startDate)?.getTime();
+  const bt = parseSessionDate(b.startDate)?.getTime();
+  if (at === undefined && bt === undefined) return 0;
+  if (at === undefined) return 1;
+  if (bt === undefined) return -1;
+  return at - bt;
+}
+
+function compareByTrack(a: SessionRow, b: SessionRow): number {
+  return (a.trackName ?? "").localeCompare(b.trackName ?? "");
+}
+
+function compareByTime(a: SessionRow, b: SessionRow): number {
+  // A session with no best lap sorts last either way -- it is missing
+  // data, not an infinitely slow lap.
+  if (a.bestLapS == null && b.bestLapS == null) return 0;
+  if (a.bestLapS == null) return 1;
+  if (b.bestLapS == null) return -1;
+  return a.bestLapS - b.bestLapS;
+}
+
 function displayType(raw: string | null): { label: string; confirmed: boolean } {
   if (raw && raw.trim()) return { label: raw, confirmed: true };
   return { label: SESSION_TYPES[0], confirmed: false };
@@ -153,23 +175,25 @@ export default function HomeClient({
 
     const direction = sortDesc ? -1 : 1;
     return [...matched].sort((a, b) => {
-      if (sortKey === "startDate") {
-        // Sorted on a parsed date, not the raw DD-MM-YYYY text, which
-        // would order 02-01-2026 before 15-12-2025.
-        const at = parseSessionDate(a.startDate)?.getTime();
-        const bt = parseSessionDate(b.startDate)?.getTime();
-        if (at === undefined) return 1;
-        if (bt === undefined) return -1;
-        return (at - bt) * direction;
-      }
-      if (sortKey === "bestLapS") {
-        // A session with no best lap sorts last either way -- it is
-        // missing data, not an infinitely slow lap.
-        if (a.bestLapS == null) return 1;
-        if (b.bestLapS == null) return -1;
-        return (a.bestLapS - b.bestLapS) * direction;
-      }
-      return (a.trackName ?? "").localeCompare(b.trackName ?? "") * direction;
+      const primary =
+        sortKey === "startDate"
+          ? compareByDate(a, b) * direction
+          : sortKey === "bestLapS"
+            ? compareByTime(a, b) * direction
+            : compareByTrack(a, b) * direction;
+      if (primary !== 0) return primary;
+
+      // Ties always cascade date -> track -> time, in that fixed order,
+      // regardless of which column is the active sort -- otherwise two
+      // rows tied on the clicked column (most commonly: several sessions
+      // on the same day, when sorting by date) fall back to whatever order
+      // they happened to arrive from the server, which is what made
+      // "sorted by time" look broken for a day with more than one session.
+      const byDate = compareByDate(a, b);
+      if (byDate !== 0) return byDate;
+      const byTrack = compareByTrack(a, b);
+      if (byTrack !== 0) return byTrack;
+      return compareByTime(a, b);
     });
   }, [rows, track, type, condition, from, to, sortKey, sortDesc]);
 
