@@ -9,6 +9,7 @@ import { ENGINE_CATEGORIES, engineColor } from "@/lib/engine";
 import { lapTime, parseSessionDate, sessionDate, sessionTime } from "@/lib/format";
 import { DriverName } from "@/components/CountryFlag";
 import { bulkOutcome } from "@/lib/writes";
+import { deriveDisplayedRating, type DriverRatingRow } from "@/lib/rating";
 
 export type SessionRow = {
   id: number;
@@ -113,16 +114,42 @@ function displayType(raw: string | null): { label: string; confirmed: boolean } 
   return { label: SESSION_TYPES[0], confirmed: false };
 }
 
+/**
+ * The Driver Rating number, compact enough to sit inline next to a
+ * driver's session/track counts -- same "displayed rating, not raw mu"
+ * rule and provisional badge as `RatingCard` and the leaderboard
+ * (`app/rating/page.tsx`), just smaller. Renders nothing for a driver with
+ * no rated session yet, same as `ratingsByProfile` simply not having an
+ * entry for them.
+ */
+function DriverRatingBadge({ rating }: { rating: DriverRatingRow | undefined }) {
+  if (!rating) return null;
+  const { displayedRating, provisional } = deriveDisplayedRating(rating);
+  return (
+    <span className="flex items-center gap-1 text-[11px]" title="Driver Rating">
+      <span className="text-muted">Rating</span>
+      <span className="font-mono font-bold text-ink">{Math.round(displayedRating)}</span>
+      {provisional && (
+        <span className="rounded bg-theoretical/20 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-theoretical">
+          Provisional
+        </span>
+      )}
+    </span>
+  );
+}
+
 export default function HomeClient({
   sessions,
   myProfileId,
   elevatedRole,
   onATeam,
+  ratingsByProfile,
 }: {
   sessions: SessionRow[];
   myProfileId: number | null;
   elevatedRole: string | null;
   onATeam: boolean;
+  ratingsByProfile: Record<number, DriverRatingRow>;
 }) {
   const router = useRouter();
   const [rows, setRows] = useState(sessions);
@@ -627,6 +654,7 @@ export default function HomeClient({
                       {driver.sessions} session{driver.sessions === 1 ? "" : "s"} ·{" "}
                       {driver.tracks} track(s)
                     </span>
+                    <DriverRatingBadge rating={ratingsByProfile[driver.profileId ?? -1]} />
                   </div>
 
                   {driver.days.map(([day, dayRows]) => {
