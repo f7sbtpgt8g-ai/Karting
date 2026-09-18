@@ -138,6 +138,41 @@ export default async function HomePage() {
     }
   }
 
+  // Driver Rating, per driver in scope -- distinct from the `ratingRow`
+  // fetch above, which is the signed-in user's own row for the RatingCard.
+  // `driver_ratings` is read-open to any authenticated user (0015), so a
+  // manager/admin's wider `scopeIds` (the whole team roster) can be read in
+  // the same plain select rather than a per-driver RPC; a plain member's
+  // `scopeIds` is just their own id, so this ends up re-fetching the same
+  // row the RatingCard already has -- harmless, and it keeps HomeClient's
+  // per-driver header logic the same regardless of role.
+  type RawRating = {
+    driver_profile_id: number;
+    mu: number;
+    sigma_at_last_update: number;
+    last_verified_session_at: string | null;
+    sessions_rated_count: number;
+  };
+  const { data: ratingRows } = scopeIds.length
+    ? await supabase
+        .from("driver_ratings")
+        .select("driver_profile_id, mu, sigma_at_last_update, last_verified_session_at, sessions_rated_count")
+        .in("driver_profile_id", scopeIds)
+        .returns<RawRating[]>()
+    : { data: [] };
+  const ratingsByProfile: Record<number, DriverRatingRow> = Object.fromEntries(
+    (ratingRows ?? []).map((r) => [
+      r.driver_profile_id,
+      {
+        driverProfileId: r.driver_profile_id,
+        mu: r.mu,
+        sigmaAtLastUpdate: r.sigma_at_last_update,
+        lastVerifiedSessionAt: r.last_verified_session_at,
+        sessionsRatedCount: r.sessions_rated_count,
+      },
+    ]),
+  );
+
   // Shaped by hand rather than generated: this project has no
   // `supabase gen types` step yet, and without one the client infers a
   // parse-error type for any select carrying an embed.
@@ -236,6 +271,7 @@ export default async function HomePage() {
           myProfileId={myProfile?.id ?? null}
           elevatedRole={elevatedRole}
           onATeam={onATeam}
+          ratingsByProfile={ratingsByProfile}
         />
       )}
     </main>
