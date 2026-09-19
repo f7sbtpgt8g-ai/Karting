@@ -80,9 +80,8 @@ export default function LapAnalysis({
   // session this page was opened for (not whichever tab happens to be
   // active), since that is the private data being protected.
   const restrictedToMine = initial.visibility === "private";
-  const availableScopes = (["team", "community", "mine"] as SearchScope[]).filter(
-    (scope) => !restrictedToMine || scope === "mine",
-  );
+  const PRIVATE_SCOPE_TOOLTIP =
+    "Not available due to current session being flagged as private. Change privacy settings of the session on the Home Page";
 
   const labels = useMemo(() => tabLabels(bundles), [bundles]);
   const nameFor = useCallback(
@@ -437,22 +436,21 @@ export default function LapAnalysis({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {restrictedToMine && (
-            <span className="text-xs text-muted" title="Uncheck Private on Home, or set Sharing to Team or Shared, to compare against others.">
-              Private session &mdash; only your own other sessions can be added.
-            </span>
-          )}
-          {availableScopes.map((scope) => (
-            <button
-              key={scope}
-              type="button"
-              disabled={adding}
-              onClick={() => setDialog(scope)}
-              className="rounded border border-hairline bg-raised px-3 py-1.5 text-xs font-semibold text-ink2 hover:border-accent hover:text-ink disabled:opacity-40"
-            >
-              {SCOPE_LABEL[scope]}
-            </button>
-          ))}
+          {(["team", "community", "mine"] as SearchScope[]).map((scope) => {
+            const scopeDisabled = restrictedToMine && scope !== "mine";
+            return (
+              <button
+                key={scope}
+                type="button"
+                disabled={adding || scopeDisabled}
+                title={scopeDisabled ? PRIVATE_SCOPE_TOOLTIP : undefined}
+                onClick={() => setDialog(scope)}
+                className="rounded border border-hairline bg-raised px-3 py-1.5 text-xs font-semibold text-ink2 hover:border-accent hover:text-ink disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-hairline disabled:hover:text-ink2"
+              >
+                {SCOPE_LABEL[scope]}
+              </button>
+            );
+          })}
           <label className="ml-2 flex items-center gap-2">
             <span className="label">Sectors</span>
             <select
