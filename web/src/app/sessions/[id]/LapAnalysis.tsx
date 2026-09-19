@@ -10,7 +10,7 @@ import LapCharts from "./LapCharts";
 import AddSessionsDialog, { SCOPE_LABEL, type SearchScope } from "./AddSessionsDialog";
 import type { ComparedLap, LapTrace } from "@/lib/lapCharts";
 import { lapKey, lapLabel, lapsBySession, tabLabels } from "@/lib/comparison";
-import { loadSessionBundle, type LapRow, type SessionBundle } from "@/lib/sessionBundle";
+import { loadSessionBundle, sessionIsVisible, type LapRow, type SessionBundle } from "@/lib/sessionBundle";
 import { DriverName } from "@/components/CountryFlag";
 import {
   DEFAULT_SECTORS,
@@ -186,19 +186,39 @@ export default function LapAnalysis({
     setError(null);
     const supabase = createClient();
     const loaded: SessionBundle[] = [];
-    const skipped: number[] = [];
+    const notVisible: number[] = [];
+    const noAnalysis: number[] = [];
     for (const id of ids) {
       const bundle = await loadSessionBundle(supabase, id, appUserId);
-      if (bundle) loaded.push(bundle);
-      else skipped.push(id);
+      if (bundle) {
+        loaded.push(bundle);
+        continue;
+      }
+      // loadSessionBundle returns null for two different reasons -- RLS
+      // denied the row outright (most commonly: it's private), or the
+      // row is visible but has no stored analysis yet. Worth telling
+      // apart: "private" has an actual fix, and it isn't the one the
+      // other message describes.
+      if (await sessionIsVisible(supabase, id)) noAnalysis.push(id);
+      else notVisible.push(id);
     }
     setAdding(false);
-    if (skipped.length > 0) {
-      setError(
-        `${skipped.length} session${skipped.length === 1 ? "" : "s"} could not be opened: ` +
+    const messages: string[] = [];
+    if (notVisible.length > 0) {
+      messages.push(
+        `${notVisible.length} session${notVisible.length === 1 ? "" : "s"} could not be added: ` +
+          "a private session can't be compared against team or community. Its driver needs to open " +
+          'it from Home and either uncheck "Private", or click Edit and set Sharing to Team or ' +
+          "Shared -- then it will show up here.",
+      );
+    }
+    if (noAnalysis.length > 0) {
+      messages.push(
+        `${noAnalysis.length} session${noAnalysis.length === 1 ? "" : "s"} could not be opened: ` +
           "no stored analysis yet, so there are no lap traces to compare.",
       );
     }
+    if (messages.length > 0) setError(messages.join(" "));
     if (loaded.length === 0) return;
     setBundles((current) => [
       ...current,

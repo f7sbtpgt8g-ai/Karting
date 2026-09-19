@@ -255,3 +255,21 @@ export async function loadSessionBundle(
     appUserId,
   });
 }
+
+/**
+ * Whether `sessionId` is visible to the caller at all, independent of
+ * whether it has stored analysis yet.
+ *
+ * `loadSessionBundle` returns `null` for two very different reasons --
+ * `sessions_select` denied the row outright (most commonly: it's private,
+ * or team/shared but the caller isn't a teammate), or the row is visible
+ * but has no `session_analysis` yet -- and collapses them into the same
+ * result, which is right for "nothing to show" but wrong for explaining
+ * *why* to someone who just tried to add it for comparison. A plain `id`
+ * select tells the two apart the same way any other column on this table
+ * would: RLS either returns the row or it doesn't.
+ */
+export async function sessionIsVisible(supabase: SupabaseClient, sessionId: number): Promise<boolean> {
+  const { data } = await supabase.from("sessions").select("id").eq("id", sessionId).maybeSingle();
+  return data !== null;
+}

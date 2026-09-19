@@ -743,6 +743,126 @@ def test_cannot_reassign_an_already_claimed_profiles_sessions(world, db):
         assert not ok, "a claimed profile's sessions were reassigned as if it were a placeholder"
 
 
+# --------------------------- team-manager placeholder visibility (0018) ---
+#
+# Alice manages "Reds"; Bob is a plain active member of it (world's own
+# setup). A placeholder Bob creates has no team_memberships row of its own
+# -- it isn't a driver on anyone's roster -- so these test that visibility
+# and reassignment run through the *creator's* team membership instead.
+
+
+def test_team_manager_can_see_a_teammates_placeholder(world, db):
+    with scenario(db) as cur:
+        _become(cur, world["bob"])
+        _, _, rows = _try(
+            cur,
+            "INSERT INTO driver_profiles (display_name, claim_status, created_by_user_id, created_at) "
+            "VALUES ('Bob''s Placeholder', 'unclaimed', %s, now()) RETURNING id",
+            (world["bob_user"],),
+        )
+        placeholder_id = rows[0][0]
+
+        _become(cur, world["alice"])  # Reds' manager, not the creator
+        ok, _, rows = _try(cur, "SELECT id FROM driver_profiles WHERE id=%s", (placeholder_id,))
+        assert ok and rows == [(placeholder_id,)], "the team manager could not see a teammate's placeholder"
+
+        _become(cur, world["carol"])  # not on Reds at all
+        ok, _, rows = _try(cur, "SELECT id FROM driver_profiles WHERE id=%s", (placeholder_id,))
+        assert ok and rows == [], "an outsider could see another team's placeholder"
+
+
+def test_team_manager_can_see_sessions_on_a_teammates_placeholder(world, db):
+    with scenario(db) as cur:
+        cur.execute(
+            "INSERT INTO driver_profiles (display_name, claim_status, created_by_user_id, created_at) "
+            "VALUES ('Bob''s Placeholder', 'unclaimed', %s, now()) RETURNING id",
+            (world["bob_user"],),
+        )
+        placeholder_id = cur.fetchone()[0]
+        session_id = _insert_session(
+            cur, driver_profile_id=placeholder_id, uploaded_by_user_id=world["bob_user"],
+            track_name="Ring", best_lap_s=32.0,
+        )
+
+        _become(cur, world["alice"])
+        ok, _, rows = _try(cur, "SELECT id FROM sessions WHERE id=%s", (session_id,))
+        assert ok and rows == [(session_id,)], "the manager could not see a session on a teammate's placeholder"
+
+        _become(cur, world["carol"])
+        ok, _, rows = _try(cur, "SELECT id FROM sessions WHERE id=%s", (session_id,))
+        assert ok and rows == [], "an outsider could see a session on another team's placeholder"
+
+
+def test_team_manager_can_reassign_a_teammates_placeholder(world, db):
+    with scenario(db) as cur:
+        cur.execute(
+            "INSERT INTO driver_profiles (display_name, claim_status, created_by_user_id, created_at) "
+            "VALUES ('Bob''s Placeholder', 'unclaimed', %s, now()) RETURNING id",
+            (world["bob_user"],),
+        )
+        placeholder_id = cur.fetchone()[0]
+        session_id = _insert_session(
+            cur, driver_profile_id=placeholder_id, uploaded_by_user_id=world["bob_user"],
+            track_name="Ring", best_lap_s=32.0,
+        )
+
+        _become(cur, world["alice"])  # the manager, not the creator
+        ok, err, rows = _try(
+            cur, "SELECT reassign_temp_driver_sessions(%s, %s)", (placeholder_id, world["dana_profile"]),
+        )
+        assert ok, f"the team manager could not reassign a teammate's placeholder: {err}"
+        assert rows == [(1,)]
+
+        ok, _, rows = _try(cur, "SELECT driver_profile_id FROM sessions WHERE id=%s", (session_id,))
+        assert ok and rows == [(world["dana_profile"],)]
+
+
+def test_plain_teammate_cannot_reassign_a_teammates_placeholder(world, db):
+    """Dana joins Reds as a plain member -- same team as the placeholder's
+    creator, but not a manager/admin, so still not authorised."""
+    with scenario(db) as cur:
+        cur.execute(
+            "INSERT INTO team_memberships (team_id, driver_profile_id, role, status, requested_at, decided_at) "
+            "VALUES (%s,%s,'member','active',now(),now())",
+            (world["team"], world["dana_profile"]),
+        )
+        cur.execute(
+            "INSERT INTO driver_profiles (display_name, claim_status, created_by_user_id, created_at) "
+            "VALUES ('Bob''s Placeholder', 'unclaimed', %s, now()) RETURNING id",
+            (world["bob_user"],),
+        )
+        placeholder_id = cur.fetchone()[0]
+
+        _become(cur, world["dana"])
+        ok, err, _ = _try(
+            cur, "SELECT reassign_temp_driver_sessions(%s, %s)", (placeholder_id, world["carol_profile"]),
+        )
+        assert not ok, "a plain teammate (not manager/admin) was allowed to reassign a placeholder"
+
+
+def test_manager_of_an_unrelated_team_cannot_see_or_reassign_a_placeholder(world, db):
+    """user_manages_team_of is scoped to the *same* team -- Alice manages
+    Reds, not whatever team (if any) the placeholder's creator is on."""
+    with scenario(db) as cur:
+        _become(cur, world["carol"])  # not on Reds
+        _, _, rows = _try(
+            cur,
+            "INSERT INTO driver_profiles (display_name, claim_status, created_by_user_id, created_at) "
+            "VALUES ('Carol''s Placeholder', 'unclaimed', %s, now()) RETURNING id",
+            (world["carol_user"],),
+        )
+        placeholder_id = rows[0][0]
+
+        _become(cur, world["alice"])  # manages Reds, which Carol is not on
+        ok, _, rows = _try(cur, "SELECT id FROM driver_profiles WHERE id=%s", (placeholder_id,))
+        assert ok and rows == [], "a manager saw a placeholder created by someone outside their team"
+
+        ok, err, _ = _try(
+            cur, "SELECT reassign_temp_driver_sessions(%s, %s)", (placeholder_id, world["dana_profile"]),
+        )
+        assert not ok, "a manager reassigned a placeholder created by someone outside their team"
+
+
 # ------------------------------------------------- the stored analysis (0005)
 #
 # Traces, sector times and session analysis are what Lap Analysis reads, and
