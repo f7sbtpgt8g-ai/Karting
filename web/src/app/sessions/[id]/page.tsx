@@ -15,6 +15,7 @@ type SessionRow = {
   start_time: string | null;
   track_condition: string | null;
   kart_class: string | null;
+  visibility: string | null;
   driver_profile_id: number | null;
   uploaded_by_user_id: number | null;
   driver_profiles: { display_name: string; user_id: number | null } | null;
