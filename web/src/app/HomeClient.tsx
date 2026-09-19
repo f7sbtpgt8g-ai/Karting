@@ -177,11 +177,17 @@ export default function HomeClient({
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
   // Which day groups are collapsed -- keyed `${profileId}:${day}` since the
-  // same date string recurs across drivers. Starts empty: every day opens
-  // expanded, and only the days a driver actively tucks away stay closed
-  // across a re-render (a fresh Set every render would reopen everything
-  // on each keystroke in the filters above).
-  const [collapsedDays, setCollapsedDays] = useState<Set<string>>(new Set());
+  // same date string recurs across drivers. Starts with every day this page
+  // was loaded with already collapsed (lazy initializer, so it runs once
+  // against the server's `sessions` prop rather than every render); a day a
+  // driver expands stays open across re-renders from then on, and a day
+  // that only shows up later (e.g. a fresh upload) opens expanded, same as
+  // before.
+  const [collapsedDays, setCollapsedDays] = useState<Set<string>>(() => {
+    const keys = new Set<string>();
+    for (const row of sessions) keys.add(`${row.driverProfileId}:${row.startDate ?? ""}`);
+    return keys;
+  });
   function toggleDayCollapsed(key: string) {
     setCollapsedDays((current) => {
       const next = new Set(current);
@@ -668,6 +674,15 @@ export default function HomeClient({
                         r.bestLapS != null && (fastest === null || r.bestLapS < fastest) ? r.bestLapS : fastest,
                       null,
                     );
+                    // Usually one track for the whole day -- a track day is
+                    // the unit this grouping exists for -- but a day can mix
+                    // more than one if sessions were synced from two venues,
+                    // so this only claims a single name when every row agrees.
+                    const dayTrackNames = Array.from(
+                      new Set(dayRows.map((r) => r.trackName).filter(Boolean) as string[]),
+                    );
+                    const dayTrackLabel =
+                      dayTrackNames.length === 1 ? dayTrackNames[0] : dayTrackNames.length > 1 ? "Multiple tracks" : null;
                     return (
                       <div key={day || "undated"}>
                         {/* Half a step in from the driver, half a step out
@@ -695,6 +710,9 @@ export default function HomeClient({
                           <span className="text-xs font-semibold text-ink2">
                             {day ? sessionDate(day) : "Date unknown"}
                           </span>
+                          {dayTrackLabel && (
+                            <span className="text-[11px] font-semibold text-ink2">{dayTrackLabel}</span>
+                          )}
                           <span className="text-[11px] text-muted">
                             {dayRows.length} session{dayRows.length === 1 ? "" : "s"}
                             {isCollapsed && fastestLapS != null && ` · fastest ${lapTime(fastestLapS)}`}
