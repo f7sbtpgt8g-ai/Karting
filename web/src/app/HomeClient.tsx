@@ -188,6 +188,21 @@ export default function HomeClient({
     for (const row of sessions) keys.add(`${row.driverProfileId}:${row.startDate ?? ""}`);
     return keys;
   });
+
+  // Which drivers are collapsed -- keyed by profile id, same pattern as
+  // `collapsedDays` one level up. Starts empty (every driver expanded): with
+  // several teammates on the roster, days already open collapsed by default,
+  // so this is for tucking away a whole driver you are not looking at right
+  // now rather than something the page needs to default shut itself.
+  const [collapsedDrivers, setCollapsedDrivers] = useState<Set<string>>(new Set());
+  function toggleDriverCollapsed(key: string) {
+    setCollapsedDrivers((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
   function toggleDayCollapsed(key: string) {
     setCollapsedDays((current) => {
       const next = new Set(current);
@@ -648,9 +663,20 @@ export default function HomeClient({
           ) : (
             grouped.map((driver) => {
               const isMine = driver.profileId === myProfileId;
+              const driverKey = String(driver.profileId);
+              const isDriverCollapsed = collapsedDrivers.has(driverKey);
               return (
-                <section key={String(driver.profileId)}>
+                <section key={driverKey}>
                   <div className="mt-3 flex items-baseline gap-3 border-b border-hairline pb-1">
+                    <button
+                      type="button"
+                      onClick={() => toggleDriverCollapsed(driverKey)}
+                      className="text-muted hover:text-ink"
+                      aria-expanded={!isDriverCollapsed}
+                      title={isDriverCollapsed ? "Expand this driver" : "Collapse this driver"}
+                    >
+                      {isDriverCollapsed ? "▸" : "▾"}
+                    </button>
                     <span className="text-sm font-bold">
                       {isMine ? "👤 " : "🏁 "}
                       <DriverName name={driver.driverName} country={driver.driverCountry} />
@@ -663,7 +689,7 @@ export default function HomeClient({
                     <DriverRatingBadge rating={ratingsByProfile[driver.profileId ?? -1]} />
                   </div>
 
-                  {driver.days.map(([day, dayRows]) => {
+                  {!isDriverCollapsed && driver.days.map(([day, dayRows]) => {
                     const selectable = isMine ? dayRows.map((r) => r.id) : [];
                     const allSelected =
                       selectable.length > 0 && selectable.every((id) => selected.has(id));
