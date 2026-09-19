@@ -4,6 +4,7 @@ import AccountNotLinked from "@/components/AccountNotLinked";
 import AppHeader from "@/components/AppHeader";
 import UploadForm from "./UploadForm";
 import UnassignedSessions, { type UnassignedSessionRow } from "./UnassignedSessions";
+import PlaceholderDrivers, { type PlaceholderProfile, type ClaimedProfile } from "./PlaceholderDrivers";
 
 export const dynamic = "force-dynamic";
 
@@ -21,41 +22,74 @@ export default async function UploadPage() {
 
   const supabase = await createClient();
 
-  const [{ data: profiles }, { data: batches }, { data: unassignedRows }, { data: assignableProfiles }] =
-    await Promise.all([
-      supabase
-        .from("driver_profiles")
-        .select("id, display_name")
-        .eq("user_id", appUser.id)
-        .order("display_name"),
-      supabase
-        .from("upload_batches")
-        .select("id, original_filename, status, error_message, sessions_created, created_at")
-        .order("created_at", { ascending: false })
-        .limit(10),
-      // Sessions from a "Decide after parsing" upload -- driver_profile_id
-      // is NULL, which `sessions_select` (0002) can only satisfy via its
-      // `uploaded_by_user_id = current_app_user_id()` branch, so this comes
-      // back scoped to the caller's own uploads without an explicit filter.
-      // Without a surface to find these again, a driver picking "decide
-      // after parsing" has no way back to them -- they're saved, but they
-      // never appear on Home (`driver_profile_id IN (...)` never matches
-      // NULL), and nothing else lists them either.
-      supabase
-        .from("sessions")
-        .select("id, track_name, session_type, start_date, start_time, n_laps, best_lap_s")
-        .is("driver_profile_id", null)
-        .eq("uploaded_by_user_id", appUser.id)
-        .order("start_date", { ascending: false })
-        .returns<UnassignedSessionRow[]>(),
-      // Every driver this account is allowed to assign a session to:
-      // `driver_profiles_select` (0001) already resolves this to every
-      // *claimed* profile on the platform (a teammate included) plus this
-      // account's own profile and anything it created (e.g. an unclaimed
-      // profile added from the sync tool) -- no extra filter needed here,
-      // RLS is doing the actual narrowing.
-      supabase.from("driver_profiles").select("id, display_name").order("display_name"),
-    ]);
+  const [
+    { data: profiles },
+    { data: batches },
+    { data: unassignedRows },
+    { data: assignableProfiles },
+    { data: placeholderProfiles },
+  ] = await Promise.all([
+    supabase
+      .from("driver_profiles")
+      .select("id, display_name")
+      .eq("user_id", appUser.id)
+      .order("display_name"),
+    supabase
+      .from("upload_batches")
+      .select("id, original_filename, status, error_message, sessions_created, created_at")
+      .order("created_at", { ascending: false })
+      .limit(10),
+    // Sessions from a "Decide after parsing" upload -- driver_profile_id
+    // is NULL, which `sessions_select` (0002) can only satisfy via its
+    // `uploaded_by_user_id = current_app_user_id()` branch, so this comes
+    // back scoped to the caller's own uploads without an explicit filter.
+    // Without a surface to find these again, a driver picking "decide
+    // after parsing" has no way back to them -- they're saved, but they
+    // never appear on Home (`driver_profile_id IN (...)` never matches
+    // NULL), and nothing else lists them either.
+    supabase
+      .from("sessions")
+      .select("id, track_name, session_type, start_date, start_time, n_laps, best_lap_s")
+      .is("driver_profile_id", null)
+      .eq("uploaded_by_user_id", appUser.id)
+      .order("start_date", { ascending: false })
+      .returns<UnassignedSessionRow[]>(),
+    // Every driver this account is allowed to assign a session to:
+    // `driver_profiles_select` (0001) already resolves this to every
+    // *claimed* profile on the platform (a teammate included) plus this
+    // account's own profile and anything it created (e.g. an unclaimed
+    // profile added from the sync tool) -- no extra filter needed here,
+    // RLS is doing the actual narrowing.
+    supabase
+      .from("driver_profiles")
+      .select("id, display_name, claim_status")
+      .order("display_name")
+      .returns<ClaimedProfile[]>(),
+    // Placeholders this account created that are still unclaimed -- the
+    // "reassign once they register" side of 0017.
+    supabase
+      .from("driver_profiles")
+      .select("id, display_name")
+      .eq("created_by_user_id", appUser.id)
+      .neq("claim_status", "claimed")
+      .order("display_name")
+      .returns<PlaceholderProfile[]>(),
+  ]);
+
+  // How many sessions currently sit on each placeholder -- a second, small
+  // query scoped to just those ids (there's normally a handful) rather
+  // than a bespoke aggregate RPC. Counted here in JS from raw rows, the
+  // same pattern HomeClient's own stats already use, since Supabase's
+  // client doesn't do grouped counts without one.
+  const placeholderIds = (placeholderProfiles ?? []).map((p) => p.id);
+  const { data: placeholderSessionRows } = placeholderIds.length
+    ? await supabase.from("sessions").select("driver_profile_id").in("driver_profile_id", placeholderIds)
+    : { data: [] };
+  const sessionCountByPlaceholder: Record<number, number> = {};
+  for (const row of placeholderSessionRows ?? []) {
+    const id = row.driver_profile_id as number;
+    sessionCountByPlaceholder[id] = (sessionCountByPlaceholder[id] ?? 0) + 1;
+  }
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-12">
@@ -70,6 +104,13 @@ export default async function UploadPage() {
       <UnassignedSessions
         sessions={unassignedRows ?? []}
         profiles={assignableProfiles ?? []}
+        appUserId={appUser.id}
+      />
+
+      <PlaceholderDrivers
+        placeholders={placeholderProfiles ?? []}
+        sessionCounts={sessionCountByPlaceholder}
+        realProfiles={(assignableProfiles ?? []).filter((p) => p.claim_status === "claimed")}
       />
 
       <UploadForm profiles={profiles ?? []} />

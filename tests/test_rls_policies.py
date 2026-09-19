@@ -623,6 +623,126 @@ def test_a_driver_cannot_attribute_a_session_to_someone_elses_profile(world):
     assert not allowed, "a driver attributed their session to another driver as confirmed"
 
 
+# --------------------------------------- placeholder driver profiles (0017)
+#
+# The "+ Add a new driver" option in the Upload driver picker -- a
+# not-yet-registered teammate's uploaded sessions land on an unclaimed
+# `driver_profiles` row until reassign_temp_driver_sessions moves them onto
+# a real one.
+
+
+def test_a_driver_can_create_a_placeholder_credited_to_themselves(world):
+    allowed, _ = world["alice"].write(
+        "INSERT INTO driver_profiles (display_name, claim_status, created_by_user_id, created_at) "
+        "VALUES ('Temp Driver', 'unclaimed', %s, now())",
+        (world["alice_user"],),
+    )
+    assert allowed, "a driver could not create their own placeholder"
+
+
+def test_a_driver_cannot_credit_a_placeholder_to_someone_else(world):
+    allowed, _ = world["alice"].write(
+        "INSERT INTO driver_profiles (display_name, claim_status, created_by_user_id, created_at) "
+        "VALUES ('Temp Driver', 'unclaimed', %s, now())",
+        (world["bob_user"],),
+    )
+    assert not allowed, "a driver credited a placeholder they made to someone else"
+
+
+def test_a_driver_cannot_insert_a_pre_claimed_placeholder(world):
+    """The only way a profile becomes `claimed` is the real signup trigger
+    (0004/0007/0013) linking a `user_id` -- never a client INSERT."""
+    allowed, _ = world["alice"].write(
+        "INSERT INTO driver_profiles (display_name, claim_status, created_by_user_id, created_at) "
+        "VALUES ('Temp Driver', 'claimed', %s, now())",
+        (world["alice_user"],),
+    )
+    assert not allowed, "a driver inserted an already-claimed profile directly"
+
+
+def test_a_driver_cannot_insert_a_placeholder_owned_by_someone(world):
+    allowed, _ = world["alice"].write(
+        "INSERT INTO driver_profiles (display_name, claim_status, user_id, created_by_user_id, created_at) "
+        "VALUES ('Temp Driver', 'unclaimed', %s, %s, now())",
+        (world["bob_user"], world["alice_user"]),
+    )
+    assert not allowed, "a driver inserted a placeholder already linked to a user_id"
+
+
+def test_placeholder_creator_can_reassign_its_sessions_to_a_real_driver(world, db):
+    with scenario(db) as cur:
+        cur.execute(
+            "INSERT INTO driver_profiles (display_name, claim_status, created_by_user_id, created_at) "
+            "VALUES ('Temp Driver', 'unclaimed', %s, now()) RETURNING id",
+            (world["alice_user"],),
+        )
+        placeholder_id = cur.fetchone()[0]
+        session_id = _insert_session(
+            cur, driver_profile_id=placeholder_id, uploaded_by_user_id=world["alice_user"],
+            track_name="Ring", best_lap_s=31.0,
+        )
+
+        _become(cur, world["alice"])
+        ok, err, rows = _try(cur, "SELECT reassign_temp_driver_sessions(%s, %s)", (placeholder_id, world["dana_profile"]))
+        assert ok, f"the placeholder's creator could not reassign its sessions: {err}"
+        assert rows == [(1,)], "expected exactly one session to move"
+
+        ok, _, rows = _try(cur, "SELECT driver_profile_id FROM sessions WHERE id=%s", (session_id,))
+        assert ok and rows == [(world["dana_profile"],)], "the session was not moved onto the real driver"
+
+
+def test_only_the_placeholder_creator_can_reassign_its_sessions(world, db):
+    with scenario(db) as cur:
+        cur.execute(
+            "INSERT INTO driver_profiles (display_name, claim_status, created_by_user_id, created_at) "
+            "VALUES ('Temp Driver', 'unclaimed', %s, now()) RETURNING id",
+            (world["alice_user"],),
+        )
+        placeholder_id = cur.fetchone()[0]
+
+        _become(cur, world["bob"])  # Bob did not create this placeholder
+        ok, err, _ = _try(cur, "SELECT reassign_temp_driver_sessions(%s, %s)", (placeholder_id, world["dana_profile"]))
+        assert not ok, "someone other than the placeholder's creator was allowed to reassign it"
+
+
+def test_cannot_reassign_onto_another_placeholder(world, db):
+    with scenario(db) as cur:
+        cur.execute(
+            "INSERT INTO driver_profiles (display_name, claim_status, created_by_user_id, created_at) "
+            "VALUES ('From', 'unclaimed', %s, now()) RETURNING id",
+            (world["alice_user"],),
+        )
+        from_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO driver_profiles (display_name, claim_status, created_by_user_id, created_at) "
+            "VALUES ('To', 'unclaimed', %s, now()) RETURNING id",
+            (world["alice_user"],),
+        )
+        to_id = cur.fetchone()[0]
+
+        _become(cur, world["alice"])
+        ok, err, _ = _try(cur, "SELECT reassign_temp_driver_sessions(%s, %s)", (from_id, to_id))
+        assert not ok, "sessions were reassigned onto another placeholder instead of a real driver"
+
+
+def test_cannot_reassign_an_already_claimed_profiles_sessions(world, db):
+    """Nothing to bridge -- a claimed profile is already the real thing. Its
+    creator still owns it (unlike the "wrong caller" case above), so this
+    isolates the claim_status check rather than the authorisation one."""
+    with scenario(db) as cur:
+        claimed_user_id, claimed_profile_id = _insert_claimed_driver(cur, "Already Real")
+        cur.execute(
+            "UPDATE driver_profiles SET created_by_user_id=%s WHERE id=%s",
+            (world["alice_user"], claimed_profile_id),
+        )
+
+        _become(cur, world["alice"])
+        ok, err, _ = _try(
+            cur, "SELECT reassign_temp_driver_sessions(%s, %s)", (claimed_profile_id, world["dana_profile"]),
+        )
+        assert not ok, "a claimed profile's sessions were reassigned as if it were a placeholder"
+
+
 # ------------------------------------------------- the stored analysis (0005)
 #
 # Traces, sector times and session analysis are what Lap Analysis reads, and
