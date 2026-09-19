@@ -3,6 +3,7 @@ import { createClient, resolveAppUser } from "@/lib/supabase/server";
 import AccountNotLinked from "@/components/AccountNotLinked";
 import AppHeader from "@/components/AppHeader";
 import UploadForm from "./UploadForm";
+import UnassignedSessions, { type UnassignedSessionRow } from "./UnassignedSessions";
 
 export const dynamic = "force-dynamic";
 
@@ -20,18 +21,41 @@ export default async function UploadPage() {
 
   const supabase = await createClient();
 
-  const [{ data: profiles }, { data: batches }] = await Promise.all([
-    supabase
-      .from("driver_profiles")
-      .select("id, display_name")
-      .eq("user_id", appUser.id)
-      .order("display_name"),
-    supabase
-      .from("upload_batches")
-      .select("id, original_filename, status, error_message, sessions_created, created_at")
-      .order("created_at", { ascending: false })
-      .limit(10),
-  ]);
+  const [{ data: profiles }, { data: batches }, { data: unassignedRows }, { data: assignableProfiles }] =
+    await Promise.all([
+      supabase
+        .from("driver_profiles")
+        .select("id, display_name")
+        .eq("user_id", appUser.id)
+        .order("display_name"),
+      supabase
+        .from("upload_batches")
+        .select("id, original_filename, status, error_message, sessions_created, created_at")
+        .order("created_at", { ascending: false })
+        .limit(10),
+      // Sessions from a "Decide after parsing" upload -- driver_profile_id
+      // is NULL, which `sessions_select` (0002) can only satisfy via its
+      // `uploaded_by_user_id = current_app_user_id()` branch, so this comes
+      // back scoped to the caller's own uploads without an explicit filter.
+      // Without a surface to find these again, a driver picking "decide
+      // after parsing" has no way back to them -- they're saved, but they
+      // never appear on Home (`driver_profile_id IN (...)` never matches
+      // NULL), and nothing else lists them either.
+      supabase
+        .from("sessions")
+        .select("id, track_name, session_type, start_date, start_time, n_laps, best_lap_s")
+        .is("driver_profile_id", null)
+        .eq("uploaded_by_user_id", appUser.id)
+        .order("start_date", { ascending: false })
+        .returns<UnassignedSessionRow[]>(),
+      // Every driver this account is allowed to assign a session to:
+      // `driver_profiles_select` (0001) already resolves this to every
+      // *claimed* profile on the platform (a teammate included) plus this
+      // account's own profile and anything it created (e.g. an unclaimed
+      // profile added from the sync tool) -- no extra filter needed here,
+      // RLS is doing the actual narrowing.
+      supabase.from("driver_profiles").select("id, display_name").order("display_name"),
+    ]);
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-12">
@@ -42,6 +66,11 @@ export default async function UploadPage() {
         Export from Unipro Analyser as a tab-separated file. One export can hold a whole track
         day &mdash; every session inside it is stored separately.
       </p>
+
+      <UnassignedSessions
+        sessions={unassignedRows ?? []}
+        profiles={assignableProfiles ?? []}
+      />
 
       <UploadForm profiles={profiles ?? []} />
 
