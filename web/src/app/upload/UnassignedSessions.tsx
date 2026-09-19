@@ -78,6 +78,12 @@ export default function UnassignedSessions({
         display_name: name,
         claim_status: "unclaimed",
         created_by_user_id: appUserId,
+        // driver_profiles.created_at is NOT NULL with no column default
+        // (every other inserter -- the signup triggers, the old
+        // Streamlit-era AccountLibrary -- sets it explicitly with `now()`)
+        // -- a client-side insert has to do the same or Postgres rejects
+        // the row outright.
+        created_at: new Date().toISOString(),
       })
       .select("id, display_name")
       .single();
