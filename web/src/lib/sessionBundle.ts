@@ -41,6 +41,9 @@ export type SessionBundle = {
   startTime: string | null;
   kartClass: string | null;
   trackCondition: string | null;
+  /** 'private' | 'team' | 'shared' -- gates whether this session may be the
+   *  base of a "team"/"community" comparison search (see LapAnalysis). */
+  visibility: string | null;
   segments: Segment[];
   speedIsEstimated: boolean;
   dataError: string | null;
@@ -60,6 +63,7 @@ type RawSession = {
   start_time: string | null;
   track_condition: string | null;
   kart_class: string | null;
+  visibility: string | null;
   driver_profile_id: number | null;
   uploaded_by_user_id: number | null;
   driver_profiles: { display_name: string; user_id: number | null } | null;
@@ -77,7 +81,7 @@ type RawAnalysis = {
 /** The columns Lap Analysis reads off `sessions`, shared by both loaders. */
 export const SESSION_COLUMNS =
   "id, track_name, session_type, start_date, start_time, track_condition, " +
-  "kart_class, driver_profile_id, uploaded_by_user_id, " +
+  "kart_class, visibility, driver_profile_id, uploaded_by_user_id, " +
   "driver_profiles(display_name, user_id)";
 
 /**
@@ -154,6 +158,7 @@ export function buildBundle({
     startTime: session.start_time,
     kartClass: session.kart_class,
     trackCondition: session.track_condition,
+    visibility: session.visibility,
     segments: analysis?.segments ?? [],
     speedIsEstimated: Boolean(analysis?.speed_is_estimated),
     dataError: analysis?.data_error ?? null,

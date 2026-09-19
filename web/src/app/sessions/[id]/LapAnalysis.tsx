@@ -74,6 +74,16 @@ export default function LapAnalysis({
   const active = bundles.find((b) => b.sessionId === activeId) ?? bundles[0];
   const multiSession = bundles.length > 1;
 
+  // A private session is only ever compared against the viewer's own other
+  // sessions -- "team"/"community" would pull in someone else's data to sit
+  // alongside data its own driver chose to keep private. Gated on the base
+  // session this page was opened for (not whichever tab happens to be
+  // active), since that is the private data being protected.
+  const restrictedToMine = initial.visibility === "private";
+  const availableScopes = (["team", "community", "mine"] as SearchScope[]).filter(
+    (scope) => !restrictedToMine || scope === "mine",
+  );
+
   const labels = useMemo(() => tabLabels(bundles), [bundles]);
   const nameFor = useCallback(
     (sessionId: number) => {
@@ -427,7 +437,12 @@ export default function LapAnalysis({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {(["team", "community", "mine"] as SearchScope[]).map((scope) => (
+          {restrictedToMine && (
+            <span className="text-xs text-muted" title="Uncheck Private on Home, or set Sharing to Team or Shared, to compare against others.">
+              Private session &mdash; only your own other sessions can be added.
+            </span>
+          )}
+          {availableScopes.map((scope) => (
             <button
               key={scope}
               type="button"
