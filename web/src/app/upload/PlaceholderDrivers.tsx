@@ -4,31 +4,38 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
-export type PlaceholderProfile = { id: number; display_name: string };
+export type PlaceholderProfile = { id: number; display_name: string; created_by_user_id: number | null };
 export type ClaimedProfile = { id: number; display_name: string; claim_status: string };
 
 /**
- * Placeholders the signed-in account created (via "+ Add a new driver..."
- * in UnassignedSessions, or `unigo_sync`'s own `create_driver`) that are
- * still unclaimed -- with a picker to move all of a placeholder's sessions
- * onto a real, registered profile once that teammate actually signs up.
+ * Placeholders visible to the signed-in account -- the ones it created
+ * itself (via "+ Add a new driver..." in UnassignedSessions, or
+ * `unigo_sync`'s own `create_driver`), and, for a team manager/admin,
+ * any placeholder created by an active member of a team they manage
+ * (`driver_profiles_select`, 0018) -- with a picker to move all of a
+ * placeholder's sessions onto a real, registered profile once that
+ * teammate actually signs up.
  *
- * Calls `reassign_temp_driver_sessions` (0017) rather than updating
+ * Calls `reassign_temp_driver_sessions` (0017/0018) rather than updating
  * `sessions.driver_profile_id` directly: that RPC is the only thing that
  * can move a session the caller did not themselves upload (RLS's
  * `sessions_update_own` only ever grants the uploader, or a claimed
- * profile's own owner, neither of which the placeholder's creator
- * necessarily is) -- see the migration for why this needs a
- * SECURITY DEFINER function rather than a wider RLS policy.
+ * profile's own owner, neither of which a manager reassigning a
+ * teammate's placeholder necessarily is) -- see the migration for why
+ * this needs a SECURITY DEFINER function rather than a wider RLS policy.
  */
 export default function PlaceholderDrivers({
   placeholders,
   sessionCounts,
   realProfiles,
+  appUserId,
+  creatorNameByUserId,
 }: {
   placeholders: PlaceholderProfile[];
   sessionCounts: Record<number, number>;
   realProfiles: ClaimedProfile[];
+  appUserId: number;
+  creatorNameByUserId: Record<number, string>;
 }) {
   const router = useRouter();
   const [counts, setCounts] = useState(sessionCounts);
@@ -64,9 +71,10 @@ export default function PlaceholderDrivers({
 
   return (
     <section className="mb-10 rounded border border-hairline bg-raised p-4">
-      <h2 className="mb-1 text-sm font-bold">Placeholder drivers you added</h2>
+      <h2 className="mb-1 text-sm font-bold">Placeholder drivers</h2>
       <p className="mb-3 text-xs text-muted">
-        Once one of these registers a real account, move their sessions onto it here.
+        Ones you added, plus (if you manage a team) any a teammate added on someone's behalf. Once
+        one of these registers a real account, move their sessions onto it here.
       </p>
 
       {error && (
@@ -85,6 +93,12 @@ export default function PlaceholderDrivers({
               className="flex flex-wrap items-center gap-2 rounded border border-hairline bg-surface px-3 py-2 text-sm"
             >
               <span className="font-semibold">{placeholder.display_name}</span>
+              <span className="text-[11px] text-muted">
+                added by{" "}
+                {placeholder.created_by_user_id === appUserId
+                  ? "you"
+                  : (creatorNameByUserId[placeholder.created_by_user_id ?? -1] ?? "a teammate")}
+              </span>
               {count > 0 ? (
                 <>
                   <span className="text-xs text-muted">

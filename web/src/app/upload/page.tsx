@@ -65,16 +65,36 @@ export default async function UploadPage() {
       .select("id, display_name, claim_status")
       .order("display_name")
       .returns<ClaimedProfile[]>(),
-    // Placeholders this account created that are still unclaimed -- the
-    // "reassign once they register" side of 0017.
+    // Placeholders visible to this account that are still unclaimed -- the
+    // "reassign once they register" side of 0017/0018. No `created_by`
+    // filter: `driver_profiles_select` already resolves this to the
+    // account's own placeholders plus, for a team manager/admin, any
+    // placeholder created by an active member of a team they manage --
+    // RLS is doing the actual narrowing, same as `assignableProfiles` above.
     supabase
       .from("driver_profiles")
-      .select("id, display_name")
-      .eq("created_by_user_id", appUser.id)
+      .select("id, display_name, created_by_user_id")
       .neq("claim_status", "claimed")
       .order("display_name")
       .returns<PlaceholderProfile[]>(),
   ]);
+
+  // Who created each placeholder, for a manager looking at more than just
+  // their own -- "Alice's placeholder" reads very differently from "mine".
+  // A creator's own account almost always has its own claimed profile
+  // (display_name), which is public-readable (driver_profiles_select's
+  // first branch) regardless of who's asking, so this is a plain second
+  // select rather than a new RPC -- the same "resolve ids in one extra
+  // query" shape the driver_countries lookup elsewhere on this page uses.
+  const creatorUserIds = Array.from(
+    new Set((placeholderProfiles ?? []).map((p) => p.created_by_user_id).filter((id): id is number => id !== null)),
+  );
+  const { data: creatorProfiles } = creatorUserIds.length
+    ? await supabase.from("driver_profiles").select("user_id, display_name").in("user_id", creatorUserIds)
+    : { data: [] };
+  const creatorNameByUserId = new Map(
+    (creatorProfiles ?? []).map((p) => [p.user_id as number, p.display_name as string]),
+  );
 
   // How many sessions currently sit on each placeholder -- a second, small
   // query scoped to just those ids (there's normally a handful) rather
@@ -111,6 +131,8 @@ export default async function UploadPage() {
         placeholders={placeholderProfiles ?? []}
         sessionCounts={sessionCountByPlaceholder}
         realProfiles={(assignableProfiles ?? []).filter((p) => p.claim_status === "claimed")}
+        appUserId={appUser.id}
+        creatorNameByUserId={Object.fromEntries(creatorNameByUserId)}
       />
 
       <UploadForm profiles={profiles ?? []} />
