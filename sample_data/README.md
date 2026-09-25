@@ -7,8 +7,16 @@ needing your own export -- `tests/test_worker.py`,
 `tests/test_ingest_paths.py` and `scripts/verify_analysis_extraction.py`
 all read it directly.
 
-**This repo is currently public**, so this file (and the GPS track,
-lap times, and RPM data in it) is visible to anyone who finds the repo.
+`danish_session.tsv` is the same idea, but from a Unipro Analyser install
+running in Danish: some (not all) of its column headers come out translated
+-- e.g. "Breddegrad" for Latitude -- which `telemetry.parser.COLUMN_ALIASES`
+exists to undo. `tests/test_parser.py` reads it directly to confirm that
+translation actually works against a real export, not just a hand-written
+one. Decimal formatting in it is unaffected by the locale (confirmed period,
+not comma).
+
+**This repo is currently public**, so these files (and the GPS track,
+lap times, and RPM data in them) are visible to anyone who finds the repo.
 That trade-off was chosen deliberately for convenience during this build
 phase -- reconsider before treating this repo as a long-term home for real
 telemetry, e.g. by making it private or swapping to an external, non-public

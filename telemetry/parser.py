@@ -86,6 +86,39 @@ NUMERIC_COLUMNS = [c for c in COLUMNS if c not in ("Start Date", "Start Time")]
 
 NANOSECONDS_PER_SECOND = 1_000_000_000
 
+# Unipro Analyser localises the exported column *headers* to match its UI
+# language, but not every column -- some channel names (e.g. "GPS Speed",
+# "RPM unfiltered", "Steering Rate") are apparently left in English even in a
+# translated export. Nanosecond timestamps and decimal values are unaffected
+# either way (confirmed period-decimal, not comma, in a real Danish-locale
+# export -- see tests/fixtures/danish_session.tsv).
+#
+# Keyed by the exact header text a Danish-locale export uses, confirmed
+# against that real sample rather than guessed from a dictionary -- Unipro's
+# own translations don't always match a literal word-for-word rendering.
+DANISH_COLUMN_ALIASES: dict[str, str] = {
+    "Intern Temperatur": "Internal Temperature",
+    "Breddegrad": "Latitude",
+    "Tid": "Time",
+    "Længdegrad": "Longitude",
+    "GPS Hastighed": "GPS Speed",
+    "Vertikalt DOP": "Vertical DOP",
+    "Temperatur 1": "Temperature 1",
+    "Batteri Spænding": "Battery Voltage",
+    "Rat Vinkel": "Steering Angle",
+    "Retning": "Heading",
+    "Glid": "Slip",
+    "Horisontal DOP": "Horizontal DOP",
+    "GPS Afstand": "GPS Distance",
+    "Positions DOP": "Positional DOP",
+    "Højde": "Altitude",
+}
+
+# Every known non-English header, in one table -- so `load_raw` has one rename
+# step regardless of how many languages end up needing it, rather than a
+# growing chain of per-language passes.
+COLUMN_ALIASES: dict[str, str] = {**DANISH_COLUMN_ALIASES}
+
 
 def load_raw(path: str) -> pd.DataFrame:
     """Read a Unipro TSV export into a raw DataFrame.
@@ -104,6 +137,7 @@ def load_raw(path: str) -> pd.DataFrame:
         na_values=[""],
     )
     df.columns = [c.strip() for c in df.columns]
+    df = df.rename(columns=COLUMN_ALIASES)
 
     missing = [c for c in COLUMNS if c not in df.columns]
     if missing:

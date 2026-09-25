@@ -1,8 +1,23 @@
+import os
+
 import pandas as pd
+import pytest
 
 from telemetry.parser import COLUMNS, load_raw, split_sessions
 
 FIXTURE_PATH = "tests/fixtures/synthetic_session.tsv"
+# A real Danish-locale Unipro Analyser export (see sample_data/README.md) --
+# some but not all channel headers come out translated (e.g. "Breddegrad"
+# for Latitude), which is what COLUMN_ALIASES exists to undo.
+DANISH_FIXTURE_PATH = "sample_data/danish_session.tsv"
+# Committed separately from the code that reads it (a real person's GPS
+# trace, so it goes in on its own), which means a checkout of this code can
+# briefly not have it yet -- skip those two tests rather than fail the suite
+# in that window.
+_danish_fixture_available = os.path.exists(DANISH_FIXTURE_PATH)
+_skip_without_danish_fixture = pytest.mark.skipif(
+    not _danish_fixture_available, reason=f"{DANISH_FIXTURE_PATH} not committed yet"
+)
 
 
 def test_load_raw_has_all_columns_and_seconds():
@@ -65,3 +80,24 @@ def test_gps_fixes_all_columns_populated_together(session1):
 
     for col in GPS_FIX_COLUMNS:
         assert fixes[col].notna().all()
+
+
+@_skip_without_danish_fixture
+def test_load_raw_translates_danish_headers():
+    df = load_raw(DANISH_FIXTURE_PATH)
+    for col in COLUMNS:
+        assert col in df.columns
+    # A couple of the translated channels should actually carry data, not
+    # just be present as empty columns from a name that happened to match.
+    assert df["Latitude"].notna().any()
+    assert df["RPM"].notna().any()
+
+
+@_skip_without_danish_fixture
+def test_load_raw_keeps_an_unmapped_extra_danish_column():
+    # The real export this fixture comes from has one channel -- "Corner
+    # Radius" -- that isn't in COLUMNS at all (distinct from the "Inverse
+    # Corner Radius" channel, which is). It should survive untouched rather
+    # than being dropped or colliding with anything the rename produces.
+    df = load_raw(DANISH_FIXTURE_PATH)
+    assert "Corner Radius" in df.columns
